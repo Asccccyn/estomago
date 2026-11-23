@@ -1,7 +1,7 @@
 // 后台回合收口、规范协议提交及现有活动计时。
 import { tx, type Db } from '../db/connection.ts';
 import type { HeartbeatRuntime } from '../modules/heartbeat/runtime.ts';
-import type { HeartbeatMode } from '../modules/heartbeat/service.ts';
+import type { HeartbeatMode, HeartbeatSpeechHold } from '../modules/heartbeat/service.ts';
 import type { OrMessage } from './or-payload.ts';
 import type { RunnerRunResult } from './runner.ts';
 import { tailBoundaryOf } from './cache-plan.ts';
@@ -25,6 +25,8 @@ export type BackgroundOutcomeInput = {
   isCancelRequested: () => boolean;
   recoveredRequestId?: string;
   heartbeat?: { runtime: HeartbeatRuntime; mode: HeartbeatMode; hostText: string };
+  /** Stop condition holding when this run would speak into the chat (null = none). */
+  speechHold?: HeartbeatSpeechHold | null;
   loop: {
     result: RunnerRunResult;
     finalMessages: OrMessage[] | null;
@@ -38,6 +40,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const { db, loop, kind, runId, heartbeat } = input;
   const completed = loop.result.outcome === 'completed' && !loop.result.errorCode;
   const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
+  const restPaused = loop.result.errorCode === 'KEEPWARM_RESTING';
   const yielded = loop.result.errorCode?.startsWith('KEEPWARM_YIELDED') === true;
   const observed = heartbeat ? db.prepare(`
     SELECT payload_json
@@ -56,12 +59,19 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   const exhausted = heartbeat?.mode === 'exhausted_keepwarm';
   const exhaustedReply = exhausted && completed && Boolean(observed) && lastText?.trim() === '1';
   const missingExhaustedReply = exhausted && completed && !exhaustedReply;
-  const finishedState = yielded ? 'interrupted' : (completed && !missingExhaustedReply) || sleepPaused ? 'completed' : 'failed';
+  const paused = sleepPaused || restPaused;
+  // Speech that a stop condition held back was never said to her. Keep the run's
+  // real facts and record why nothing reached the chat, instead of a late resend.
+  const speechHold = heartbeat && completed && !missingExhaustedReply ? input.speechHold ?? null : null;
+  // A held-back final reply is not canonical history either: the next turn must
+  // not continue from words she never saw. Sent requests and tool receipts stay.
+  const heldBackReply = speechHold !== null && last?.role === 'assistant';
+  const finishedState = yielded ? 'interrupted' : (completed && !missingExhaustedReply) || paused ? 'completed' : 'failed';
   const finishReason = missingExhaustedReply ? 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' : loop.result.errorCode;
   // Only the current heartbeat's unobserved card payload can be withheld. Its
   // actual tool call and a protocol-valid same-ID receipt remain in the history.
   if (heartbeat) {
-    heartbeat.runtime.closeProtocol(runId, finalMessages ?? [], sent ?? null);
+    heartbeat.runtime.closeProtocol(runId, heldBackReply && sent ? sent : finalMessages ?? [], sent ?? null);
   }
 
   const published = (conn: Db) => conn.prepare(`
@@ -69,12 +79,14 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
     WHERE turn_id=? AND speaker='assistant' ORDER BY sequence
   `).all(input.turnId) as Array<{ id: string; sequence: number; current_revision: number }>;
   let heartbeatEvents: ReturnType<HeartbeatRuntime['commitInTx']>['eventRows'] = [];
+  const reason = (): NonNullable<Parameters<HeartbeatRuntime['commitInTx']>[0]['terminal']>['reason'] => speechHold === 'disabled' ? 'other'
+    : speechHold ?? (restPaused ? 'rest' : sleepPaused ? 'sleep' : finishReason === 'BUDGET_ESTIMATE_UNAVAILABLE' ? 'quote' : /BUDGET/.test(finishReason ?? '') ? 'budget'
+      : /YIELDED/.test(finishReason ?? '') ? 'yield' : finishReason === 'HEARTBEAT_CARD_DISPATCH_UNKNOWN' ? 'delivery' : 'other');
   const terminal = (): NonNullable<Parameters<HeartbeatRuntime['commitInTx']>[0]['terminal']> => ({
     status: heartbeat?.runtime.hasUnknownDelivery(runId) || finishReason === 'TOOL_EXECUTION_OUTCOME_UNKNOWN' || finishReason === 'HOST_RESTART_MID_RUN' ? 'unknown'
-      : input.isCancelRequested() || /CANCELLED|STOPPED|YIELDED/.test(finishReason ?? '') || sleepPaused ? 'cancelled'
+      : input.isCancelRequested() || /CANCELLED|STOPPED|YIELDED/.test(finishReason ?? '') || paused || speechHold ? 'cancelled'
       : completed ? 'completed' : 'failed',
-    ...(finishReason ? { reason: finishReason === 'BUDGET_ESTIMATE_UNAVAILABLE' ? 'quote' : /BUDGET/.test(finishReason) ? 'budget' : sleepPaused ? 'sleep'
-      : /YIELDED/.test(finishReason) ? 'yield' : /HEARTBEAT_CARD_DISPATCH_UNKNOWN/.test(finishReason) ? 'delivery' : 'other' } : {}),
+    ...(speechHold || finishReason ? { reason: reason() } : {}),
   });
   const finishTurn = (conn: Db): void => {
     const now = new Date().toISOString();
@@ -105,13 +117,14 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
     let boundary = input.trajectory.forWindow(input.windowId)?.lastBoundary ?? null;
     if (!heartbeat) boundary = tailBoundaryOf(loop.lastSentMessages ?? finalMessages);
     else if (sent) boundary = tailBoundaryOf(sent);
-    input.trajectory.replace(input.windowId, finalMessages, boundary, manifest, (conn) => {
+    const retained = heldBackReply && sent ? sent : finalMessages;
+    input.trajectory.replace(input.windowId, retained, boundary, manifest, (conn) => {
       if (heartbeat) {
         const projection = heartbeat.runtime.commitInTx({
           runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
-          hostText: heartbeat.hostText, finalMessages, mode: heartbeat.mode,
+          hostText: heartbeat.hostText, finalMessages: retained, mode: heartbeat.mode,
           completed, hadSent: Boolean(observed),
-          responseOffset: sent?.length, terminal: terminal(),
+          responseOffset: sent?.length, terminal: terminal(), speechHold,
         });
         if (projection.manifest.length) {
           const known = new Set(manifest.map(entry => entry.id));
@@ -146,15 +159,16 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
   if (heartbeatEvents.length) heartbeat?.runtime.dispatchEvents(heartbeatEvents);
 
   if (yielded && !heartbeat?.runtime.hasUnknownDelivery(runId)) return { outcome: 'noop', result_code: loop.result.errorCode! };
+  if (speechHold) return { outcome: 'noop', result_code: speechHold === 'rest' ? 'KEEPWARM_RESTING' : speechHold === 'sleep' ? 'KEEPWARM_SLEEP_WINDOW' : 'KEEPWARM_DISABLED' };
   if (loop.result.outcome !== 'completed') {
     if (input.heartbeat?.runtime.hasUnknownDelivery(runId)) return { outcome: 'unknown', result_code: 'HEARTBEAT_CARD_DISPATCH_UNKNOWN' };
     if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
     if (loop.result.errorCode === 'HOST_RESTART_MID_RUN') return { outcome: 'unknown', result_code: loop.result.errorCode };
     if (input.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
-    if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
+    if (paused) return { outcome: 'noop', result_code: loop.result.errorCode! };
     return { outcome: 'failed', result_code: loop.result.errorCode ?? (kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
   }
-  if (sleepPaused) return { outcome: 'completed', result_code: loop.result.errorCode! };
+  if (paused) return { outcome: 'completed', result_code: loop.result.errorCode! };
   if (missingExhaustedReply) return { outcome: 'failed', result_code: 'HEARTBEAT_EXHAUSTED_REPLY_MISSING' };
   if (exhaustedReply) return { outcome: 'completed', result_code: 'ack_only' };
   const completion = readTurnCompletion(db, input.attemptId, input.turnId);

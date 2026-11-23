@@ -227,6 +227,7 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
       : terminal.reason === 'budget' ? '本轮已达预算上限，未继续。'
       : terminal.reason === 'quote' ? '缺少可核实的工具报价，本轮未继续。'
       : terminal.reason === 'sleep' ? '本轮因睡眠时段结束。'
+      : terminal.reason === 'rest' ? '本轮因乔乔休息而结束，回复没有发出。'
       : terminal.reason === 'yield' ? '本轮为新聊天让位。'
       : terminal.status === 'cancelled' ? '本轮已取消，已经发生的动作保留。'
       : terminal.status === 'failed' ? '本轮未能正常完成。'

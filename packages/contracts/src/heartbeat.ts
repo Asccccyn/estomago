@@ -34,7 +34,7 @@ export type HeartbeatProjection = {
   /** Only the original assistant messages published after this reserved note was actually revealed. */
   reservedReplyMessages?: HeartbeatProjection['messages'];
   actions?: HeartbeatAction[];
-  terminal?: { status: 'completed' | 'declined' | 'cancelled' | 'failed' | 'unknown'; reason?: 'budget' | 'quote' | 'sleep' | 'yield' | 'delivery' | 'other' };
+  terminal?: { status: 'completed' | 'declined' | 'cancelled' | 'failed' | 'unknown'; reason?: 'budget' | 'quote' | 'sleep' | 'rest' | 'yield' | 'delivery' | 'other' };
 };
 
 // Business receipts are references, not copies of private source prose. They
@@ -156,7 +156,7 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
     }
   }
   if (projection.terminal !== undefined && (!terminal || !['completed','declined','cancelled','failed','unknown'].includes(String(terminal.status))
-    || terminal.reason !== undefined && !['budget','quote','sleep','yield','delivery','other'].includes(String(terminal.reason)))) return null;
+    || terminal.reason !== undefined && !['budget','quote','sleep','rest','yield','delivery','other'].includes(String(terminal.reason)))) return null;
   return {
     mode: 'draw', conversationId: projection.conversationId, businessDate: projection.businessDate,
     version: projection.version, state,

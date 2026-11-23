@@ -485,6 +485,7 @@ export class Host {
       activity,
       heartbeat,
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
+      keepwarmEnabled: () => bgSettings.effective().keepwarm.enabled,
       surfacing: surfacing.enabled ? surfacing : undefined,
       // S18 口径：未接线=如实无 B。base_url 未配置（仅开发/测试态）时不装配
       // bootstrap 端口——装一个必然抛错的客户端只会制造 BOOTSTRAP_INCOMPLETE 噪声。

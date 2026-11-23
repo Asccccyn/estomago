@@ -262,7 +262,8 @@ export class BackgroundScheduler {
         }
       }
       // 前面的执行可能跨入睡眠时段；每次领取用当前时钟再查，不能复用 tick 快照。
-      if (task.kind === 'keepwarm' && keepwarmSleepState(this.d.settings.effective().keepwarm.sleep_window, this.now()).blocked) continue;
+      if (task.kind === 'keepwarm' && (keepwarmSleepState(this.d.settings.effective().keepwarm.sleep_window, this.now()).blocked
+        || this.activity.resting(task.conversation_id))) continue;
       if (task.kind === 'reminder' && !settings.reminders.enabled) continue;
       // 同主体同 kind 已有打开的执行（唯一索引兜底；此处先查少一次约束冲突）
       const open = this.d.db.prepare("SELECT id,task_id,state,result_code FROM background_runs WHERE actor_id = ? AND kind = ? AND state IN ('claimed','running','cancelling') LIMIT 1").get(task.actor_id, task.kind) as { id: string; task_id: string; state: string; result_code: string | null } | undefined;
@@ -326,7 +327,7 @@ export class BackgroundScheduler {
     const rows = this.d.db.prepare("SELECT * FROM background_tasks WHERE kind = 'keepwarm' AND schedule_kind = 'cache_idle' AND enabled = 1").all() as TaskRow[];
     const nowIso = new Date(nowMs).toISOString();
     for (const t of rows) {
-      if (keepwarmSleepState(settings.keepwarm.sleep_window, nowMs).blocked) {
+      if (keepwarmSleepState(settings.keepwarm.sleep_window, nowMs).blocked || this.activity.resting(t.conversation_id)) {
         this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, t.id);
         continue;
       }

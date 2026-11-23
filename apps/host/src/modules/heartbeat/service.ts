@@ -20,6 +20,9 @@ const MAX_CORRECTIONS = 2;
 const COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
 
 export type HeartbeatMode = 'unprepared' | 'source_unavailable' | 'draw' | 'exhausted_keepwarm';
+/** Why the heartbeat may not speak into the chat at the moment of publication.
+ *  It never undoes a delivered card, a committed tool action or a recorded cost. */
+export type HeartbeatSpeechHold = 'sleep' | 'rest' | 'disabled';
 export type HeartbeatDeck = { id: string; availableNumbers: number[]; deliveredNumbers: number[]; exhausted: boolean };
 export type HeartbeatRun = { businessDate: string; mode: HeartbeatMode; deck: HeartbeatDeck | null };
 type DrawPhase = 'claimed' | 'prepared' | 'dispatching' | 'delivered' | 'not_dispatched' | 'unknown';

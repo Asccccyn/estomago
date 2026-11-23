@@ -2051,4 +2051,14 @@ MIGRATIONS.push({
   sql: 'ALTER TABLE audit_events ADD COLUMN receipt_json TEXT;',
 });
 
+// 0 keeps every existing conversation on its current schedule. Rest is only
+// established by a new owner statement or an explicit control operation.
+MIGRATIONS.push({
+  version: 91, name: 'conversation-rest-decision',
+  sql: `ALTER TABLE conversation_activity ADD COLUMN resting INTEGER NOT NULL DEFAULT 0 CHECK (resting IN (0,1));
+    ALTER TABLE conversation_activity ADD COLUMN rest_decided_at TEXT;
+    ALTER TABLE conversation_activity ADD COLUMN rest_source TEXT;
+    ALTER TABLE conversation_activity ADD COLUMN rest_message_id TEXT;`,
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

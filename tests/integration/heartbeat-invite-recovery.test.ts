@@ -8,6 +8,7 @@ import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
+import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
 import { lastCacheEvidence } from '../../apps/host/src/runtime/cache-observation.ts';
 import { tailBoundaryOf } from '../../apps/host/src/runtime/cache-plan.ts';
 import type { OrMessage } from '../../apps/host/src/runtime/or-payload.ts';
@@ -29,7 +30,7 @@ const isTalkReply = (message: { role: string; content: unknown }) =>
   message.role === 'assistant' && JSON.stringify(message.content).includes(TALK_REPLY);
 const model = 'anthropic/claude-heartbeat-invite-fixture';
 
-async function fixture(root: string, lane: Lane, options: { seam?: Seam; beforeTalkComplete?: () => Promise<void> } = {}) {
+async function fixture(root: string, lane: Lane, options: { seam?: Seam; sleepWindow?: boolean; beforeTalkComplete?: () => Promise<void> } = {}) {
   const { seam, beforeTalkComplete } = options;
   let requests = 0;
   let sdkResume: string | undefined;
@@ -39,7 +40,7 @@ async function fixture(root: string, lane: Lane, options: { seam?: Seam; beforeT
     ...readyRuntimePatch(),
     runtime: { ...readyRuntimePatch().runtime as object, provider: 'mock', tool_schema_mode: 'direct',
       ...(lane === 'sdk' ? { subscription_proxy_url: 'http://127.0.0.1:1' } : {}) },
-    openrouter: { model }, background: { keepwarm: { sleep_window: { enabled: false } } },
+    openrouter: { model }, background: { keepwarm: { sleep_window: { enabled: options.sleepWindow === true } } },
   });
   const query: SdkQueryFactory = input => {
     const session = 'fixture-invite-session';
@@ -300,5 +301,72 @@ if (process.argv[2] !== CHILD) for (const lane of ['api', 'sdk'] as const) {
       assert.equal(setup.sdkResume(), 'fixture-invite-session');
       assert.equal(setup.sdkReplayedTalks(), 0, 'continued native session already has the reply');
     }
+  });
+}
+
+if (process.argv[2] !== CHILD) for (const lane of ['api', 'sdk'] as const) for (const stop of ['goodnight', 'night'] as const) {
+  test(`T-A03/T-A04: a heartbeat reply that finishes after ${stop === 'goodnight' ? 'she says goodnight' : 'the night window begins'} never reaches the chat (${lane})`, { timeout: 10000 }, async t => {
+    const root = tempRoot('heartbeat-held-reply-');
+    const replyReceived = barrier();
+    const finishReply = barrier();
+    const restoreSources = installHeartbeatFixtureSources();
+    writeApprovedIdentity(root);
+    // 22:59:59 the request leaves; her message or the clock changes before the reply completes.
+    t.mock.timers.enable({ apis: ['Date'], now: stop === 'night' ? Date.parse('2026-11-24T22:59:59+08:00') : Date.now() });
+    const ownerText = stop === 'goodnight' ? '晚安，我睡了' : '合成消息：我回到聊天了。';
+    const setup = await fixture(root, lane, { sleepWindow: stop === 'night', beforeTalkComplete: async () => {
+      replyReceived.release();
+      await finishReply.reached;
+    } });
+    const { host, config, chat } = setup;
+    t.after(async () => {
+      finishReply.release();
+      await host.stop();
+      restoreSources();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+    await host.start();
+    await chat('建立当前会话');
+    const windowId = scheduleHeartbeat(host, config);
+    const scheduler = host.scheduler!;
+    const tick = scheduler.tick();
+    await replyReceived.reached;
+
+    const url = `http://127.0.0.1:${host.port}`;
+    const messagesUrl = url + '/api/v1/conversations/primary/messages';
+    const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
+    const headers = { Authorization: `Bearer ${token}`, Origin: url, 'Content-Type': 'application/json' };
+    const submitted = await fetch(messagesUrl, { method: 'POST', headers,
+      body: JSON.stringify({ content: ownerText, client_message_id: 'fixture-owner-stop' }) });
+    assert.equal(submitted.status, 201);
+    const owner = await submitted.json() as SubmitMessageResponse;
+    const run = host.db.prepare("SELECT id,turn_id FROM background_runs WHERE kind='keepwarm'").get()!;
+    assert.ok(scheduler.isYieldRequested(String(run.id)));
+    if (stop === 'night') t.mock.timers.setTime(Date.parse('2026-11-24T23:00:00+08:00'));
+
+    finishReply.release();
+    await tick;
+    await host.supervisor.waitIdle();
+    const history = await (await fetch(messagesUrl, { headers })).json() as MessagePageDto;
+    // The invitation was really sent and stays; the reply she never saw is neither in chat nor shown as one.
+    assert.equal(history.messages.filter(message => message.turn_id === run.turn_id && message.speaker === 'assistant').length, 0);
+    assert.equal(history.messages.filter(message => message.turn_id === run.turn_id && message.speaker === 'system').length, 1);
+    assert.equal(history.messages.filter(message => message.turn_id === owner.turn_id && message.speaker === 'assistant').length, 1, '她自己的聊天照常得到回复');
+    const result = host.db.prepare('SELECT state,result_code FROM background_runs WHERE id=?').get(run.id);
+    assert.deepEqual({ ...result }, { state: 'noop', result_code: stop === 'goodnight' ? 'KEEPWARM_RESTING' : 'KEEPWARM_SLEEP_WINDOW' });
+    const projection = JSON.parse(String(host.db.prepare("SELECT payload_ref FROM outbox WHERE target='content_heartbeat_projection'").get()?.payload_ref));
+    assert.equal(projection.state, 'interrupted');
+    assert.deepEqual(projection.terminal, { status: 'cancelled', reason: stop === 'goodnight' ? 'rest' : 'sleep' });
+    assert.equal(projection.messages.some((ref: { messageId: string }) => history.messages.some(message => message.speaker === 'assistant' && message.id === ref.messageId)), false);
+    assert.equal(host.db.prepare('SELECT count(*) n FROM background_dispatches WHERE run_id=?').get(run.id)?.n, 1, '已发出的请求和费用保留');
+    assert.equal(new ConversationActivityService(host.db).resting('primary'), stop === 'goodnight');
+
+    const retained = new WindowTrajectoryService(host.db).forWindow(windowId)!;
+    assert.equal(retained.messages.filter(isInvite).length, 1);
+    assert.equal(retained.messages.filter(isTalkReply).length, 0, '没说出口的话不成为下一轮的协议历史');
+    const next = (JSON.parse(String(host.db.prepare("SELECT payload_json FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL").get(owner.turn_id)?.payload_json)) as { messages: OrMessage[] }).messages;
+    assert.equal(next.filter(isTalkReply).length, 0);
+    assert.equal(setup.requests(), 3, '不为“让她知道”再开模型轮，也不重发');
+    if (lane === 'sdk') assert.equal(setup.sdkReplayedTalks(), 0);
   });
 }

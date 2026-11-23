@@ -2,7 +2,7 @@
 // 后台模型回路执行器整链（04/05/06 §2/§4；K-01/K-12/K-13、C-01/C-02/C-07、B-01/B-10 面）。
 // 2026-10-22 改写：保温零工具封锁（CW-13）与 128 输出封锁退役——心跳=完整回合；
 // v1.2 心跳邀请及工具回执走同一会话串行链，维护时钟经活动投影 CAS。
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { makeFixtureToolsResident, assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -51,7 +51,7 @@ const latestUserContent = (payload: Record<string, unknown>): string => {
 const isHeartbeat = (payload: Record<string, unknown>): boolean => latestUserContent(payload).includes('[心跳唤醒]');
 const isSelfWake = (payload: Record<string, unknown>): boolean => latestUserContent(payload).includes('[Host self-wake;');
 
-function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' | 'deferred' = 'legacy') {
+function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0, toolMode: 'legacy' | 'direct' | 'deferred' = 'legacy', keepwarmEnabled?: () => boolean) {
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: toolMode }, openrouter: { model: MODEL }, background: { keepwarm: { sleep_window: { enabled: sleepEnabled } } } });
   const paths = buildPaths(root);
@@ -76,7 +76,7 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
     kind: 'moments', namespace: 'content', id: `fixture-${index + 1}`, revision: 1,
     identity: `content:moments:fixture-${index + 1}`, permissionScope: conversationId,
   }));
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, heartbeat, now: () => nowRef.nowMs });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, heartbeat, now: () => nowRef.nowMs, ...(keepwarmEnabled ? { keepwarmEnabled } : {}) });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);
   return { root, db, config, messages, supervisor, alerts, media, tools, bgSettings, trajectory, windows, activity };
@@ -518,3 +518,149 @@ for (const mode of ['legacy', 'direct', 'deferred'] as const) {
     assert.equal(ctx.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE client_message_id='after-finish'").get()?.n, 0);
   });
 }
+
+/** 22:59 已发出请求，23:00 之后才回来的正文；以及 21:00 生成途中休息成立或开关关闭。
+ *  派发、费用和已真实发出的消息照常保留，正文不进聊天。 */
+async function replyAfterBoundary(t: Pick<TestContext, 'after'>, options: {
+  hold: 'sleep' | 'rest' | 'disabled'; reply: 'final' | 'before-tool' | 'after-a-real-tool-send';
+}): Promise<void> {
+  const boundary = options.hold === 'sleep' ? Date.parse('2026-10-23T23:00:00+08:00') : Date.parse('2026-10-23T21:00:00+08:00');
+  const nowRef = { nowMs: options.hold === 'sleep' ? boundary - 1_000 : boundary };
+  const switchState = { on: true };
+  let heartbeatRequests = 0;
+  let crossesBoundary = (): void => {};
+  const speechBeforeTool = '这句正文不该发出';
+  const toolSpeech = '工具也不该发出';
+  const finalSpeech = '23 点之后才生成的回复';
+  const transport: OrTransport = async (payload) => {
+    if (!isHeartbeat(payload)) return { status: 200, headers: new Map(), body: Readable.from([enc.encode(chatBody('收到'))]) };
+    const late = options.reply !== 'after-a-real-tool-send' || heartbeatRequests++ > 0;
+    if (late) crossesBoundary();
+    if (options.reply === 'after-a-real-tool-send' && !late) {
+      return { status: 200, headers: new Map(), body: Readable.from([enc.encode(toolCallBody([{ id: 'real-send', name: 'chat_send_text', args: JSON.stringify({ text: '睡前经工具发出的一句', idempotency_key: 'real-send' }) }]))]) };
+    }
+    if (options.reply === 'before-tool') {
+      return { status: 200, headers: new Map(), body: Readable.from([enc.encode(
+        sse({ id: 'gen-late-speech', choices: [{ delta: { content: speechBeforeTool, tool_calls: [{ index: 0, id: 'late-send', type: 'function', function: { name: 'chat_send_text', arguments: JSON.stringify({ text: toolSpeech, idempotency_key: 'late-send' }) } }] } }] })
+        + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 500, completion_tokens: 10, cost: 0.001 } }) + DONE)]) };
+    }
+    return { status: 200, headers: new Map(), body: Readable.from([enc.encode(chatBody(finalSpeech))]) };
+  };
+  const ctx = compose(tempRoot('wp4-late-speech-'), transport, nowRef, true, 0, 'legacy', () => switchState.on);
+  crossesBoundary = () => {
+    nowRef.nowMs = boundary;
+    if (options.hold === 'rest') ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight', atIso: new Date().toISOString() });
+    if (options.hold === 'disabled') switchState.on = false;
+  };
+  await seedChatTurn(ctx, 'late-speech');
+  const { scheduler, run } = readySleepBoundaryRun(ctx, nowRef);
+  t.after(() => { scheduler.stop(); ctx.db.close(); fs.rmSync(ctx.root, { recursive: true, force: true }); });
+  const assistantCount = () => (ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant'").get() as { n: number }).n;
+  const published = (text: string) => (ctx.db.prepare("SELECT COUNT(*) n FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE r.content=?").get(text) as { n: number }).n;
+  const dispatches = (kind: string) => (ctx.db.prepare("SELECT COUNT(*) n FROM background_dispatches WHERE dispatch_kind=?").get(kind) as { n: number }).n;
+  const before = assistantCount();
+  const result = await ctx.supervisor.enqueueBackground('c1', run);
+  const code = options.hold === 'sleep' ? 'KEEPWARM_SLEEP_WINDOW' : options.hold === 'rest' ? 'KEEPWARM_RESTING' : 'KEEPWARM_DISABLED';
+  // The request really left before the boundary: its dispatch, cost and invitation stay on record.
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM messages WHERE client_message_id='heartbeat:sleep-run:invite'").get() as { n: number }).n, 1);
+  assert.equal(dispatches('model'), options.reply === 'after-a-real-tool-send' ? 2 : 1);
+  assert.equal(published(finalSpeech) + published(speechBeforeTool) + published(toolSpeech), 0, '被拦的正文和工具发送都没有进入聊天');
+  const projection = JSON.parse(String(ctx.db.prepare("SELECT payload_ref FROM outbox WHERE operation_key='heartbeat-moment:sleep-run'").get()?.payload_ref)) as { state: string; terminal: unknown };
+  assert.deepEqual(projection.terminal, { status: 'cancelled', reason: options.hold === 'disabled' ? 'other' : options.hold });
+  if (options.reply === 'after-a-real-tool-send') {
+    assert.deepEqual(result, { outcome: 'noop', result_code: code });
+    assert.equal(assistantCount(), before + 1, '只有睡前经工具真实发出的那一句');
+    assert.equal(published('睡前经工具发出的一句'), 1);
+    assert.equal(projection.state, 'talked');
+    assert.equal(dispatches('tool'), 1);
+  } else if (options.reply === 'before-tool') {
+    assert.deepEqual(result, { outcome: 'completed', result_code: code });
+    assert.equal(assistantCount(), before);
+    assert.equal(projection.state, 'interrupted');
+    assert.equal(dispatches('tool'), 0, '23 点后的工具发送不派发');
+  } else {
+    assert.deepEqual(result, { outcome: 'noop', result_code: code });
+    assert.equal(assistantCount(), before);
+    assert.equal(projection.state, 'interrupted');
+  }
+  // Nothing is resent: the next ordinary turn publishes none of it and starts no extra heartbeat.
+  const heartbeatTurns = (ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='cache_keepalive'").get() as { n: number }).n;
+  await seedChatTurn(ctx, 'after-boundary');
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='cache_keepalive'").get() as { n: number }).n, heartbeatTurns);
+  assert.equal(published(finalSpeech) + published(speechBeforeTool) + published(toolSpeech), 0);
+  if (options.reply !== 'before-tool') {
+    // The model continues from what she could actually read, not from a reply that was held back.
+    const next = ctx.db.prepare("SELECT payload_json FROM provider_requests WHERE purpose='chat' ORDER BY rowid DESC LIMIT 1").get() as { payload_json: string };
+    assert.equal(String(next.payload_json).includes(finalSpeech), false, '被拦的最终正文不进入下一轮的模型协议');
+    assert.ok(String(next.payload_json).includes('[心跳唤醒]'), '已真实发出的邀请照常留在协议里');
+  }
+}
+
+for (const hold of ['sleep', 'rest', 'disabled'] as const) {
+  test(`T-A03：22:59 派发、23:00 后返回的最终正文受发布门约束（${hold}）`, async (t) => {
+    await replyAfterBoundary(t, { hold, reply: 'final' });
+  });
+}
+for (const hold of ['sleep', 'rest'] as const) {
+  test(`T-A03：23:00 后返回的“正文+工具调用”里正文不发、工具不派发（${hold}）`, async (t) => {
+    await replyAfterBoundary(t, { hold, reply: 'before-tool' });
+  });
+}
+test('T-A03：睡前经工具真实发出的一句保留，23:00 后返回的后续正文不发，不重跑也不重发', async (t) => {
+  await replyAfterBoundary(t, { hold: 'sleep', reply: 'after-a-real-tool-send' });
+});
+
+test('T-A04/T-A07：21:00 的晚安只拦心跳——排队的心跳在任何牌组模式下零派发，自主预约照常执行并经工具发言', async (t) => {
+  // Outside the fixed night window, so rest is the only thing that can stop the heartbeat.
+  const nowRef = { nowMs: Date.parse('2026-10-23T21:00:00+08:00') };
+  const requests: string[] = [];
+  const ctx = compose(tempRoot('wp4-rest-scope-'), async (payload) => {
+    const latest = latestUserContent(payload);
+    if (isSelfWake(payload)) {
+      requests.push('wake');
+      return { status: 200, headers: new Map(), body: Readable.from([enc.encode(requests.length === 1
+        ? toolCallBody([{ id: 'wake-send', name: 'chat_send_text', args: JSON.stringify({ text: '到点了，这是预约要说的话', idempotency_key: 'wake-send' }) }])
+        : toolCallBody([{ id: 'wake-done', name: 'background_complete', args: '{"outcome":"done"}'}], { prompt_tokens: 500, completion_tokens: 5, cost: 0.001 }))] ) };
+    }
+    return { status: 200, headers: new Map(), body: Readable.from([enc.encode(chatBody('收到'))]) };
+  }, nowRef);
+  setPrice(ctx.db);
+  await seedChatTurn(ctx, 'rest-scope');
+  const { scheduler, run } = readySleepBoundaryRun(ctx, nowRef);
+  ctx.bgSettings.applyUpdate({ expectedRevision: 1, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 1 } });
+  t.after(() => { scheduler.stop(); ctx.db.close(); fs.rmSync(ctx.root, { recursive: true, force: true }); });
+  const iso = new Date(nowRef.nowMs).toISOString();
+  ctx.db.prepare("INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at) VALUES ('wake-task','c1','jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',?,'jiaming','self_schedule',?,?)")
+    .run(iso, iso, JSON.stringify({ note: '合成预约' }), iso, iso);
+  ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('wake-run','wake-task','c1','jiaming','autonomous',1,'wake:rest-scope','claimed',?,?)").run(iso, iso);
+  const wake = () => ctx.supervisor.enqueueBackground('c1', () => ctx.supervisor.runBackgroundTurn({
+    kind: 'autonomous', runId: 'wake-run', conversationId: 'c1', payload: {}, isCancelRequested: () => false, registerAbort: () => {},
+    recordDispatch: (info) => scheduler.recordDispatchStart({ runId: 'wake-run', ...info, capabilityName: null }), maxModelRequests: 4,
+  }));
+
+  // 休息在心跳开始前已成立：未读牌组就结束，抽卡轮和十张耗尽后的“回 1”走的是同一个门。
+  assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight', atIso: iso }), true);
+  assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight-again', atIso: iso }), false, '重复晚安不改动已成立的休息');
+  const begin = t.mock.method(ctx.supervisor['d'].heartbeat!, 'begin');
+  assert.deepEqual(await ctx.supervisor.enqueueBackground('c1', run), { outcome: 'noop', result_code: 'KEEPWARM_RESTING', detail: '乔乔已休息：等她明确回来或手动恢复' });
+  assert.equal(begin.mock.callCount(), 0, '没有读取牌组，也就没有抽卡轮或回 1 的分别');
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='cache_keepalive'").get() as { n: number }).n, 0);
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM background_dispatches WHERE run_id='sleep-run'").get() as { n: number }).n, 0);
+
+  // 同一时段的明确自主预约不受影响：照常执行，并经工具正式发言。
+  assert.deepEqual(await wake(), { outcome: 'completed', result_code: 'complete:done' });
+  assert.equal(requests.length, 2);
+  assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM messages m JOIN message_revisions r ON r.message_id=m.id WHERE r.content='到点了，这是预约要说的话'").get() as { n: number }).n, 1);
+
+  // 她明确回来后，仍按原真实活动和缓存资格计算：预约那次真实请求已把目标推后 50 分钟。
+  assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'resume', source: 'owner_message', messageId: 'owner-morning', atIso: iso }), true);
+  assert.equal(ctx.activity.resting('c1'), false);
+  assert.deepEqual(await ctx.supervisor.enqueueBackground('c1', run), { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '目标已被新证据推后' }, '恢复不重排锚点，也不补偿休息期间的机会');
+  // 五十分钟过去，期间没有新的真实消息。
+  nowRef.nowMs += 3_000_001;
+  const anchor = new Date(nowRef.nowMs - 3_000_001).toISOString();
+  ctx.db.prepare("UPDATE conversation_activity SET last_real_activity_at=?, maintenance_request_id=NULL WHERE conversation_id='c1'").run(anchor);
+  ctx.db.prepare('UPDATE provider_requests SET dispatch_started_at=?').run(anchor);
+  assert.deepEqual(await ctx.supervisor.enqueueBackground('c1', run), { outcome: 'completed', result_code: 'complete:done' });
+  assert.equal(begin.mock.callCount(), 1);
+});

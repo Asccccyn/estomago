@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowLeft, HeartPulse, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { EstomagoClient } from './chat-client'
+import { keepwarmStatusText, type KeepwarmStatus } from './background-controls-model'
 import {
   assetPath, ContentRequestError, operationKey, readContent, referencePath, writeContent,
   type AssetInfo, type ContentEntry, type ContentPage, type DeliveryState, type HeartbeatState, type SourceBlock,
@@ -107,7 +108,7 @@ const background = new EstomagoClient()
 
 function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
   const [status, setStatus] = useState<HeartbeatState | null>(null)
-  const [settings, setSettings] = useState<{ revision: number; enabled: boolean; livingRoom: boolean } | null>(null)
+  const [settings, setSettings] = useState<{ revision: number; enabled: boolean; livingRoom: boolean; status?: KeepwarmStatus; sleepWindow?: { start: string; end: string; timezone: string } } | null>(null)
   const [statusError, setStatusError] = useState<string | null>(null)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -127,7 +128,8 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     try {
       const next = await background.backgroundSettings()
       if (signal?.aborted) return
-      setSettings({ revision: next.revision, enabled: next.keepwarm?.enabled === true, livingRoom: next.keepwarm?.include_living_room === true })
+      setSettings({ revision: next.revision, enabled: next.keepwarm?.enabled === true, livingRoom: next.keepwarm?.include_living_room === true,
+        status: next.keepwarm_status, sleepWindow: next.keepwarm?.sleep_window })
       setSettingsError(null)
     } catch (error) {
       if (signal?.aborted) return
@@ -160,6 +162,15 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     } finally { setBusy(false) }
   }
 
+  // Only an explicit resume from here or her own words ends the rest; nothing else here changes it.
+  async function resume() {
+    if (busy) return
+    setBusy(true); setSettingsError(null)
+    try { await background.backgroundResumeHeartbeat(operationKey('keepwarm-resume')); await loadSettings(); await loadStatus() }
+    catch (error) { setSettingsError(errorMessage(error)) }
+    finally { setBusy(false) }
+  }
+
   return <section className={`${cardClass} space-y-3`} aria-label="心跳状态">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex items-center gap-2"><HeartPulse size={18} />
@@ -175,6 +186,10 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
         onClick={() => void toggle('include_living_room')} disabled={!settings || busy}>{settings?.livingRoom ? '已加入' : '未加入'}</button>
       <span className={mutedClass}>今日已固定的牌不会换号补牌。</span>
     </div>
+    {settings?.status?.resting && <div className="flex flex-wrap items-center gap-2" role="status">
+      <span className={mutedClass}>{keepwarmStatusText(settings.status, settings.sleepWindow, dateLabel)}</span>
+      <button type="button" className={actionClass} disabled={busy} onClick={() => void resume()}>恢复心跳</button>
+    </div>}
     {settingsError && <p role="alert" className={errorClass}>{settingsError}</p>}
     {statusError && <p role="status" className={mutedClass}>今日牌组暂不可读取。{statusError}</p>}
     {status && <>

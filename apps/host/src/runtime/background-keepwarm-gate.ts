@@ -21,6 +21,7 @@ export function keepwarmDispatchGate(input: {
   // —— 执行位内重算（05 §派发门与异常；不用 tick 快照）——
   const act = input.activity?.get(input.conversationId) ?? null;
   if (!act || act.last_real_activity_at === null) return noop('KEEPWARM_NO_REAL_ACTIVITY', '无真实活动');
+  if (act.resting === 1) return noop('KEEPWARM_RESTING', '乔乔已休息：等她明确回来或手动恢复');
   if (input.inputActivityRevision !== null && input.inputActivityRevision !== act.activity_revision) {
     return noop('KEEPWARM_SUPERSEDED', '新真实消息已使本维护候选失效');
   }

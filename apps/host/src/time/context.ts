@@ -23,15 +23,20 @@ export type TimeContext = {
   crossed_business_date: boolean;
 };
 
-/** Frozen request time plus the interval between consecutive user sends. */
-export function modelTimeContextText(tc: TimeContext): string {
+/** The clock line ordinary chat and heartbeat host events share: business timezone, minute precision. */
+export function modelClockText(nowIso: string, timezone: string): string {
   const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
-    timeZone: tc.business_timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
     weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
     timeZoneName: 'shortOffset',
-  }).formatToParts(new Date(tc.now_at_utc)).map(p => [p.type, p.value]));
+  }).formatToParts(new Date(nowIso)).map(p => [p.type, p.value]));
   const zone = parts.timeZoneName!.replace('GMT', 'UTC');
-  const text = `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${parts.weekday} ${zone}`;
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute} ${parts.weekday} ${zone}`;
+}
+
+/** Frozen request time plus the interval between consecutive user sends. */
+export function modelTimeContextText(tc: TimeContext): string {
+  const text = modelClockText(tc.now_at_utc, tc.business_timezone);
   const interval = tc.elapsed_before_current_user_message;
   if (interval === null) return text;
   // Internal isoDuration produces nonnegative hours/minutes/seconds. Truncate

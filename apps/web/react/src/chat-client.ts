@@ -148,6 +148,8 @@ export class EstomagoClient {
     this.request('/background/tasks/' + encodeURIComponent(id), this.json('PUT', body, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
   backgroundCancelTask = (id: string, ifMatch: number, opKey: string): Promise<Json> =>
     this.request('/background/tasks/' + encodeURIComponent(id), {method:'DELETE',headers:{'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}})
+  backgroundResumeHeartbeat = (opKey: string): Promise<Json> =>
+    this.request('/background/heartbeat/resume', {method:'POST',headers:{'Idempotency-Key':opKey}})
   backgroundRuns = (cursor?: string | null): Promise<Json> => this.request('/background/runs' + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''))
   backgroundStopRun = (id: string, opKey: string): Promise<Json> =>
     this.request('/background/runs/' + encodeURIComponent(id) + '/stop', {method:'POST',headers:{'Idempotency-Key':opKey}})

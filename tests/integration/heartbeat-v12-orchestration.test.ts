@@ -10,7 +10,7 @@ import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import type { MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { WishstarClient } from '../../apps/host/src/integrations/wishstar/client.ts';
 import { HeartbeatCards, type HeartbeatSource } from '../../apps/host/src/modules/heartbeat/service.ts';
-import { heartbeatBusinessDate, type HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
+import { heartbeatBusinessDate } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { HeartbeatSources, type CardPayload } from '../../apps/host/src/modules/heartbeat/sources.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { lastCacheEvidence } from '../../apps/host/src/runtime/cache-observation.ts';
@@ -875,46 +875,43 @@ test('T48: tool-only rejection closes with no additional request and its once-re
   assert.equal(next.some(message => message.role === 'assistant' && text(message) === '1'), false);
 });
 
-test('T18: a concise invitation requires the same-day full invitation in the retained context', async t => {
+test('the invitation is short, carries the clock of this run and only the numbers still available', async t => {
   const ctx = await fixture(t);
   await ctx.chat('建立聊天窗');
-  const original = ctx.trajectory.forWindow(ctx.windowId())!;
+  const shanghaiMinute = (date: Date) => {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(date).map(part => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+  };
   const invite = async () => {
     ctx.elapsed();
+    const openedAt = new Date();
     ctx.replies.push(noop());
     await ctx.scheduler.tick();
-    assert.equal(ctx.latestRun().result_code, 'complete:noop');
-    return text(ctx.wire.at(-1)?.messages.findLast(message => message.role === 'user'));
+    const prompt = text(ctx.wire.at(-1)?.messages.findLast(message => message.role === 'user'));
+    const minutes = [shanghaiMinute(openedAt), shanghaiMinute(new Date())];
+    assert.ok(minutes.some(minute => prompt.startsWith(`[心跳唤醒] ${minute}`)), `clock is read when the run is prepared: ${prompt.slice(0, 40)}`);
+    return prompt;
   };
   const first = await invite();
   ctx.seedNineCards();
   const second = await invite();
   for (const prompt of [first, second]) {
-    assert.match(prompt, /想和乔乔说话.*想抽盲盒/s);
+    // Speaking, drawing and ending quietly are parallel choices; the rule
+    // text about the fixed deck and the per-turn limit is no longer repeated.
+    // Whatever the frozen window appends (task definition) follows the host event.
+    assert.match(prompt, /^\[心跳唤醒\] \d{4}-\d{2}-\d{2} \d{2}:\d{2} \w{3} UTC\+8\n醒了。可以直接找乔乔说话，也可以先抽一张，再决定要不要找她；也可以安静结束。\n可抽号码：[\d、]+。\n这一轮的聊天正文会直接发给乔乔。(?:\n\[tools\/task:[^\n]+\])?$/);
+    assert.doesNotMatch(prompt, /还是抽|这轮不抽卡|先查看工具定义|当天固定同一副|最多抽一张|user_gap|\[time_context\]/);
   }
-  assert.match(first, /可选号：1、2、3/);
-  assert.match(second, /可选号：1。/);
-  assert.match(first, /当天固定同一副十张牌/);
-  assert.doesNotMatch(second, /当天固定同一副十张牌/);
+  assert.match(first, /\n可抽号码：1、2、3、4、5、6、7、8、9、10。\n/);
+  assert.match(second, /\n可抽号码：1。\n/);
 
-  // Check prompt assembly using a valid retained snapshot without the tail.
-  // Sending against a shortened prefix would correctly be rejected by the
-  // separate outbound-history guard, so this part only prepares the invite.
-  const resumeRun = 'fixture-context-recovery';
-  const at = new Date().toISOString();
-  const previousRun = ctx.latestRun().id;
-  ctx.host.db.prepare(`
-    INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at)
-    SELECT ?, task_id, conversation_id, actor_id, kind, task_revision, ?, 'claimed', ?, ?
-    FROM background_runs WHERE id=?
-  `).run(resumeRun, resumeRun, at, at, previousRun);
-  const { heartbeat } = ctx.host as unknown as { heartbeat: HeartbeatRuntime };
-  const prepared = await heartbeat.begin({
-    runId: resumeRun, conversationId: 'primary', windowId: ctx.windowId(),
-    signal: new AbortController().signal, retainedMessages: original.messages,
-  });
-  assert.match(prepared.hostText, /可选号：1。/);
-  assert.match(prepared.hostText, /当天固定同一副十张牌/);
+  // A dispatched invitation is history: the next ordinary request carries it
+  // once, unchanged, and the frozen system prefix is not rebuilt for the clock.
+  const systemBefore = JSON.stringify(ctx.wire.at(-1)?.messages.filter(message => message.role === 'system'));
+  await ctx.chat('下一条自然输入');
+  const next = ctx.wire.at(-1)!.messages;
+  assert.equal(JSON.stringify(next.filter(message => message.role === 'system')), systemBefore);
+  assert.equal(next.filter(message => message.role === 'user' && text(message).startsWith(first)).length, 1);
 });
 
 test('T18: invalid number types receive two real corrections through the frozen integer tool', async t => {
@@ -964,4 +961,112 @@ test('R13: a second choice in the same live turn returns first-card metadata wit
   assert.equal(receipts.filter(message => text(message).includes(REVEAL)).length, 1);
   assert.equal(receipts.filter(message => 'heartbeat_card' in JSON.parse(text(message))).length, 1);
   assert.equal(ctx.projections().n, 1);
+});
+
+for (const hour of ['09:00', '21:00'] as const) {
+  test(`T-A04/T-A05/T-A07: ${hour} 明确晚安后心跳暂停到她明确回来；期间普通聊天照常，模型说话、补话、过午夜都不解除`, async t => {
+    t.mock.timers.enable({ apis: ['Date'], now: Date.parse(`2026-11-24T${hour}+08:00`) });
+    const ctx = await fixture(t);
+    const activity = new ConversationActivityService(ctx.host.db);
+    const heartbeats = () => (ctx.host.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind='keepwarm' AND task_id!='fixture-history'").get() as { n: number }).n;
+    const wake = async (): Promise<void> => { ctx.elapsed(); ctx.replies.push(asMessage('合成回复')); await ctx.scheduler.tick(); };
+    await ctx.chat('建立当前会话');
+    // 反例：引用、讨论功能、否定、继续聊天——都不是休息，心跳照常唤醒。
+    for (const line of ['昨天你说了晚安', '晚安这个功能怎么改', '我还不睡，先聊一会', '为什么说晚安还会叫醒', '“晚安”']) {
+      await ctx.chat(line);
+      const before = heartbeats();
+      await wake();
+      assert.equal(heartbeats(), before + 1, line);
+      assert.equal(activity.resting('primary'), false, line);
+    }
+    // 正例：白天或晚上的明确晚安，和固定夜间静默无关。
+    await ctx.chat('晚安，我睡了');
+    const state = activity.restState('primary');
+    assert.equal(state.resting, true);
+    assert.equal(state.source, 'owner_message');
+    const requests = ctx.wire.length;
+    const runs = heartbeats();
+    for (let tick = 0; tick < 3; tick++) await wake();
+    assert.equal(ctx.wire.length, requests, '多个 tick 都不再唤醒，也不发模型请求');
+    assert.equal(heartbeats(), runs);
+    assert.equal((ctx.host.db.prepare("SELECT next_due_at FROM background_tasks WHERE kind='keepwarm'").get() as { next_due_at: string | null }).next_due_at, null);
+    // 睡前补一句、重复晚安、孤立表情，以及char每轮的回复，都不因“有新消息”解除。
+    for (const line of ['爱你', '再抱一下', '晚安', '🌙']) {
+      await ctx.chat(line);
+      await wake();
+    }
+    assert.equal(ctx.wire.length, requests + 4, '只有普通聊天的请求，没有心跳请求');
+    assert.equal(activity.resting('primary'), true);
+    assert.equal(activity.restState('primary').decided_at, state.decided_at, '重复晚安不改动首次决定');
+    // 过午夜、到 08:00、日期变化都不自动恢复。
+    t.mock.timers.setTime(Date.parse('2026-11-25T08:00:00+08:00'));
+    await wake();
+    assert.equal(ctx.wire.length, requests + 4);
+    assert.equal(activity.resting('primary'), true);
+    // 明确回来：按既有真实活动重算，只发生一次正常心跳，不补休息期间的机会。
+    await ctx.chat('早安，我醒了');
+    assert.equal(activity.resting('primary'), false);
+    await wake();
+    assert.equal(ctx.wire.length, requests + 6, '一条普通聊天请求加一次心跳请求');
+    assert.equal(heartbeats(), runs + 1);
+    assert.match(text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user')), /^\[心跳唤醒\] 2026-11-25 08:0\d \w{3} UTC\+8\n/);
+  });
+}
+
+test('T-A06: 休息跨重启保留；晚安前已排队的心跳在执行时读到新决定；手动恢复只领取一次，不动总开关', async t => {
+  const root = tempRoot('heartbeat-rest-restart-');
+  const first = await fixture(t, CARDS, 'available', 0, { root });
+  const activityOf = () => new ConversationActivityService(first.host.db);
+  await first.chat('建立当前会话');
+  first.elapsed();
+  // 心跳已到期并被领取，但在会话串行链里排在一个未结束的步骤后面；这时她说了晚安。
+  let release!: () => void;
+  let markEntered!: () => void;
+  const entered = new Promise<void>(resolve => { markEntered = resolve; });
+  const blocked = first.host.supervisor.enqueueBackground('primary', () => new Promise<void>(resolve => { markEntered(); release = resolve; }));
+  await entered;
+  const ticking = first.scheduler.tick();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const queued = first.host.db.prepare("SELECT id FROM background_runs WHERE kind='keepwarm' AND state IN ('claimed','running') ORDER BY rowid DESC LIMIT 1").get() as { id: string };
+  const { scheduler } = first.host;
+  scheduler.notePendingUserChat();
+  first.host.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '晚安，我睡了', clientMessageId: 'goodnight-while-queued' });
+  assert.equal(activityOf().resting('primary'), true, '消息一被正式接受，休息即成立');
+  const requests = first.wire.length;
+  release();
+  await blocked;
+  await ticking;
+  const oldRun = first.host.db.prepare('SELECT state,result_code FROM background_runs WHERE id=?').get(queued.id) as { state: string; result_code: string };
+  assert.deepEqual({ ...oldRun }, { state: 'noop', result_code: 'KEEPWARM_RESTING' }, '已读旧状态的任务不能在晚安后继续');
+  assert.equal(first.wire.length, requests, '排队的那次心跳零模型请求');
+  await first.chat('睡前再说一句');
+  assert.equal(activityOf().resting('primary'), true);
+
+  // 重启：状态、总开关与排程都原样保留，恢复不靠回放旧消息。
+  const settingsBefore = first.host.db.prepare("SELECT enabled FROM background_tasks WHERE kind='keepwarm'").get();
+  // The fixture's own cleanup stops this host again at the end of the test.
+  const stopOnce = first.host.stop.bind(first.host);
+  let stopped = false;
+  t.mock.method(first.host, 'stop', async () => { if (!stopped) { stopped = true; await stopOnce(); } });
+  await first.host.stop();
+  const reopened = await fixture(t, CARDS, 'available', 0, { root, reopen: true });
+  const server = (reopened.host as unknown as { server: { listen(port: number, bind: string, ready: () => void): void } }).server;
+  t.mock.method(server, 'listen', (_port, _bind, ready) => ready());
+  await reopened.host.start();
+  assert.equal(new ConversationActivityService(reopened.host.db).resting('primary'), true);
+  assert.deepEqual(reopened.host.db.prepare("SELECT enabled FROM background_tasks WHERE kind='keepwarm'").get(), settingsBefore);
+  reopened.elapsed();
+  reopened.replies.push(asMessage('合成回复'));
+  await reopened.scheduler.tick();
+  assert.equal(reopened.wire.length, 0, '重启后的第一个 tick 不唤醒');
+
+  const resumed = new ConversationActivityService(reopened.host.db).resumeRest('primary', { actorId: 'qiaosheng', operationId: 'ui-resume' });
+  assert.equal(resumed.changed, true);
+  assert.equal(resumed.source, 'control');
+  await reopened.chat('继续聊');
+  reopened.elapsed();
+  reopened.replies.push(asMessage('合成回复'));
+  await reopened.scheduler.tick();
+  assert.equal(reopened.wire.length, 2, '恢复后是一次普通聊天和一次正常心跳');
+  assert.equal(new BackgroundSettingsService(reopened.host.db, reopened.host.config).effective().keepwarm.enabled, true, '总开关保持原样');
 });

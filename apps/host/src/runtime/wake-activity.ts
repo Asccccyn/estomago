@@ -6,6 +6,7 @@
 // 这是"哪个已发生事件控制当前排程"的投影，不是第二份聊天或缓存数据库——
 // 缓存读写量经 request_id 联 provider_requests/usage 派生，不在此复制。
 import type { Db } from '../db/connection.ts';
+import { tx } from '../db/connection.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 
 export type ConversationActivityRow = {
@@ -18,8 +19,20 @@ export type ConversationActivityRow = {
   maintenance_for_activity_revision: number | null;
   maintenance_window_id: string | null;
   maintenance_dispatch_started_at: string | null;
+  resting: number;
+  rest_decided_at: string | null;
+  rest_source: RestDecision['source'] | null;
+  rest_message_id: string | null;
   updated_at: string;
 };
+
+/** The owner's standing decision to pause the heartbeat until she is back.
+ *  It never counts as a real message and never moves the 50-minute anchor. */
+export type RestDecision =
+  | { kind: 'rest' | 'resume'; source: 'owner_message'; messageId: string; atIso: string }
+  | { kind: 'resume'; source: 'control'; atIso: string };
+
+export type RestState = { resting: boolean; decided_at: string | null; source: RestDecision['source'] | null };
 
 export class ConversationActivityService {
   private db: Db;
@@ -29,6 +42,52 @@ export class ConversationActivityService {
 
   get(conversationId: string): ConversationActivityRow | null {
     return (this.db.prepare('SELECT * FROM conversation_activity WHERE conversation_id = ?').get(conversationId) as ConversationActivityRow | undefined) ?? null;
+  }
+
+  resting(conversationId: string): boolean {
+    return this.get(conversationId)?.resting === 1;
+  }
+
+  restState(conversationId: string): RestState {
+    const row = this.get(conversationId);
+    return { resting: row?.resting === 1, decided_at: row?.rest_decided_at ?? null, source: row?.rest_source ?? null };
+  }
+
+  /** Call inside the transaction that accepts the owner's input or the control
+   *  operation. Repeating the current decision changes nothing. */
+  noteRestDecision(conversationId: string, decision: RestDecision): boolean {
+    if (decision.kind === 'rest') {
+      return Number(this.db.prepare(`
+        INSERT INTO conversation_activity(conversation_id, resting, rest_decided_at, rest_source, rest_message_id, updated_at)
+        VALUES (?, 1, ?, 'owner_message', ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET resting = 1, rest_decided_at = excluded.rest_decided_at,
+          rest_source = 'owner_message', rest_message_id = excluded.rest_message_id
+        WHERE conversation_activity.resting = 0
+      `).run(conversationId, decision.atIso, decision.messageId, decision.atIso).changes) === 1;
+    }
+    return Number(this.db.prepare(`
+      UPDATE conversation_activity SET resting = 0, rest_decided_at = ?, rest_source = ?, rest_message_id = NULL
+      WHERE conversation_id = ? AND resting = 1
+    `).run(decision.atIso, decision.source, conversationId).changes) === 1;
+  }
+
+  /** An explicit resume from the management page. The same operation key returns
+   *  its first result; the heartbeat's own switch and schedule are not touched. */
+  resumeRest(conversationId: string, operation: { actorId: string; operationId: string }): RestState & { changed: boolean; duplicate: boolean } {
+    return tx(this.db, () => {
+      const prior = this.db.prepare(`
+        SELECT response_json FROM background_operations
+        WHERE actor_id = ? AND conversation_id = ? AND action = 'heartbeat_resume' AND operation_id = ?
+      `).get(operation.actorId, conversationId, operation.operationId) as { response_json: string } | undefined;
+      if (prior) return { ...JSON.parse(prior.response_json) as RestState & { changed: boolean }, duplicate: true };
+      const changed = this.noteRestDecision(conversationId, { kind: 'resume', source: 'control', atIso: new Date().toISOString() });
+      const response = { ...this.restState(conversationId), changed };
+      this.db.prepare(`
+        INSERT INTO background_operations(actor_id, conversation_id, action, operation_id, request_hash, response_json, created_at)
+        VALUES (?, ?, 'heartbeat_resume', ?, 'resume', ?, ?)
+      `).run(operation.actorId, conversationId, operation.operationId, JSON.stringify(response), new Date().toISOString());
+      return { ...response, duplicate: false };
+    });
   }
 
   /** 真实发布（发布事务内调用，不加自有事务）。幂等回执路径（dup 命中）不会走到这里。 */

@@ -83,7 +83,7 @@ import { modelToolsAfterBindingRetirement, storedToolset } from './tool-discover
 import { catalogUsesLegacySequenceMarkers, stripLegacySequenceMarker } from './legacy-sequence-markers.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
 import { HEARTBEAT_DRAW_TOOL, type HeartbeatRuntime } from '../modules/heartbeat/runtime.ts';
-import type { HeartbeatMode } from '../modules/heartbeat/service.ts';
+import type { HeartbeatMode, HeartbeatSpeechHold } from '../modules/heartbeat/service.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -128,6 +128,8 @@ export type SupervisorDeps = {
   heartbeat?: HeartbeatRuntime;
   // WAKE_KEEPWARM_V1：后台派发让位检查（用户消息到来→心跳在安全边界让位，S-06）
   keepwarmYieldCheck?: (runId: string) => boolean;
+  /** 心跳总开关的当下值（发布前即时停止条件之一；未注入=不按开关拦）。 */
+  keepwarmEnabled?: () => boolean;
   /** WAKE_KEEPWARM_V1：可注入时钟（后台执行位重检/迟到判定用；测试虚拟推进）。 */
   now?: () => number;
   // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · WP5）：装配期有界复核+冻结注入块。
@@ -450,8 +452,7 @@ export class TurnSupervisor {
         return { outcome: 'failed', result_code: 'HEARTBEAT_TOOL_WINDOW_UNAVAILABLE' };
       }
       const prepared = await d.heartbeat.begin({
-        runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, signal: controller.signal,
-        retainedMessages: traj.messages,
+        runId: opts.runId, conversationId: opts.conversationId, signal: controller.signal, now: new Date(this.nowMs()),
       });
       if (controller.signal.aborted || opts.isCancelRequested() || d.keepwarmYieldCheck?.(opts.runId)) {
         return { outcome: 'noop', result_code: 'HEARTBEAT_CANCELLED_BEFORE_DISPATCH' };
@@ -556,6 +557,9 @@ export class TurnSupervisor {
     return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, loop,
       ...(d.heartbeat && heartbeatMode && heartbeatHostText !== null
         ? { heartbeat: { runtime: d.heartbeat, mode: heartbeatMode, hostText: heartbeatHostText } } : {}),
+      // Self-wake appointments and free activity keep their own contract; the
+      // sleep window and rest only stop the heartbeat.
+      speechHold: opts.kind === 'keepwarm' ? this.heartbeatSpeechHold(opts.conversationId) : null,
     });
   }
 
@@ -636,10 +640,11 @@ export class TurnSupervisor {
     const { db, heartbeat, trajectory } = this.d;
     const { turnId, attemptId, conversationId, windowId, background } = o;
     if (background?.kind !== 'keepwarm' || !turnId || !trajectory || !heartbeat) return;
+    const speechHold = this.heartbeatSpeechHold(conversationId);
     const eventRows = tx(db, () => {
       stageHeartbeatCheckpoint(db, { requestId, windowId, turnId, attemptId,
         batch: { tail, sentMessages }, confirmedSeen, heartbeatHostText: o.heartbeatHostText });
-      return o.heartbeatMode === 'draw'
+      return o.heartbeatMode === 'draw' && !speechHold
         ? heartbeat.publishRepliesInTx({ runId: background.runId, turnId, attemptId, conversationId }, tail, sentMessages.length).eventRows
         : [];
     });
@@ -842,8 +847,8 @@ export class TurnSupervisor {
         if (o.background) {
           if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
           if (o.background.kind === 'keepwarm') {
-            const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
-            if (sleep.blocked) throw new ContractError(sleep.code!);
+            const hold = this.keepwarmHold(o.conversationId);
+            if (hold) throw new ContractError(hold);
           }
           // S-06：心跳让位——用户消息已到来且本维护轮尚未开始新的付费请求（安全边界）
           if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
@@ -1016,8 +1021,9 @@ export class TurnSupervisor {
           return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, 'EXECUTION_CANCELLED');
         }
         if (o.background?.kind === 'keepwarm') {
-          const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
-          if (sleep.blocked) return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: sleep.code, errorMessage: '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, sleep.code!);
+          const hold = this.keepwarmHold(o.conversationId);
+          if (hold) return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: hold, errorMessage: hold === 'KEEPWARM_RESTING'
+            ? '乔乔已休息：心跳不再继续，已完成动作保留' : '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, hold);
         }
         // S-06：心跳安全边界让位——用户消息到来后不再分派后续工具；已执行工具的
         // 真实回执与已发布消息保留（不抹掉、不重复写），本轮按让位收口（completed：
@@ -1234,7 +1240,8 @@ export class TurnSupervisor {
           if (o.background) {
             if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
             if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
-            if (o.background.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ContractError('KEEPWARM_SLEEP_WINDOW');
+            const hold = o.background.kind === 'keepwarm' ? this.keepwarmHold(o.conversationId) : null;
+            if (hold) throw new ContractError(hold);
             const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id=?').get(o.background.runId) as { model_requests_started: number }).model_requests_started;
             if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
             // The official preflight has just confirmed included subscription
@@ -1285,7 +1292,10 @@ export class TurnSupervisor {
         executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages, argumentSource, completionBatch) => {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
           if (o.controller.signal.aborted || o.background?.isCancelRequested()) throw new ToolNotDispatched('EXECUTION_CANCELLED');
-          if (o.background?.kind === 'keepwarm' && keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs()).blocked) throw new ToolNotDispatched('KEEPWARM_SLEEP_WINDOW');
+          if (o.background?.kind === 'keepwarm') {
+            const hold = this.keepwarmHold(o.conversationId);
+            if (hold) throw new ToolNotDispatched(hold);
+          }
           if (o.background?.yieldRequested?.()) throw new ToolNotDispatched('KEEPWARM_YIELDED');
           o.background?.observeToolCall?.();
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
@@ -1395,6 +1405,22 @@ export class TurnSupervisor {
 
   /** WAKE_KEEPWARM_V1：后台执行位重检的统一时钟（测试可虚拟推进）。 */
   private nowMs(): number { return this.d.now?.() ?? Date.now(); }
+
+  /** Why a running heartbeat may not take its next step, read at the moment of
+   *  that step: the fixed sleep window, or the owner's standing rest decision. */
+  private keepwarmHold(conversationId: string): 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | 'KEEPWARM_RESTING' | null {
+    const sleep = keepwarmSleepState(this.d.config.background.keepwarm.sleep_window, this.nowMs());
+    if (sleep.blocked) return sleep.code!;
+    return this.d.activity?.resting(conversationId) ? 'KEEPWARM_RESTING' : null;
+  }
+
+  /** Why heartbeat speech may not enter the chat now. Card delivery, tool
+   *  facts, protocol and cost are unaffected; nothing is resent later. */
+  private heartbeatSpeechHold(conversationId: string): HeartbeatSpeechHold | null {
+    const hold = this.keepwarmHold(conversationId);
+    if (hold) return hold === 'KEEPWARM_RESTING' ? 'rest' : 'sleep';
+    return this.d.keepwarmEnabled?.() === false ? 'disabled' : null;
+  }
 
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
    *  非信封驱动（SDK/mock）返回 null。 */

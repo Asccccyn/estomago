@@ -20,9 +20,14 @@ if (route === 'GET /api/v1/background/settings') {
   // 08 精简返回：两个开关、revision、就绪、预算摘要 + 保温权威派生状态
   const sleep = keepwarmSleepState(es.keepwarm.sleep_window, Date.now());
   const activityRow = d.activity?.get('primary') ?? null;
+  const resting = activityRow?.resting === 1;
   const activeWindow = d.windows.activeWindow('primary');
   const frozenTools = activeWindow ? storedToolset(d.db, activeWindow.id) : null;
   const wakeToolAvailable = frozenTools ? frozenTools.catalog.some((tool) => tool.function.name === 'wake_manage') : null;
+  // The page may only show a time the scheduler can actually keep. A due point
+  // inside the sleep window, a resting owner or a closed switch pause the heartbeat.
+  let blockedReason: string | null = sleep.blocked ? sleep.code
+    : !es.keepwarm.enabled ? 'KEEPWARM_DISABLED' : resting ? 'KEEPWARM_RESTING' : null;
   let keepwarmStatus: Record<string, unknown> = { scheduled: false };
   if (d.activity && d.scheduler) {
     const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
@@ -36,9 +41,11 @@ if (route === 'GET /api/v1/background/settings') {
          ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC LIMIT 1`,
       ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined);
       const cacheStatus = !ev ? 'unknown' : (ev.started && Date.now() - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
+      if (blockedReason === null && target.scheduled && keepwarmSleepState(es.keepwarm.sleep_window, target.dueAtMs).blocked) blockedReason = 'KEEPWARM_SLEEP_WINDOW';
+      const scheduled = target.scheduled && blockedReason === null;
       keepwarmStatus = {
-        scheduled: target.scheduled && es.keepwarm.enabled && !sleep.blocked,
-        ...(target.scheduled && !sleep.blocked ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
+        scheduled,
+        ...(scheduled ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
         last_real_activity_at: activityRow?.last_real_activity_at ?? null,
         cache_status: cacheStatus,
       };
@@ -52,9 +59,20 @@ if (route === 'GET /api/v1/background/settings') {
     reminders: { enabled: es.reminders.enabled },
     executor_ready:{...(d.bgExecutorReady ?? {autonomous:false,keepwarm:false}),free_activity:d.bgExecutorReady?.autonomous ?? false},
     current_window: { id: activeWindow?.id ?? null, wake_manage_available: wakeToolAvailable, requires_normal_rotation: activeWindow !== null && wakeToolAvailable === false },
-    keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: sleep.code, local_time: sleep.local_time },
+    keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: blockedReason, local_time: sleep.local_time,
+      resting, rest_decided_at: activityRow?.rest_decided_at ?? null, rest_source: activityRow?.rest_source ?? null },
     notice: '预约唤醒、心跳保温、额外自由活动分别控制。关闭只停止对应来源的新执行及后续步骤，已完成动作与费用保留。',
   });
+}
+// An explicit resume from the management page. It clears the owner's standing rest
+// decision only: no chat message is created, the 50-minute anchor and the heartbeat
+// switch stay as they are, and the same operation key replays its first result.
+if (route === 'POST /api/v1/background/heartbeat/resume') {
+  if (!d.activity) return json(res, 503, { error: { code: 'background_unavailable', message: '心跳服务未装配' } });
+  const opKey = String(req.headers['idempotency-key'] ?? '');
+  if (!opKey || opKey.length > 200) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少或过长的 Idempotency-Key' } });
+  const result = d.activity.resumeRest('primary', { actorId: 'qiaosheng', operationId: opKey });
+  return json(res, 200, { resting: result.resting, changed: result.changed, duplicate: result.duplicate });
 }
 if (route === 'PUT /api/v1/background/settings') {
   if (!d.bgSettings) return json(res, 503, { error: { code: 'background_unavailable', message: '后台服务未装配' } });

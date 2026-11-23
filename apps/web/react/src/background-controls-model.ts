@@ -20,3 +20,32 @@ export function appendBackgroundPage<T extends Record<string, any>>(previous: T[
 }
 
 export const backgroundTaskStatus: Record<string, string> = { scheduled: '已预约', completed: '已完成', cancelled: '已取消', needs_review: '待核对' }
+
+export type KeepwarmStatus = {
+  scheduled?: boolean
+  blocked_reason?: string | null
+  sleep_window_active?: boolean
+  next_keepwarm_at?: string
+  next_keepwarm_basis?: string
+  resting?: boolean
+  rest_decided_at?: string | null
+}
+
+/** Words for the eligibility the server reports. The page never derives a schedule of its own. */
+export function keepwarmStatusText(
+  status: KeepwarmStatus | undefined,
+  sleepWindow: { start: string; end: string; timezone: string } | undefined,
+  formatTime: (iso: string) => string,
+): string {
+  const window = sleepWindow ? `（${sleepWindow.start}–${sleepWindow.end}，${sleepWindow.timezone}）` : ''
+  switch (status?.blocked_reason) {
+    case 'KEEPWARM_DISABLED': return '心跳保温已关闭'
+    case 'KEEPWARM_RESTING': return `休息中：乔乔说晚安后暂停，等她明确醒来或在这里恢复${status.rest_decided_at ? `（${formatTime(status.rest_decided_at)} 起）` : ''}`
+    case 'KEEPWARM_SLEEP_CONFIG_INVALID': return '睡眠时段配置无效，心跳已暂停'
+    case 'KEEPWARM_SLEEP_WINDOW': return status.sleep_window_active ? `睡眠时段暂停${window}` : `下次到点落在睡眠时段，届时暂停${window}`
+    default: break
+  }
+  return status?.scheduled && status.next_keepwarm_at
+    ? `下次 ${formatTime(status.next_keepwarm_at)}（${status.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）`
+    : '暂无排程（还没有真实聊天）'
+}

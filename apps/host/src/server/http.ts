@@ -333,6 +333,7 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     if (route === 'GET /api/v1/background/settings' || route === 'PUT /api/v1/background/settings'
       || route === 'GET /api/v1/background/tasks' || route === 'POST /api/v1/background/tasks'
       || route === 'POST /api/v1/background/free-activity'
+      || route === 'POST /api/v1/background/heartbeat/resume'
       || route === 'GET /api/v1/background/runs'
       || /^GET \/api\/v1\/background\/tasks\/([^/]+)$/.test(route)
       || /^PUT \/api\/v1\/background\/tasks\/([^/]+)$/.test(route)

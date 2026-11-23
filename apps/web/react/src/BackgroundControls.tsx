@@ -4,7 +4,7 @@
 // 后端定时器不受页面隐藏/关闭影响；本组件只读状态与发起管理操作，不在 mount 时创建任务。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EstomagoClient } from './chat-client'
-import { appendBackgroundPage, backgroundInputTime, backgroundInputToIso, backgroundTaskStatus } from './background-controls-model'
+import { appendBackgroundPage, backgroundInputTime, backgroundInputToIso, backgroundTaskStatus, keepwarmStatusText } from './background-controls-model'
 
 type Json = Record<string, any>
 type Control = 'autonomous' | 'keepwarm' | 'free_activity'
@@ -159,6 +159,13 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
   }
 
   const kw = settings?.keepwarm_status ?? {}
+  const resumeKeepwarm = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true); setError(null)
+    try { await client.backgroundResumeHeartbeat(`ui-keepwarm-resume-${Date.now()}`); void refresh() }
+    catch (e) { setError((e as Error).message || '恢复失败') }
+    finally { setBusy(false) }
+  }
   const openRun = (runs ?? []).find((r) => ['claimed', 'running', 'cancelling'].includes(r.state))
 
   return (
@@ -187,11 +194,17 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 <span>
                   <span className="block">心跳保温</span>
                   <span className="block text-[11.5px] text-[#8a8780]">
-                    {kw.blocked_reason === 'KEEPWARM_SLEEP_WINDOW' ? `睡眠时段暂停（${settings.keepwarm.sleep_window.start}–${settings.keepwarm.sleep_window.end}，${settings.keepwarm.sleep_window.timezone}）` : kw.blocked_reason === 'KEEPWARM_SLEEP_CONFIG_INVALID' ? '睡眠时段配置无效，心跳已暂停' : kw.scheduled ? `下次 ${fmtTime(kw.next_keepwarm_at)}（${kw.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）` : '暂无排程（无真实活动或未开启）'}
+                    {keepwarmStatusText(kw, settings.keepwarm?.sleep_window, fmtTime)}
                   </span>
                 </span>
                 <input type="checkbox" checked={settings.keepwarm?.enabled === true} disabled={busy} onChange={() => void toggle('keepwarm')} />
               </label>
+              {kw.resting === true && (
+                <div className="flex items-center justify-between rounded-2xl bg-[#f3f1ea] px-3 py-2 text-[12.5px]" role="status">
+                  <span>心跳正在休息，不唤醒char</span>
+                  <button className="text-[#a4552f]" disabled={busy} onClick={() => void resumeKeepwarm()}>恢复心跳</button>
+                </div>
+              )}
               <label className="flex items-center justify-between rounded-2xl border border-black/5 bg-white px-3 py-2.5">
                 <span><span className="block">自由活动</span><span className="block text-[11.5px] text-[#8a8780]">非预约的额外自主任务；预约与心跳单独控制</span></span>
                 <input type="checkbox" checked={settings.free_activity?.enabled === true} disabled={busy} onChange={() => void toggle('free_activity')} />

@@ -13,16 +13,23 @@ import type { ManifestEntry } from '../../context/review-policy.ts';
 import { ContractError } from '../../runtime/or-contract.ts';
 import type { OrMessage } from '../../runtime/or-payload.ts';
 import { readTurnCompletion } from '../../runtime/turn-completion.ts';
+import { modelClockText } from '../../time/context.ts';
 import { genId } from '../../util/id.ts';
 import type { ArchiveService } from '../archives/service.ts';
 import { OidoSourceRepository } from '../oido/source-repository.ts';
-import { canDrawHeartbeat, heartbeatContentKindAtPath, heartbeatContentSourcePath, HEARTBEAT_DRAW_TOOL, HeartbeatCards, type HeartbeatMode } from './service.ts';
+import { canDrawHeartbeat, heartbeatContentKindAtPath, heartbeatContentSourcePath, HEARTBEAT_DRAW_TOOL, HeartbeatCards, type HeartbeatMode, type HeartbeatSpeechHold } from './service.ts';
 import { HeartbeatSources } from './sources.ts';
 import { heartbeatActions } from './actions.ts';
 
 export { HEARTBEAT_DRAW_TOOL } from './service.ts';
 const PROJECTION_TARGET = 'content_heartbeat_projection';
-const DRAW_RULES = '当天固定同一副十张牌，已用的号码不可再抽，每个逻辑回合最多抽一张。';
+
+/** Host tail event. The clock is read when this run is prepared for dispatch; the
+ *  frozen system prefix is never rebuilt to carry a time. */
+function wakeEvent(now: Date | undefined, body: readonly string[]): string {
+  // The leading marker is the stable host-source label; only the clock after it changes per run.
+  return [`[心跳唤醒] ${modelClockText((now ?? new Date()).toISOString(), 'Asia/Shanghai')}`, ...body].join('\n');
+}
 
 export function heartbeatBusinessDate(now = new Date()): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
@@ -58,6 +65,8 @@ type HeartbeatFinish = {
   completed: boolean;
   hadSent: boolean;
   terminal?: NonNullable<HeartbeatProjection['terminal']>;
+  /** A stop condition at publication time: generated speech is neither sent now, resent later, nor shown as a reply. */
+  speechHold?: HeartbeatSpeechHold | null;
 };
 
 export class HeartbeatRuntime {
@@ -89,7 +98,7 @@ export class HeartbeatRuntime {
     this.cards = new HeartbeatCards(db, Date.now, source => this.sources.candidateEnabled(source));
   }
 
-  async begin(input: { runId: string; conversationId: string; windowId: string; signal: AbortSignal; retainedMessages: OrMessage[] }): Promise<{
+  async begin(input: { runId: string; conversationId: string; signal: AbortSignal; now?: Date }): Promise<{
     mode: HeartbeatMode; hostText: string; unavailable?: HeartbeatSource['kind'][];
   }> {
     const businessDate = heartbeatBusinessDate();
@@ -102,29 +111,13 @@ export class HeartbeatRuntime {
     if (!run || run.mode === 'unprepared' || run.mode === 'source_unavailable') {
       return { mode: run?.mode ?? 'unprepared', hostText: '', unavailable };
     }
-    if (run.mode === 'exhausted_keepwarm') {
-      return { mode: run.mode, hostText: '[心跳唤醒] 今天十张牌已经全部交付。请回复 1 保温。' };
-    }
-    // A provider send may survive an interruption without becoming part of the
-    // retained history. Shorten only when the actual outgoing context still
-    // contains this day's earlier full invitation.
-    const previous = this.db.prepare(`
-      SELECT revision.content FROM heartbeat_runs frozen JOIN background_runs run ON run.id=frozen.run_id
-      JOIN messages message ON message.turn_id=run.turn_id AND message.speaker='system'
-        AND message.client_message_id='heartbeat:'||run.id||':invite'
-      JOIN message_revisions revision ON revision.message_id=message.id AND revision.revision=1
-      WHERE frozen.business_date=? AND frozen.mode='draw' AND run.window_id=? AND run.id<>?
-        AND revision.source='heartbeat_host' AND instr(revision.content,?) > 0
-        AND EXISTS (SELECT 1 FROM provider_requests req WHERE req.background_run_id=run.id AND req.sent_at IS NOT NULL)
-    `).all(run.businessDate, input.windowId, input.runId, DRAW_RULES) as Array<{ content: string }>;
-    const retained = input.retainedMessages.filter(message => message.role === 'user').map(plainText);
-    const hasChoiceContext = previous.some(({ content }) =>
-      retained.some(text => text === content || text.startsWith(content + '\n')));
-    const hostText = [
-      '[心跳唤醒] 想和乔乔说话，还是抽一张盲盒？',
-      '想说话：直接写一条给她的聊天消息并结束，这轮不抽卡。',
-      `想抽盲盒：用 heartbeat_draw 选一个可用号码，需要时先查看工具定义。可选号：${run.deck!.availableNumbers.join('、')}。${hasChoiceContext ? '' : DRAW_RULES}抽到后可以回应卡面，也可以安静结束。`,
-    ].join('\n');
+    const hostText = run.mode === 'exhausted_keepwarm'
+      ? wakeEvent(input.now, ['今天十张牌已经全部交付。请回复 1 保温。'])
+      : wakeEvent(input.now, [
+        '醒了。可以直接找乔乔说话，也可以先抽一张，再决定要不要找她；也可以安静结束。',
+        `可抽号码：${run.deck!.availableNumbers.join('、')}。`,
+        '这一轮的聊天正文会直接发给乔乔。',
+      ]);
     this.db.prepare('UPDATE heartbeat_runs SET invite_text=COALESCE(invite_text,?) WHERE run_id=?').run(hostText, input.runId);
     return { mode: run.mode, hostText };
   }
@@ -354,13 +347,13 @@ export class HeartbeatRuntime {
     };
     publish('invite', input.hostText);
     if (run.mode === 'exhausted_keepwarm') {
-      if (text.trim() === '1') publish('ack', text);
+      if (!input.speechHold && text.trim() === '1') publish('ack', text);
       return result;
     }
     if (run.mode !== 'draw') return result;
     const delivered = this.cards.getDeliveredDraw(input.runId);
     if (delivered) publish('card', `[心跳唤醒] 揭开了 ${delivered.cardNumber} 号牌。`);
-    if (input.completed && input.responseOffset !== undefined && last?.role === 'assistant'
+    if (!input.speechHold && input.completed && input.responseOffset !== undefined && last?.role === 'assistant'
         && !(Array.isArray(last.tool_calls) && last.tool_calls.length)) {
       const speech = this.publishRepliesInTx(input, input.finalMessages.slice(input.responseOffset), input.responseOffset);
       manifest.push(...speech.manifest);
