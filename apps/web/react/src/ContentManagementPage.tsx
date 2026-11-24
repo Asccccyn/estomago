@@ -3,7 +3,7 @@ import { ArrowLeft, HeartPulse, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-r
 import { EstomagoClient } from './chat-client'
 import { keepwarmStatusText, type KeepwarmStatus } from './background-controls-model'
 import {
-  assetPath, ContentRequestError, operationKey, readContent, referencePath, writeContent,
+  assetPath, ContentRequestError, discardStagedUpload, operationKey, readContent, referencePath, writeContent,
   type AssetInfo, type ContentEntry, type ContentPage, type DeliveryState, type HeartbeatState, type NoteView, type SourceBlock,
 } from './content-management-api'
 
@@ -316,7 +316,8 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
         asset = await readContent<AssetInfo>(assetPath(id))
       } else {
         const purpose = attempt.file.type.startsWith('audio/') ? 'chat_voice' : 'chat_image'
-        asset = await readContent<AssetInfo>(`/api/v1/assets?purpose=${purpose}`, {
+        // Staged: the file stays on estómago until this post is saved, so an abandoned draft never reaches Mariposa.
+        asset = await readContent<AssetInfo>(`/api/v1/assets?purpose=${purpose}&staged=1`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': attempt.key },
           body: attempt.file,
@@ -325,7 +326,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
         if (!id) throw new Error('上传回执未给出资产身份，可用同一操作重试。')
         setPendingUpload({ ...attempt, assetId: id })
       }
-      if (asset.state !== 'available' || asset.m_sync_state !== 'synced') {
+      if (asset.state !== 'available' || (asset.m_sync_state !== 'synced' && asset.m_sync_state !== 'staged')) {
         throw new Error('原文件仍在等待正本确认。请稍后继续加入附件。')
       }
       const confirmedId = id
@@ -485,7 +486,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
           </label></>}
           {pendingUpload && <div className="flex gap-2">
             <button type="button" className={actionClass} disabled={busy} onClick={() => void upload(pendingUpload)}>{pendingUpload.assetId ? '继续加入' : '重试上传'}</button>
-            <button type="button" className={actionClass} disabled={busy} onClick={() => { setPendingUpload(null); setError(null) }}>取消添加</button>
+            <button type="button" className={actionClass} disabled={busy} onClick={() => { if (pendingUpload.assetId) void discardStagedUpload(pendingUpload.assetId); setPendingUpload(null); setError(null) }}>取消添加</button>
           </div>}
           <div className="flex gap-2">
             <button type="submit" className={primaryClass} disabled={busy || Boolean(pendingUpload) || (!editor.target?.referenceTitle && !editor.draft.body.trim() && editor.draft.assetIds.length === 0)}>{busy ? '处理中…' : '保存'}</button>

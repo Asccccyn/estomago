@@ -61,7 +61,8 @@ export type AssetInfo = {
   asset_id?: string
   state: string
   mime_type: string
-  m_sync_state?: 'pending' | 'synced' | 'out_of_scope'
+  /** staged = kept on estómago only until the post that uses it is saved. */
+  m_sync_state?: 'staged' | 'pending' | 'synced' | 'out_of_scope'
 }
 
 export class ContentRequestError extends Error {
@@ -78,6 +79,8 @@ export class ContentRequestError extends Error {
 export const operationKey = (purpose: string) => `ui-${purpose}-${crypto.randomUUID()}`
 export const assetPath = (id: string) => `/api/v1/assets/${encodeURIComponent(id)}`
 export const referencePath = (id: string) => `/api/v1/content/moment-references/${encodeURIComponent(id)}`
+/** A file picked for a draft is staged on the server until the post is saved; an abandoned pick is discarded there. */
+export const discardStagedUpload = (id: string) => readContent<unknown>(assetPath(id), { method: 'DELETE' }).catch(() => undefined)
 
 export async function readContent<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init })

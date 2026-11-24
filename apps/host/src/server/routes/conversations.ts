@@ -195,6 +195,13 @@ if (postMsgs) {
     parsedAttachments.push({ asset_id: a.asset_id, presentation: a.presentation, caption: typeof a.caption === 'string' ? a.caption : null });
   }
   if (d.media && parsedAttachments.length > 0) {
+    // A staged upload enters the master store here, before any message can refer to it. When
+    // Mariposa cannot take it, nothing is published and the client keeps its draft.
+    try { await d.media.commitStagedAssets(parsedAttachments.map(a => a.asset_id)); }
+catch (err) {
+  if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+  throw err;
+}
     try { d.media.validateForSend(parsedAttachments); }
     catch (err) {
       if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });

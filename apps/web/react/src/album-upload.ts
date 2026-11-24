@@ -44,7 +44,7 @@ type AssetReceipt = {
   state?: string
   mime_type?: string
   model_image_ready?: boolean
-  m_sync_state?: 'pending' | 'synced' | 'out_of_scope'
+  m_sync_state?: 'staged' | 'pending' | 'synced' | 'out_of_scope'
   error?: { code?: string; message?: string }
 }
 

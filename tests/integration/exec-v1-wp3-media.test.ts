@@ -9,6 +9,8 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { MediaService, MediaError, sniffMime, isPublicIp } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
+import type { MariposaMediaStore } from '../../apps/host/src/integrations/mariposa/media-store.ts';
+import { MariposaMediaStoreError } from '../../apps/host/src/integrations/mariposa/media-store.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import {writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
@@ -248,4 +250,57 @@ test('MEDIA-M02（包1 2026-11-15）：work=SVG/HTML 作品引用可发送——
   assert.equal(proj.hasImage, false, '代码作品不投位图块');
   assert.ok(proj.blocks.some((b) => b.type === 'text' && String((b as { text: string }).text).includes(`/api/v1/assets/${svg.id}/preview`)), '投影带沙箱预览入口');
   db.close();
+});
+
+test('HTTP：聊天附件暂存——选中不进 M，发送时先落正再发布，放弃即删', async () => {
+  const media = host.heartbeat.media;
+  const uploads: string[] = [];
+  let fail = true;
+  const store = {
+    uploadBytes: async (bytes: Uint8Array) => {
+      if (fail) throw new MariposaMediaStoreError('UNAVAILABLE', 'M 合成不可达');
+      const content_hash = sha256Hex(Buffer.from(bytes));
+      uploads.push(content_hash);
+      return { content_hash };
+    },
+  } as unknown as MariposaMediaStore;
+  const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
+  storeSlot.mStore = store;
+  const pick = (key: string, bytes: Buffer) => fetch(`${base}/api/v1/assets?purpose=chat_image&staged=1`, { method: 'POST',
+    headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': key, Origin: base }), body: new Uint8Array(bytes) });
+  const send = (assetId: string) => fetch(`${base}/api/v1/conversations/primary/messages`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base }),
+    body: JSON.stringify({ content: '看这张图', client_message_id: 'staged-send-1', attachments: [{ asset_id: assetId, presentation: 'image' }] }) });
+  try {
+    // 1. 选中即上传：只存本地，M 什么都没收到；浏览器同键重试也不送。
+    const first = await pick('staged-pick-1', PNG);
+    assert.equal(first.status, 201);
+    const staged = (await first.json()) as { asset_id: string; m_sync_state: string };
+    assert.equal(staged.m_sync_state, 'staged');
+    await (await pick('staged-pick-1', PNG)).json();
+    assert.deepEqual(uploads, []);
+    assert.equal(media.getAsset(staged.asset_id).m_sync_state, 'staged');
+    // 2. M 拿不下：发送被拒，消息没有发布，附件仍是暂存。
+    const refused = await send(staged.asset_id);
+    assert.equal(refused.status, 503);
+    assert.equal(((await refused.json()) as { error: { code: string } }).error.code, 'asset_master_commit_failed');
+    assert.equal((host.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_message_id = ?').get('staged-send-1') as { n: number }).n, 0);
+    // 3. M 恢复：同一次发送先落正再发布。
+    fail = false;
+    const sent = await send(staged.asset_id);
+    assert.ok(sent.status === 200 || sent.status === 201, `send=${sent.status}`);
+    assert.deepEqual(uploads, [sha256Hex(PNG)]);
+    assert.equal(media.getAsset(staged.asset_id).m_sync_state, 'synced');
+    assert.equal((host.db.prepare('SELECT COUNT(*) AS n FROM message_attachments WHERE asset_id = ?').get(staged.asset_id) as { n: number }).n, 1);
+    // 4. 已发送的附件不再是草稿，删除被拒。
+    const kept = await fetch(`${base}/api/v1/assets/${staged.asset_id}`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    assert.equal(kept.status, 409);
+    // 5. 选了没发的那份：放弃即删；M 里从来没有它。
+    const second = (await (await pick('staged-pick-2', JPEG)).json()) as { asset_id: string; m_sync_state: string };
+    assert.equal(second.m_sync_state, 'staged');
+    const discarded = await fetch(`${base}/api/v1/assets/${second.asset_id}`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    assert.equal(discarded.status, 200);
+    assert.equal(((await discarded.json()) as { state: string }).state, 'discarded');
+    assert.equal((await fetch(`${base}/api/v1/assets/${second.asset_id}`, { headers: auth() })).status, 404);
+    assert.deepEqual(uploads, [sha256Hex(PNG)]);
+  } finally { storeSlot.mStore = null; }
 });

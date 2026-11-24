@@ -41,6 +41,23 @@ test('removed upload cannot dispatch later ASR',async()=>{
   assert.equal(client.snapshot.attachments.length,0);client.stop();
 });
 
+test('a picked file is staged, one kept in the composer is left alone, and an abandoned pick is discarded',async()=>{
+  const calls:Array<{url:string;method:string}>=[];let releaseUpload!:(r:Response)=>void;
+  const client=new EstomagoClient({fetch:(async(url:any,init?:RequestInit)=>{const u=String(url);calls.push({url:u,method:init?.method??'GET'});
+    if(u.includes('/assets?'))return await new Promise<Response>(resolve=>{releaseUpload=resolve;});return Response.json({});}) as typeof fetch});
+  try{
+    const upload=client.queue(new Blob(['synthetic']),'synthetic','image');
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.match(calls.find(call=>call.url.includes('/assets?'))!.url,/purpose=chat_image&staged=1$/,'上传请求声明自己只是暂存');
+    releaseUpload(Response.json({asset_id:'asset-draft'}));await upload;
+    assert.equal(client.snapshot.attachments[0]!.status,'ready');
+    assert.deepEqual(calls.filter(call=>call.method==='DELETE'),[],'留在输入框里的附件不删');
+    client.removeAttachment(client.snapshot.attachments[0]!.id);
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(calls.filter(call=>call.method==='DELETE').map(call=>call.url),['/api/v1/assets/asset-draft'],'放弃时删除服务器上的暂存');
+  }finally{client.stop()}
+});
+
 for(const mutation of ['message-revision','asset-revision'] as const)test(`image search excludes stale ${mutation}`,async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'joint-index-read-'));const db=openDatabase(root);migrate(db,sha256Hex);
   const media=new MediaService(db,path.join(root,'media'),buildConfig({}));

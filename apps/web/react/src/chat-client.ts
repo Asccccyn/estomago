@@ -614,15 +614,23 @@ export class EstomagoClient {
     const attachment:Attachment={id:operationId(),file,name,kind,status:'uploading',operationId:operationId()}
     this.patch({attachments:[...this.snapshot.attachments,attachment]});await this.upload(attachment)
   }
-  removeAttachment = (id:string) => {this.patch({attachments:this.snapshot.attachments.filter(a=>a.id!==id)});this.scheduleEstimate()}
+  removeAttachment = (id:string) => {
+    const removed=this.snapshot.attachments.find(a=>a.id===id)
+    this.patch({attachments:this.snapshot.attachments.filter(a=>a.id!==id)});this.scheduleEstimate()
+    // A staged upload exists only for this draft. The server discards it, or refuses when it was already sent.
+    if(removed?.assetId)this.discard(removed.assetId)
+  }
+  /** An unsent file must not outlive its draft; the server's own sweep covers drafts abandoned by a closed page. */
+  private discard(assetId:string){void this.request('/assets/'+encodeURIComponent(assetId),{method:'DELETE'}).catch(()=>{})}
   retryAttachment = async (id:string) => {const a=this.snapshot.attachments.find(a=>a.id===id);if(a)await this.upload(a)}
   private async upload(a:Attachment) {
     if(a.busy)return
     a.busy=true;a.status='uploading';this.patch({attachments:[...this.snapshot.attachments]})
     try{
-      if(!a.assetId){const asset=await this.request('/assets?purpose='+(a.kind==='voice'?'chat_voice':'chat_image'),{method:'POST',headers:{'Content-Type':'application/octet-stream','Idempotency-Key':a.operationId},body:a.file});a.assetId=asset.asset_id}
+      // Staged: the file stays on estómago and reaches Mariposa only when the message is actually sent.
+      if(!a.assetId){const asset=await this.request('/assets?purpose='+(a.kind==='voice'?'chat_voice':'chat_image')+'&staged=1',{method:'POST',headers:{'Content-Type':'application/octet-stream','Idempotency-Key':a.operationId},body:a.file});a.assetId=asset.asset_id}
       // Removing an upload invalidates the draft; a late upload receipt must not start paid ASR.
-      if(!this.snapshot.attachments.includes(a))return
+      if(!this.snapshot.attachments.includes(a)){if(a.assetId)this.discard(a.assetId);return}
       if(a.kind==='voice'){
         a.status='transcribing';this.patch({attachments:[...this.snapshot.attachments]})
         a.transcriptionId??=operationId()

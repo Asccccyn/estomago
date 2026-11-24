@@ -684,9 +684,13 @@ export class Host {
   private async mediaMSyncTick(): Promise<void> {
     if (this.mediaSyncTicking) return;
     const media = this.mediaServiceRef;
-    if (!media || !this.mediaSyncStore) return;
+    if (!media) return;
     this.mediaSyncTicking = true;
     try {
+      // A staged upload never reaches M, so its cleanup does not wait for the master store.
+      const pruned = media.pruneStagedUploads();
+      if (pruned > 0) this.logger.info('staged_uploads_pruned', { pruned });
+      if (!this.mediaSyncStore) return;
       const now = Date.now();
       for (const item of media.pendingMSyncBatch(5)) {
         if ((this.mediaMSyncRetryNotBefore.get(item.id) ?? 0) > now) continue; // 退避期：跳过不占批次

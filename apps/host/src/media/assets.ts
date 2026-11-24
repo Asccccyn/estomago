@@ -20,6 +20,9 @@ const STATIC_SVG_VIEW_SERVICE = 'estomago_static_svg';
 const staticSvgViewOperation = (assetId: string) => `static-svg-view-v1:${assetId}`;
 
 // 相册重构 P2：这些用途的媒体字节以 M 为唯一长期正本，落正后本地缓存缺失时从 M 回源。
+/** 暂存上传（输入框里选了还没发、编辑框里加了还没保存）最多留这么久；过后仍无引用即删除。 */
+export const STAGED_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 export const M_MASTER_PURPOSES: ReadonlySet<IngestPurpose> = new Set([
   'chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view',
   // 宿主用户 2026-11-08 裁定：语音同图片——M 唯一正本，E 播放/使用走 M 回源
@@ -76,13 +79,16 @@ export type StoredAsset = {
   origin: string; origin_service: string | null; origin_ref: string | null;
   creation_operation_id: string | null;
   ingest_purpose: string; created_by: string; created_at: string; duplicate: boolean;
-  m_sync_state: 'pending' | 'synced' | 'out_of_scope'; m_content_hash: string | null;
+  /** staged=只存本地、尚未进 M（见 commitStagedAssets）；pending=等后台补落正；synced=M 已有正本。 */
+  m_sync_state: 'staged' | 'pending' | 'synced' | 'out_of_scope'; m_content_hash: string | null;
   m_sync_attempts: number;
 };
 type SaveAssetInput = {
   bytes: Uint8Array; purpose: IngestPurpose; operationId: string; createdBy: string;
   origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null;
   declaredMime?: string | null;
+  /** 只存 E 本地；等正式消息或内容引用它时才落正 M（未发送的附件不进 M）。 */
+  staged?: boolean;
 };
 
 export class MediaService {
@@ -172,7 +178,8 @@ export class MediaService {
            width, height, duration_ms, origin, origin_service, origin_ref, created_by, ingest_purpose, created_at, updated_at,
            m_sync_state)
          VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?)`,
-      ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso, M_MASTER_PURPOSES.has(opts.purpose) ? 'pending' : 'out_of_scope');
+      ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso,
+        !M_MASTER_PURPOSES.has(opts.purpose) ? 'out_of_scope' : opts.staged === true ? 'staged' : 'pending');
     } catch (err) {
       try { for (const f of fs.readdirSync(absDir)) { if (f.includes('.tmp-')) fs.unlinkSync(path.join(absDir, f)); } } catch { /* 清理失败不掩盖 */ }
       if (err instanceof MediaError) throw err;
@@ -183,7 +190,7 @@ export class MediaService {
   }
 
   /** Save the original and a versioned visual derivative. The collection retains the original asset id. */
-  async saveStaticSvg(opts: { bytes: Uint8Array; operationId: string; createdBy: string; origin: 'upload' | 'generated' }): Promise<StoredAsset | null> {
+  async saveStaticSvg(opts: { bytes: Uint8Array; operationId: string; createdBy: string; origin: 'upload' | 'generated'; staged?: boolean }): Promise<StoredAsset | null> {
     const existing = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id=?')
       .get(opts.operationId) as { id: string; content_sha256: string } | undefined;
     if (existing && existing.content_sha256 !== sha256Hex(Buffer.from(opts.bytes))) {
@@ -204,14 +211,15 @@ export class MediaService {
     catch { throw new MediaError('SVG_RENDER_UNAVAILABLE', 503, '静态 SVG 的 PNG 视图暂不可用'); }
     if (png === null) throw new MediaError('SVG_STATIC_UNSUPPORTED', 422, '该静态 SVG 暂不能生成安全的发送视图，不将它误归代码作品');
     const original = await this.storeBuffer({ ...opts, purpose: opts.origin === 'upload' ? 'chat_image' : 'creation_icon' }, true);
-    await this.saveSvgView(original, png);
+    // The view shares the original's standing: an unsent upload sends neither its SVG nor its PNG view to M.
+    await this.saveSvgView(original, png, opts.staged === true);
     return original;
   }
 
-  private async saveSvgView(original: StoredAsset, png: Buffer): Promise<void> {
+  private async saveSvgView(original: StoredAsset, png: Buffer, staged = false): Promise<void> {
     await this.saveBuffer({
       bytes: png, purpose: 'derived_view', operationId: staticSvgViewOperation(original.id),
-      createdBy: original.created_by, origin: 'generated', originService: STATIC_SVG_VIEW_SERVICE, originRef: original.id,
+      createdBy: original.created_by, origin: 'generated', originService: STATIC_SVG_VIEW_SERVICE, originRef: original.id, staged,
     });
   }
 
@@ -262,13 +270,15 @@ export class MediaService {
   // —— 相册重构 P2：M 唯一正本同步/回源。失败不掩盖本地保存成功——状态回 pending
   //    由后台循环退避重试；成功即 m_content_hash 落行，本地文件自此只是可重建缓存。
 
-  /** 单资产落正到 M。bytes 给定则免读盘（保存路径）；返回是否已 synced。 */
-  async attemptMSync(assetId: string, bytes?: Uint8Array): Promise<boolean> {
+  /** 单资产落正到 M。bytes 给定则免读盘（保存路径）；返回是否已 synced。
+   *  暂存上传只经 commitStagedAssets 落正：后台重试与同键重放都不得把它提前送进 M。 */
+  async attemptMSync(assetId: string, bytes?: Uint8Array, options?: { staged?: true }): Promise<boolean> {
     const row = this.db.prepare('SELECT id, content_sha256, mime_type, state, ingest_purpose, m_sync_state FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string; mime_type: string; state: string; ingest_purpose: IngestPurpose; m_sync_state: string } | undefined;
     if (!row || row.state !== 'available') return false;
     if (!M_MASTER_PURPOSES.has(row.ingest_purpose)) return row.m_sync_state === 'out_of_scope';
     if (row.m_sync_state === 'synced') return true;
-    if (!this.mStore) return false; // M 未配置：保持 pending（如实的待完成状态，不假装 synced）
+    if (row.m_sync_state === 'staged' && options?.staged !== true) return false;
+    if (!this.mStore) return false; // M 未配置：保持原状态（如实的待完成状态，不假装 synced）
     try {
       const buf = bytes ?? this.readLocalBytes(row.content_sha256);
       const out = await this.mStore.uploadBytes(buf, row.mime_type);
@@ -282,6 +292,70 @@ export class MediaService {
         .run(String((err as Error).message).slice(0, 200), assetId);
       return false;
     }
+  }
+
+  private isStaged(assetId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM media_assets WHERE id = ? AND state = 'available' AND m_sync_state = 'staged'").get(assetId));
+  }
+
+  /** 暂存上传在被正式消息或内容引用的同一请求里落正 M。M 拿不下时抛错，调用方因此不发布任何
+   *  引用——未发送的附件从不出现在 M。M 未配置时与普通上传一致：如实转 pending，由后台补落正。 */
+  async commitStagedAssets(assetIds: readonly string[]): Promise<void> {
+    const staged: string[] = [];
+    for (const assetId of new Set(assetIds)) {
+      if (!this.isStaged(assetId)) continue;
+      const view = this.staticSvgView(assetId);
+      if (view && view.m_sync_state === 'staged') staged.push(view.id);
+      staged.push(assetId);
+    }
+    for (const assetId of staged) {
+      if (!this.mStore) {
+        this.db.prepare("UPDATE media_assets SET m_sync_state = 'pending' WHERE id = ? AND m_sync_state = 'staged'").run(assetId);
+      } else if (!(await this.attemptMSync(assetId, undefined, { staged: true }))) {
+        throw new MediaError('ASSET_MASTER_COMMIT_FAILED', 503, '附件还没存入正本，本次未发出。请稍后重试。');
+      }
+    }
+  }
+
+  /** 放弃从未落正的暂存上传：删行与本地字节（静态 SVG 连同它的 PNG 视图）。已被引用则拒绝；
+   *  同一字节仍被其它资产需要时只删行、留文件。返回删掉的暂存上传数。 */
+  discardStagedAssets(assetIds: readonly string[]): number {
+    const files = new Map<string, string>();
+    let discarded = 0;
+    tx(this.db, () => {
+      for (const assetId of assetIds) {
+        const view = this.staticSvgView(assetId);
+        for (const id of view ? [assetId, view.id] : [assetId]) {
+          const row = this.db.prepare("SELECT storage_key, content_sha256 FROM media_assets WHERE id = ? AND m_sync_state = 'staged'").get(id) as { storage_key: string; content_sha256: string } | undefined;
+          if (!row) continue;
+          if (id === assetId && this.isAssetReferenced(assetId).referenced) {
+            throw new MediaError('ASSET_REFERENCED', 409, '这份附件已被正式消息或内容引用，不能删除');
+          }
+          this.db.prepare("DELETE FROM media_assets WHERE id = ? AND m_sync_state = 'staged'").run(id);
+          files.set(row.content_sha256, row.storage_key);
+          if (id === assetId) discarded++;
+        }
+      }
+      // 标删行不再需要本地字节；未落正的行（pending/out_of_scope/其它 staged）仍是这些字节的唯一依赖。
+      for (const [sha, storageKey] of files) {
+        if (this.db.prepare("SELECT 1 FROM media_assets WHERE content_sha256 = ? AND state != 'missing'").get(sha)) continue;
+        const abs = path.join(this.mediaDir, storageKey);
+        if (fs.existsSync(abs)) fs.rmSync(abs);
+      }
+    });
+    return discarded;
+  }
+
+  /** 过期仍无引用的暂存上传（页面被关、进程崩溃后没人再来移除）按同一规则清掉。 */
+  pruneStagedUploads(now = Date.now(), limit = 20): number {
+    const cutoff = new Date(now - STAGED_UPLOAD_MAX_AGE_MS).toISOString();
+    const rows = this.db.prepare(`
+      SELECT id FROM media_assets
+      WHERE m_sync_state = 'staged' AND state = 'available' AND origin = 'upload' AND created_at < ?
+      ORDER BY created_at LIMIT ?`).all(cutoff, limit) as Array<{ id: string }>;
+    let pruned = 0;
+    for (const row of rows) if (!this.isAssetReferenced(row.id).referenced) pruned += this.discardStagedAssets([row.id]);
+    return pruned;
   }
 
   /** ALB-01：本地缓存 LRU 逐出一跳——物理文件口径的唯一正本见模块级

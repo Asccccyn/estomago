@@ -5,6 +5,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
 import { contentForward } from '../../integrations/content/client.ts';
+import { MediaError } from '../../media/assets.ts';
 import type { RequestDeps } from '../http.ts';
 import { decorateFutureNoteResponse, decorateMomentResponse, handleMomentReference, listFutureNotes } from './content-moments.ts';
 
@@ -59,6 +60,19 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
         if (typeof assetId === 'string' && assetId) fwdBody['content_sha256'] = d.media.getAsset(assetId).content_sha256;
       }
     } catch { /* 已删自报值：如实不带 */ }
+  }
+  // Attachments picked in a post draft are staged like chat drafts: they enter the master store
+  // only when the post or note that uses them is saved.
+  if (d.media && method !== 'DELETE') {
+    const referenced = [fwdBody.asset_id, fwdBody.work_asset_id, fwdBody.icon_asset_id,
+      ...(Array.isArray(fwdBody.asset_ids) ? fwdBody.asset_ids : [])].filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (referenced.length > 0) {
+      try { await d.media.commitStagedAssets(referenced); }
+      catch (err) {
+        if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
+        throw err;
+      }
+    }
   }
   const result = await d.contentOps.write({ method, path: url.pathname, actor, body: fwdBody, headers: fwdHeaders });
   const body = result.status >= 200 && result.status < 300

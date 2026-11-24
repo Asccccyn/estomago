@@ -101,7 +101,8 @@ if (route === 'POST /api/v1/assets') {
       : Math.max(d.config.media.max_code_artifact_bytes, d.config.media.max_video_bytes);
   try {
     const bytes = await readRawBody(req, cap);
-    const upload = { bytes, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' as const };
+    // staged=1 keeps the file local until a message or a saved post refers to it (chat and post drafts).
+    const upload = { bytes, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' as const, staged: url.searchParams.get('staged') === '1' };
     const asset = purpose === 'chat_image' && sniffMime(bytes) === 'image/svg+xml'
       ? await d.media.saveStaticSvg(upload)
       : await d.media.saveBuffer({ ...upload, purpose: purpose as IngestPurpose });
@@ -180,7 +181,12 @@ if (assetDelete) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   const id = decodeURIComponent(assetDelete[1]!);
   try {
-    d.media.getAsset(id); // 不存在=404
+    const asset = d.media.getAsset(id); // 不存在=404
+    if (asset.m_sync_state === 'staged') {
+     // A staged upload never reached the master store, so abandoning it removes row and bytes.
+     d.media.discardStagedAssets([id]);
+     return json(res, 200, { asset_id: id, state: 'discarded', note: '这份上传从未被发送或保存，暂存已删除' });
+    }
     const refs = d.media.isAssetReferenced(id);
     if (refs.referenced) {
       return json(res, 409, { error: { code: 'asset_referenced', message: `资产仍被引用（消息修订附件 ${refs.by_message_revisions} 条、外部引用 ${refs.by_external_refs} 条）；先解除全部引用再删除`, by_message_revisions: refs.by_message_revisions, by_external_refs: refs.by_external_refs } });
