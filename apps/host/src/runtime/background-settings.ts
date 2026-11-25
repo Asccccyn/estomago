@@ -5,10 +5,13 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { isDailyCostCap, type DailyCostCap, type Config } from '../config/schema.ts';
+import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { effectiveSettings, MODEL_BACKGROUND_CONTROLS, type ModelBackgroundControl, type EffectiveSettings } from '../runtime/background-policy.ts';
 
 const SETTINGS_KEY = 'background.settings';
 const REVISION_KEY = 'background.settings_revision';
+const KEEPWARM_CONTROL_REVISION_KEY = 'background.keepwarm_control_revision';
+const SHANGHAI_OFFSET_MS = 8 * 3_600_000;
 
 type StoredRow = { key: string; value: string; updated_at: string };
 
@@ -22,6 +25,13 @@ export class BackgroundSettingsService {
 
   revision(): number {
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(REVISION_KEY) as { value: string } | undefined;
+    return row ? Number(row.value) || 0 : 0;
+  }
+
+  /** Monotonic version incremented ONLY by heartbeat control-plane toggles (keepwarm_enabled),
+   *  so unrelated edits (e.g. reminders/autonomous) never invalidate in-flight Sol rest judgments. */
+  keepwarmControlRevision(): number {
+    const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(KEEPWARM_CONTROL_REVISION_KEY) as { value: string } | undefined;
     return row ? Number(row.value) || 0 : 0;
   }
 
@@ -43,9 +53,12 @@ export class BackgroundSettingsService {
    */
   /** AUD-02 修复：关闭时终止运行中执行的回调（由 scheduler 装配时注入） */
   onDisable: ((kind: ModelBackgroundControl) => void) | null = null;
+  /** 心跳开关变化后同步刷新排程行的回调（由 app-context 装配时注入） */
+  onKeepwarmChange: (() => void) | null = null;
 
   applyUpdate(opts: { expectedRevision: number; operationId?: string; patch: { free_activity_enabled?: boolean; autonomous_enabled?: boolean; keepwarm_enabled?: boolean; keepwarm_include_living_room?: boolean; reminders_enabled?: boolean; free_activity_daily_cost_cap_usd?: DailyCostCap; autonomous_daily_cost_cap_usd?: DailyCostCap; keepwarm_daily_cost_cap_usd?: DailyCostCap }; readiness?: { autonomousExecutorReady: boolean; keepwarmExecutorReady: boolean } }): { revision: number; duplicate?: boolean } {
-    return tx(this.db, () => {
+    let keepwarmChanged = false;
+    const out: { revision: number; duplicate?: boolean } = tx(this.db, () => {
       const requestHash = JSON.stringify({ expectedRevision: opts.expectedRevision, patch: Object.fromEntries(Object.entries(opts.patch).sort(([a], [b]) => a.localeCompare(b))) });
       if (opts.operationId !== undefined) {
         if (!opts.operationId || opts.operationId.length > 128) throw new Error('SETTINGS_OPERATION_ID_INVALID');
@@ -110,7 +123,11 @@ export class BackgroundSettingsService {
         }
       }
       if (opts.patch.keepwarm_enabled !== undefined) {
-        // Manual toggle supersedes any in-flight Sol rest judgment bound to an older control revision.
+        keepwarmChanged = true;
+        const nextKeepwarmCtrlRev = this.keepwarmControlRevision() + 1;
+        this.db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at")
+          .run(KEEPWARM_CONTROL_REVISION_KEY, String(nextKeepwarmCtrlRev), nowIso);
+        // Manual toggle supersedes any in-flight Sol rest judgment bound to an older keepwarm control revision.
         this.db.prepare(`
           UPDATE conversation_activity SET
             pending_rest_message_id = NULL, pending_rest_revision = NULL,
@@ -120,6 +137,56 @@ export class BackgroundSettingsService {
           WHERE pending_rest_message_id IS NOT NULL
         `).run();
       }
+      // Manual OFF -> ON must NOT backfill opportunities that already fell due while disabled
+      // (neither today's 08:00 fallback nor a daytime 50m target), while allowing future targets
+      // and new events to run normally without fabricating a real chat timestamp.
+      if (!before.keepwarm.enabled && opts.patch.keepwarm_enabled === true) {
+        const nowMs = Date.parse(nowIso);
+        const today = new Date(nowMs + SHANGHAI_OFFSET_MS).toISOString().slice(0, 10);
+        const today08Ms = Date.parse(`${today}T08:00:00+08:00`);
+        const idleMs = POLICY_CONSTANTS.background.keepwarm.idle_after_cache_ms;
+        const rows = this.db.prepare(`
+          SELECT conversation_id, activity_revision, last_real_activity_at,
+                 last_effective_heartbeat_at, last_effective_heartbeat_window_id,
+                 maintenance_request_id, maintenance_for_activity_revision,
+                 maintenance_window_id, maintenance_dispatch_started_at
+          FROM conversation_activity
+        `).all() as Array<{
+          conversation_id: string;
+          activity_revision: number;
+          last_real_activity_at: string | null;
+          last_effective_heartbeat_at: string | null;
+          last_effective_heartbeat_window_id: string | null;
+          maintenance_request_id: string | null;
+          maintenance_for_activity_revision: number | null;
+          maintenance_window_id: string | null;
+          maintenance_dispatch_started_at: string | null;
+        }>;
+        for (const r of rows) {
+          const win = this.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1")
+            .get(r.conversation_id) as { id: string } | undefined;
+          const lastRealMs = r.last_real_activity_at ? Date.parse(r.last_real_activity_at) : NaN;
+          const lastHbMs = r.last_effective_heartbeat_at ? Date.parse(r.last_effective_heartbeat_at) : NaN;
+          const hbSameWinMs = win && r.last_effective_heartbeat_window_id === win.id ? lastHbMs : NaN;
+          const maintMs = win
+            && r.maintenance_request_id !== null
+            && r.maintenance_for_activity_revision === r.activity_revision
+            && r.maintenance_window_id === win.id
+            && r.maintenance_dispatch_started_at !== null
+            ? Date.parse(r.maintenance_dispatch_started_at)
+            : NaN;
+          let anchorMs = Number.isFinite(lastRealMs) ? lastRealMs : NaN;
+          if (Number.isFinite(hbSameWinMs) && (!Number.isFinite(anchorMs) || hbSameWinMs >= anchorMs)) anchorMs = hbSameWinMs;
+          if (Number.isFinite(maintMs) && (!Number.isFinite(anchorMs) || maintMs >= anchorMs)) anchorMs = maintMs;
+          const ordinaryAlreadyDue = Number.isFinite(anchorMs) && (anchorMs + idleMs) <= nowMs;
+          const hadActivityTodayAfter08 = (Number.isFinite(lastRealMs) && lastRealMs >= today08Ms)
+            || (Number.isFinite(lastHbMs) && lastHbMs >= today08Ms);
+          const morningAlreadyPast = Number.isFinite(today08Ms) && nowMs >= today08Ms && !hadActivityTodayAfter08;
+          const suppressedBefore = (ordinaryAlreadyDue || morningAlreadyPast) ? nowIso : null;
+          this.db.prepare('UPDATE conversation_activity SET keepwarm_suppressed_due_before_at = ? WHERE conversation_id = ?')
+            .run(suppressedBefore, r.conversation_id);
+        }
+      }
       if (opts.patch.keepwarm_enabled === false) {
         this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'KEEPWARM_DISABLED', result_code = 'KEEPWARM_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind IN ('keepwarm','heartbeat_memory')").run(nowIso, nowIso);
         // AUD-02 P1 修复：终止运行中的保温执行
@@ -128,5 +195,7 @@ export class BackgroundSettingsService {
       if (opts.operationId !== undefined) this.db.prepare("INSERT INTO background_operations(actor_id,conversation_id,action,operation_id,request_hash,response_json,created_at) VALUES ('qiaosheng','primary','settings_update',?,?,?,?)").run(opts.operationId, requestHash, JSON.stringify({ revision: nextRev }), nowIso);
       return { revision: nextRev };
     });
+    if (keepwarmChanged && !out.duplicate) this.onKeepwarmChange?.();
+    return out;
   }
 }

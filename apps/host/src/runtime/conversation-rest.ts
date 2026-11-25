@@ -42,7 +42,7 @@ const CLEAR_SLEEP_EXACT = /^(?:(?:好[啦呀的]?|嗯+|那)?(?:char)?晚安(?:[�
 const CLEAR_NAP_WAIT_EXACT = /^(?:我?(?:先|要|去|准备)?(?:午睡|睡午觉|睡个午觉)(?:了|去|啦|一会[儿]?)|(?:先)?等我回来(?:再聊)?)[！!。.~～\s]*$/;
 
 /** Any semantic cue that warrants Sol semantic interpretation rather than a local guess. */
-const SEMANTIC_REST_CUE = /晚安|睡|休息|困|撑不住|睁不开|扛不住|熬不住|先到这|先这样|明天(?:聊|说|见|再)|明早|改天(?:聊|说)|眯一|躺[下会]|去修|去忙|下线|走了|等我回来|等我找你|醒着|good ?night|sleep|bed|tired|nap/i;
+export const SEMANTIC_REST_CUE = /晚安|睡|休息|歇一[会儿下]?|先歇|去歇|歇了|歇着|打个?盹|补个?觉|困|撑不住|睁不开|扛不住|熬不住|累死了|好累|太累|没精力|先到这|先这样|先不聊|不聊了|明天(?:聊|说|见|再)|明早|改天(?:聊|说)|晚点(?:聊|说)|回头(?:聊|说)|眯一|眯会|合眼|闭眼|躺[下会]|关灯|上床|去修|去忙|下线|先撤|先下了|先退|走了|等我回来|等我找你|醒着|醒来|睡醒|good ?night|sleep|bed|tired|nap|rest/i;
 
 function clauses(text: string): string[] {
   return [...text.normalize('NFKC').replace(/['’]/g, '')
@@ -127,4 +127,31 @@ export function detectRestKindLocally(text: unknown): RestKind {
     return 'nap_or_wait';
   }
   return 'sleep';
+}
+
+const UNCERTAIN_PERSONAL_REST_CUE = /(?<![不没])(?:困|累|撑不住|扛不住|熬不住|睁不开|歇一[会儿下]?|先歇|去歇|眯一|眯会|合眼|闭眼|打个?盹|补个?觉|先到这|先这样|先不聊|不聊了|先撤|先下了|先退|躺[下会])|说不准|不确定|不知道要不要睡|可能(?:要|会)?睡|也许(?:要|会)?睡/;
+const EXPLICIT_AWAKE_OR_NEGATED_SLEEP = /睡不着|失眠|不想睡|还不睡|没睡着|不睡了|没困|不困/;
+
+/** Conservative local fallback used ONLY when a message requires Sol (`needs_sol`)
+ *  but Sol is not configured. Ambiguous personal rest cues yield 'uncertain' (preserving
+ *  existing rest/recovery state identically to Sol 503/timeout/uncertain) rather than
+ *  silently clearing an active rest. */
+export function classifyRestFallbackWithoutSol(text: unknown): 'rest' | 'not_rest' | 'uncertain' {
+  if (typeof text !== 'string') return 'not_rest';
+  const intent = detectRestIntent(text);
+  if (intent === 'rest') return 'rest';
+  if (intent === 'resume') return 'not_rest';
+  const parts = clauses(text);
+  if (!parts.length) return 'not_rest';
+  if (parts.some(isActiveChatNow)) return 'not_rest';
+  const normalized = text.normalize('NFKC');
+  if (EXPLICIT_AWAKE_OR_NEGATED_SLEEP.test(normalized) && !UNCERTAIN_PERSONAL_REST_CUE.test(normalized)) {
+    return 'not_rest';
+  }
+  const hasAmbiguousCue = parts.some(clause =>
+    !ADDRESSED_TO_OTHER.test(clause)
+    && !REST_BLOCKED.test(clause)
+    && UNCERTAIN_PERSONAL_REST_CUE.test(clause),
+  );
+  return hasAmbiguousCue ? 'uncertain' : 'not_rest';
 }

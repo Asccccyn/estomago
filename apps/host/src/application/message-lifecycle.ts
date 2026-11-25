@@ -18,6 +18,7 @@ export type MessageLifecycleConsumers = {
     noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void;
     noteRestDecision?(conversationId: string, decision: RestDecision): boolean;
     noteOwnerMessageAccepted?: ConversationActivityService['noteOwnerMessageAccepted'];
+    noteOwnerMessageRevised?: ConversationActivityService['noteOwnerMessageRevised'];
   } | null;
   /** 异步 Sol 休息意图协调器（与记忆浮现独立；仅在需要语义判断的首次受理消息提交后唤醒）。 */
   restJudge?: {
@@ -93,6 +94,17 @@ export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): Mess
             kind: intent, source: 'owner_message', messageId: fact.messageId, atIso: fact.receivedAt ?? new Date().toISOString(),
           });
         }
+      }
+      if (fact.kind === 'revised') {
+        consumers.activity?.noteOwnerMessageRevised?.({
+          conversationId: fact.conversationId,
+          messageId: fact.messageId,
+          supersededRevision: fact.supersededRevision,
+          revision: fact.revision,
+          sleepWindow: consumers.heartbeatContext?.sleepWindow() ?? DEFAULT_SLEEP_WINDOW,
+          controlRevision: consumers.heartbeatContext?.controlRevision() ?? 0,
+          solConfigured: consumers.restJudge?.configured() === true,
+        });
       }
       // published：浮现不消费；活动锚点在发布动作内由消息服务原端口调用（noteRealPublication），
       // 保持 L 记账与发布同事务的现行次序——不改为事实流旁路（行为等价红线）。

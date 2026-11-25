@@ -5,14 +5,17 @@
 import type { Db } from '../db/connection.ts';
 import { defaultSolTransport, type SolTransport } from '../memory-surfacing/sol-provider.ts';
 import { effectiveRevisionText } from '../messages/effective-text.ts';
-import type { RestKind } from './conversation-rest.ts';
+import { shanghaiDayOf } from '../usage/attribution.ts';
+import { genId } from '../util/id.ts';
+import { SEMANTIC_REST_CUE, type RestKind } from './conversation-rest.ts';
 import type { SleepWindowConfig } from './keepwarm-sleep.ts';
 import type { ConversationActivityService } from './wake-activity.ts';
 
 export type SolRestConfig = {
   apiKeyEnv: string | null;
   baseUrl: string;
-  model: string;
+  /** Static model name or live getter (follows surfacing Sol model override dynamically). */
+  model: string | (() => string);
   reasoningEffort: string;
   maxOutputTokens: number;
   verbosity: string;
@@ -21,11 +24,46 @@ export type SolRestConfig = {
   timeoutMs?: number;
 };
 
+export type SolRestUsageMeta = {
+  requestId: string;
+  model: string;
+  dispatchStartedAt: string;
+  observedAt: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  reasoningTokens: number | null;
+  rawUsage: unknown;
+};
+
 export type SolRestJudgment =
-  | { status: 'ok'; decision: 'rest'; restKind: RestKind; basis: string }
-  | { status: 'ok'; decision: 'not_rest'; restKind: null; basis: string }
-  | { status: 'ok'; decision: 'uncertain'; restKind: null; basis: string }
-  | { status: 'timeout' | 'failed'; code: string };
+  | { status: 'ok'; decision: 'rest'; restKind: RestKind; basis: string; meta?: SolRestUsageMeta }
+  | { status: 'ok'; decision: 'not_rest'; restKind: null; basis: string; meta?: SolRestUsageMeta }
+  | { status: 'ok'; decision: 'uncertain'; restKind: null; basis: string; meta?: SolRestUsageMeta }
+  | { status: 'timeout' | 'failed'; code: string; meta?: SolRestUsageMeta };
+
+/** Bounded excerpt preserving opening, any mid-message rest cue context, AND the closing tail
+ *  so long narratives ending with a farewell (e.g. "我现在真的要睡了，明早再说") are never lost. */
+export function excerptForRestJudge(text: string, maxChars = 1500): string {
+  if (text.length <= maxChars) return text;
+  const marker = '\n...[略]...\n';
+  const headLen = 380;
+  const tailLen = 720;
+  const head = text.slice(0, headLen);
+  const tail = text.slice(text.length - tailLen);
+  const middle = text.slice(headLen, text.length - tailLen);
+  const match = SEMANTIC_REST_CUE.exec(middle);
+  if (match && match.index !== undefined) {
+    const midBudget = Math.max(120, maxChars - headLen - tailLen - marker.length * 2);
+    const half = Math.floor(midBudget / 2);
+    const midStart = Math.max(0, match.index - half);
+    const midEnd = Math.min(middle.length, midStart + midBudget);
+    const midSlice = middle.slice(midStart, midEnd);
+    return `${head}${marker}${midSlice}${marker}${tail}`;
+  }
+  const simpleHead = Math.max(200, maxChars - tailLen - marker.length);
+  return `${text.slice(0, simpleHead)}${marker}${tail}`;
+}
 
 const REST_INTENT_SCHEMA = {
   type: 'object',
@@ -48,7 +86,7 @@ const REST_DEVELOPER_PROMPT = `你是 estómago 心跳调度器的休息意图�
     - rest_kind="nap_or_wait"：明确午睡、小睡一会儿或明确要求等她回来再继续（如“我去午睡一会”“先去眯一下”“等我回来再聊”）。
   - "not_rest"：并未表达她本人当下要休息。包括：否定/澄清（“我没说我睡了，我还醒着呢”“我还不睡”“不想说晚安”）、引用或讨论字词/功能（“我说的是‘晚安’这个词”“晚安功能怎么改”）、谈论别人或宠物睡觉（“宝宝睡了，我们轻声聊”“猫睡着了”）、暂时去做别的事并非去睡觉休息（“我去修一下服务器”“去拿个快递”）、提问（“我们睡吧？”）。
   - "uncertain"：结合最近上下文仍无法确定她当下是不是要去休息；不确定时宁可返回 "uncertain"，不要猜成 "rest" 或 "not_rest"。
-- decision 为 "not_rest" 或 "uncertain" 时，rest_kind 必须为 null。`;
+- decision 为 "rest" 时，rest_kind 必须为 "sleep" 或 "nap_or_wait"（不可为 null）；decision 为 "not_rest" 或 "uncertain" 时，rest_kind 必须为 null。`;
 
 export class ConversationRestJudge {
   private readonly cfg: SolRestConfig;
@@ -61,6 +99,10 @@ export class ConversationRestJudge {
 
   private isFixture(): boolean {
     return process.env.ESTOMAGO_TEST_MODE === '1' && this.fixture !== undefined;
+  }
+
+  effectiveModel(): string {
+    return typeof this.cfg.model === 'function' ? this.cfg.model() : this.cfg.model;
   }
 
   configured(): boolean {
@@ -84,6 +126,8 @@ export class ConversationRestJudge {
       controller.abort();
     }, timeoutMs);
     timer.unref?.();
+    const effectiveModel = this.effectiveModel();
+    const dispatchStartedAt = new Date().toISOString();
     try {
       const transport = this.isFixture() ? this.fixture! : defaultSolTransport;
       const key = this.isFixture() ? 'fixture-only' : process.env[this.cfg.apiKeyEnv!]!;
@@ -97,7 +141,7 @@ export class ConversationRestJudge {
         `${this.cfg.baseUrl.replace(/\/$/, '')}/responses`,
         { authorization: `Bearer ${key}` },
         {
-          model: this.cfg.model,
+          model: effectiveModel,
           store: false,
           reasoning: { effort: this.cfg.reasoningEffort },
           max_output_tokens: Math.min(this.cfg.maxOutputTokens, 300),
@@ -119,37 +163,68 @@ export class ConversationRestJudge {
       );
       if (timedOut) return { status: 'timeout', code: 'REST_SOL_TIMEOUT' };
       if (controller.signal.aborted) return { status: 'failed', code: 'REST_SOL_ABORTED' };
-      if (response.status !== 200 || !response.json || typeof response.json !== 'object') {
-        return { status: 'failed', code: `REST_SOL_HTTP_${response.status}` };
-      }
-      const body = response.json as {
-        status?: unknown;
-        output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
+      const observedAt = new Date().toISOString();
+      const rawBody = response.json && typeof response.json === 'object'
+        ? response.json as {
+          id?: unknown;
+          status?: unknown;
+          usage?: {
+            input_tokens?: unknown;
+            output_tokens?: unknown;
+            input_tokens_details?: { cached_tokens?: unknown };
+            output_tokens_details?: { reasoning_tokens?: unknown };
+          };
+          output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>;
+        }
+        : null;
+      const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+      const responseId = typeof rawBody?.id === 'string' && rawBody.id.length > 0 && rawBody.id.length <= 256
+        ? rawBody.id
+        : genId('rest_sol');
+      const meta: SolRestUsageMeta = {
+        requestId: responseId,
+        model: effectiveModel,
+        dispatchStartedAt,
+        observedAt,
+        inputTokens: numOrNull(rawBody?.usage?.input_tokens),
+        outputTokens: numOrNull(rawBody?.usage?.output_tokens),
+        cacheReadTokens: numOrNull(rawBody?.usage?.input_tokens_details?.cached_tokens),
+        reasoningTokens: numOrNull(rawBody?.usage?.output_tokens_details?.reasoning_tokens),
+        rawUsage: rawBody?.usage ?? null,
       };
-      if (body.status === 'incomplete' || !Array.isArray(body.output)) {
-        return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT' };
+      if (response.status !== 200 || !rawBody) {
+        return { status: 'failed', code: `REST_SOL_HTTP_${response.status}`, meta };
       }
-      const blocks = body.output.flatMap(item => item.type === 'message' && Array.isArray(item.content) ? item.content : []);
+      if (rawBody.status === 'incomplete' || !Array.isArray(rawBody.output)) {
+        return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
+      }
+      const blocks = rawBody.output.flatMap(item => item.type === 'message' && Array.isArray(item.content) ? item.content : []);
       if (blocks.some(block => block.type === 'refusal')) {
-        return { status: 'failed', code: 'REST_SOL_REFUSED' };
+        return { status: 'failed', code: 'REST_SOL_REFUSED', meta };
       }
       const texts = blocks.filter(block => block.type === 'output_text' && typeof block.text === 'string');
-      if (texts.length !== 1) return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT' };
+      if (texts.length !== 1) return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
       const parsed = JSON.parse(texts[0]!.text!) as { decision?: unknown; rest_kind?: unknown; basis?: unknown } | null;
       if (!parsed || typeof parsed.basis !== 'string' || !parsed.basis.trim()) {
-        return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT' };
+        return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
       }
+      // Strict cross-field schema validation (Review #6):
+      // decision === 'rest' requires an explicit rest_kind ('sleep' | 'nap_or_wait'); never coerce null -> 'sleep'.
       if (parsed.decision === 'rest') {
-        const restKind: RestKind = parsed.rest_kind === 'nap_or_wait' ? 'nap_or_wait' : 'sleep';
-        return { status: 'ok', decision: 'rest', restKind, basis: parsed.basis };
+        if (parsed.rest_kind !== 'sleep' && parsed.rest_kind !== 'nap_or_wait') {
+          return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
+        }
+        return { status: 'ok', decision: 'rest', restKind: parsed.rest_kind, basis: parsed.basis, meta };
       }
       if (parsed.decision === 'not_rest') {
-        return { status: 'ok', decision: 'not_rest', restKind: null, basis: parsed.basis };
+        if (parsed.rest_kind !== null) return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
+        return { status: 'ok', decision: 'not_rest', restKind: null, basis: parsed.basis, meta };
       }
       if (parsed.decision === 'uncertain') {
-        return { status: 'ok', decision: 'uncertain', restKind: null, basis: parsed.basis };
+        if (parsed.rest_kind !== null) return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
+        return { status: 'ok', decision: 'uncertain', restKind: null, basis: parsed.basis, meta };
       }
-      return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT' };
+      return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
     } catch {
       if (timedOut) return { status: 'timeout', code: 'REST_SOL_TIMEOUT' };
       return { status: 'failed', code: 'REST_SOL_NETWORK_ERROR' };
@@ -241,7 +316,10 @@ export class RestDecisionCoordinator {
       WHERE m.id = ? AND m.conversation_id = ?
     `).get(input.revision, input.messageId, input.conversationId) as { sequence: number; content: string } | undefined;
     if (!msgRow) return;
-    const currentMessage = effectiveRevisionText(this.db, input.messageId, input.revision, msgRow.content).slice(0, 1500);
+    const currentMessage = excerptForRestJudge(
+      effectiveRevisionText(this.db, input.messageId, input.revision, msgRow.content),
+      1500,
+    );
 
     const recentRows = this.db.prepare(`
       SELECT m.id, m.speaker, m.current_revision, r.content
@@ -258,6 +336,9 @@ export class RestDecisionCoordinator {
 
     const result = await this.judge.judge({ currentMessage, recentDialogue }, input.signal);
     if (this.stopped) return;
+    if (result.meta) {
+      this.recordSolUsage(input, result, result.meta);
+    }
     const applied = this.activity.applySolRestResult({
       conversationId: input.conversationId,
       messageId: input.messageId,
@@ -269,6 +350,52 @@ export class RestDecisionCoordinator {
       result,
     });
     if (applied) this.onStateChanged?.();
+  }
+
+  /** Record classification request & observed token counts into usage_observations under
+   *  purpose='rest_intent_sol' with cost_usd=null (honest unknown cost, never counted as
+   *  a paid heartbeat or window context measurement, and never storing user prose). */
+  private recordSolUsage(
+    input: { conversationId: string; messageId: string; revision: number },
+    result: SolRestJudgment,
+    meta: SolRestUsageMeta,
+  ): void {
+    try {
+      const attemptId = `rest_sol:${input.messageId}:r${input.revision}`;
+      const turnId = `rest_sol:${input.conversationId}:${input.messageId}`;
+      const dup = this.db.prepare(
+        "SELECT 1 FROM usage_observations WHERE attempt_id = ? AND scope = 'request' AND request_id IS ? AND model IS ? LIMIT 1",
+      ).get(attemptId, meta.requestId, meta.model);
+      if (dup) return;
+      const completeness = meta.inputTokens !== null && meta.outputTokens !== null ? 'complete' : 'unknown';
+      const budgetDay = shanghaiDayOf(meta.dispatchStartedAt) ?? shanghaiDayOf(meta.observedAt);
+      const rawJson = JSON.stringify({
+        kind: 'rest_intent_sol',
+        response_id: meta.requestId,
+        status: result.status,
+        decision: result.status === 'ok' ? result.decision : null,
+        code: result.status === 'ok' ? null : result.code,
+        usage: meta.rawUsage,
+      });
+      this.db.prepare(`
+        INSERT INTO usage_observations(
+          id, request_id, attempt_id, turn_id, scope, model,
+          input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
+          cost_usd, reasoning_tokens, anomalies_json, raw_usage_json, window_id,
+          source, completeness, observed_at,
+          purpose, background_run_id, budget_day, dispatch_started_at, legacy_observed_at
+        )
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        genId('use'), meta.requestId, attemptId, turnId, 'request', meta.model,
+        meta.inputTokens, meta.outputTokens, meta.cacheReadTokens, null,
+        null, meta.reasoningTokens, null, rawJson, null,
+        'sol_rest', completeness, meta.observedAt,
+        'rest_intent_sol', null, budgetDay, meta.dispatchStartedAt, 0,
+      );
+    } catch {
+      // Usage observation failure must never block or corrupt the rest-intent decision.
+    }
   }
 
   async waitIdle(): Promise<void> {

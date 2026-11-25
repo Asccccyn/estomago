@@ -9,12 +9,13 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
+import { effectiveRevisionText } from '../messages/effective-text.ts';
 import { HEARTBEAT_BLOCKED_BEFORE_SEND } from './background-ledger.ts';
 import { CACHE_TTL_MS } from './cache-observation.ts';
 import {
+  classifyRestFallbackWithoutSol,
   classifyRestLocally,
   classifyRestRecoveryMode,
-  detectRestIntent,
   detectRestKindLocally,
   type RestKind,
   type RestRecoveryMode,
@@ -78,6 +79,7 @@ export type MorningWakeTarget =
         | 'WAIT_NEXT_USER_MESSAGE'
         | 'SUPERSEDED_BY_EARLY_RESUME'
         | 'MISSED_GRACE'
+        | 'MISSED_WHILE_DISABLED'
         | 'SLEEP_WINDOW'
         | 'REST_JUDGMENT_PENDING';
       dueAtMs?: number;
@@ -91,6 +93,8 @@ export type HeartbeatScheduleState = {
   kind: 'morning_wake' | 'cache_idle' | 'none';
   dueAtMs: number | null;
   basis: 'morning_baseline' | 'real_message' | 'maintenance' | null;
+  /** Authoritative anchor identity matching dueAtMs for unique occurrence_key claiming. */
+  anchorKey: string | null;
   businessDate: string;
   blockedReason:
     | 'KEEPWARM_DISABLED'
@@ -151,6 +155,7 @@ export type ConversationActivityRow = {
   pending_rest_user_appearance_revision: number | null;
   pending_rest_was_night_pause: number | null;
   pending_rest_gap_eligible: number | null;
+  keepwarm_suppressed_due_before_at: string | null;
   updated_at: string;
 };
 
@@ -192,19 +197,85 @@ export class ConversationActivityService {
     };
   }
 
-  /** Whether the conversation is currently in nighttime pause (either inside the
-   *  unresumed sleep window, or in an active normal-night-rest waiting for 08:00). */
-  isInNightPause(row: ConversationActivityRow | null, sleepWindow: SleepWindowConfig, nowMs: number): boolean {
+  /** Whether the fixed nighttime sleep window (e.g. 23:00–08:00) is CURRENTLY active
+   *  and not already exempted by an early resume for this overnight cycle. */
+  isInActiveSleepWindow(row: ConversationActivityRow | null, sleepWindow: SleepWindowConfig, nowMs: number): boolean {
     const sleep = keepwarmSleepState(sleepWindow, nowMs);
     const overnightDate = overnightMorningDate(sleepWindow, nowMs);
     if (sleep.blocked && sleep.code === 'KEEPWARM_SLEEP_WINDOW' && overnightDate !== null) {
-      if (row?.early_resumed_date !== overnightDate) return true;
+      return row?.early_resumed_date !== overnightDate;
     }
+    return false;
+  }
+
+  /** Whether the conversation is currently in nighttime pause (either inside the
+   *  unresumed sleep window, or in an active normal-night-rest waiting for 08:00). */
+  isInNightPause(row: ConversationActivityRow | null, sleepWindow: SleepWindowConfig, nowMs: number): boolean {
+    if (this.isInActiveSleepWindow(row, sleepWindow, nowMs)) return true;
     if (row?.resting === 1 && row.rest_recovery_mode === 'morning_0800' && row.rest_morning_date) {
       const targetMs = Date.parse(`${row.rest_morning_date}T08:00:00+08:00`);
       if (Number.isFinite(targetMs) && nowMs < targetMs) return true;
     }
     return false;
+  }
+
+  /** Single shared writer for a confirmed owner rest decision (used by local fast-path,
+   *  Sol async adoption, message-edit re-evaluation, and direct noteRestDecision).
+   *  Atomically updates rest recovery mode and clears any prior early-resume / superseded
+   *  morning markers belonging to this rest's cycle so a new normal night rest restores 08:00. */
+  private applyRestDecisionInTx(input: {
+    conversationId: string;
+    prev: ConversationActivityRow | null;
+    messageId: string;
+    acceptedAtIso: string;
+    acceptMs: number;
+    restKind: RestKind;
+    requireUserAppearanceRevision?: number;
+  }): boolean {
+    const { mode, morningDate } = classifyRestRecoveryMode(input.acceptMs, input.restKind);
+    const today = shanghaiDateOfMs(input.acceptMs);
+    const cycleDate = mode === 'morning_0800' ? morningDate : today;
+    const nextEarlyResumed = cycleDate && input.prev?.early_resumed_date === cycleDate
+      ? null
+      : (input.prev?.early_resumed_date ?? null);
+    const nextMorningSuperseded = mode === 'morning_0800' && morningDate && input.prev?.morning_fallback_superseded_date === morningDate
+      ? null
+      : (input.prev?.morning_fallback_superseded_date ?? null);
+    const whereClause = input.requireUserAppearanceRevision !== undefined
+      ? 'WHERE conversation_id = ? AND user_appearance_revision = ?'
+      : 'WHERE conversation_id = ?';
+    const params = [
+      input.acceptedAtIso,
+      input.messageId,
+      mode,
+      morningDate,
+      nextEarlyResumed,
+      nextMorningSuperseded,
+      input.acceptedAtIso,
+      input.conversationId,
+      ...(input.requireUserAppearanceRevision !== undefined ? [input.requireUserAppearanceRevision] : []),
+    ];
+    const res = this.db.prepare(`
+      UPDATE conversation_activity SET
+        resting = 1,
+        rest_decided_at = ?,
+        rest_source = 'owner_message',
+        rest_message_id = ?,
+        rest_recovery_mode = ?,
+        rest_morning_date = ?,
+        early_resumed_date = ?,
+        morning_fallback_superseded_date = ?,
+        pending_rest_message_id = NULL,
+        pending_rest_revision = NULL,
+        pending_rest_accepted_at = NULL,
+        pending_rest_control_revision = NULL,
+        pending_rest_user_appearance_revision = NULL,
+        pending_rest_was_night_pause = NULL,
+        pending_rest_gap_eligible = NULL,
+        updated_at = ?
+      ${whereClause}
+    `).run(...params);
+    return Number(res.changes) === 1;
   }
 
   /** Called inside submitUserMessageWithTurn's SQL transaction on FIRST formal acceptance
@@ -233,6 +304,7 @@ export class ConversationActivityService {
       ? acceptMs - prevAnchorMs
       : null;
 
+    const inSleepWindowNow = this.isInActiveSleepWindow(prev, input.sleepWindow, acceptMs);
     const wasInNightPause = this.isInNightPause(prev, input.sleepWindow, acceptMs);
     const gapEligible = wasInNightPause && gapMs !== null && gapMs >= NIGHT_EARLY_RESUME_GAP_MS;
     const overnightDate = overnightMorningDate(input.sleepWindow, acceptMs);
@@ -246,9 +318,10 @@ export class ConversationActivityService {
         conversation_id, activity_revision, user_appearance_revision,
         last_user_message_id, last_user_message_at,
         consecutive_unanswered_count, streak_paused_date,
-        morning_yielded_date, morning_yielded_at, updated_at
+        morning_yielded_date, morning_yielded_at,
+        keepwarm_suppressed_due_before_at, updated_at
       )
-      VALUES (?, 0, ?, ?, ?, 0, NULL, NULL, NULL, ?)
+      VALUES (?, 0, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?)
       ON CONFLICT(conversation_id) DO UPDATE SET
         user_appearance_revision = excluded.user_appearance_revision,
         last_user_message_id = excluded.last_user_message_id,
@@ -257,39 +330,55 @@ export class ConversationActivityService {
         streak_paused_date = NULL,
         morning_yielded_date = NULL,
         morning_yielded_at = NULL,
+        keepwarm_suppressed_due_before_at = NULL,
         updated_at = excluded.updated_at
     `).run(input.conversationId, nextUserRev, input.messageId, input.acceptedAtIso, input.acceptedAtIso);
 
-    let precheck = classifyRestLocally(input.content);
+    const precheck = classifyRestLocally(input.content);
     if (precheck.kind === 'needs_sol' && !input.solConfigured) {
-      const fallback = detectRestIntent(input.content);
-      precheck = fallback === 'rest'
-        ? { kind: 'clear_rest', restKind: detectRestKindLocally(input.content) }
-        : { kind: 'clear_not_rest' };
+      // Without Sol configured, use local fallback ONLY when unambiguous; ambiguous cues
+      // follow the exact same conservative "uncertain" handling as Sol timeout/503/uncertain
+      // (preserve existing rest/recovery state while keeping owner appearance & count reset).
+      const fallback = classifyRestFallbackWithoutSol(input.content);
+      if (fallback === 'rest') {
+        this.applyRestDecisionInTx({
+          conversationId: input.conversationId,
+          prev,
+          messageId: input.messageId,
+          acceptedAtIso: input.acceptedAtIso,
+          acceptMs,
+          restKind: detectRestKindLocally(input.content),
+        });
+        return { needsSol: false, gapMs, wasInNightPause };
+      }
+      if (fallback === 'not_rest') {
+        this.applyNotRestRecoveryInTx({
+          conversationId: input.conversationId,
+          prev,
+          messageId: input.messageId,
+          acceptedAtIso: input.acceptedAtIso,
+          acceptMs,
+          wasInNightPause,
+          inSleepWindowNow,
+          gapEligible,
+          overnightDate,
+          today,
+        });
+        return { needsSol: false, gapMs, wasInNightPause };
+      }
+      this.clearPendingRestInTx(input.conversationId);
+      return { needsSol: false, gapMs, wasInNightPause };
     }
 
     if (precheck.kind === 'clear_rest') {
-      const { mode, morningDate } = classifyRestRecoveryMode(acceptMs, precheck.restKind);
-      const nextEarlyResumed = mode === 'next_user_message' && prev?.early_resumed_date === today ? null : (prev?.early_resumed_date ?? null);
-      this.db.prepare(`
-        UPDATE conversation_activity SET
-          resting = 1,
-          rest_decided_at = ?,
-          rest_source = 'owner_message',
-          rest_message_id = ?,
-          rest_recovery_mode = ?,
-          rest_morning_date = ?,
-          early_resumed_date = ?,
-          pending_rest_message_id = NULL,
-          pending_rest_revision = NULL,
-          pending_rest_accepted_at = NULL,
-          pending_rest_control_revision = NULL,
-          pending_rest_user_appearance_revision = NULL,
-          pending_rest_was_night_pause = NULL,
-          pending_rest_gap_eligible = NULL,
-          updated_at = ?
-        WHERE conversation_id = ?
-      `).run(input.acceptedAtIso, input.messageId, mode, morningDate, nextEarlyResumed, input.acceptedAtIso, input.conversationId);
+      this.applyRestDecisionInTx({
+        conversationId: input.conversationId,
+        prev,
+        messageId: input.messageId,
+        acceptedAtIso: input.acceptedAtIso,
+        acceptMs,
+        restKind: precheck.restKind,
+      });
       return { needsSol: false, gapMs, wasInNightPause };
     }
 
@@ -327,11 +416,141 @@ export class ConversationActivityService {
       acceptedAtIso: input.acceptedAtIso,
       acceptMs,
       wasInNightPause,
+      inSleepWindowNow,
       gapEligible,
       overnightDate,
       today,
     });
     return { needsSol: false, gapMs, wasInNightPause };
+  }
+
+  /** Called inside editMessage's SQL transaction when an owner message is legally revised
+   *  (e.g. while queued before dispatch). Does NOT count as a new user appearance or reset
+   *  counts, but invalidates any pending Sol rest judgment for the superseded revision and
+   *  re-evaluates the new revision text under the original message's accepted timestamp/gap. */
+  noteOwnerMessageRevised(input: {
+    conversationId: string;
+    messageId: string;
+    supersededRevision: number;
+    revision: number;
+    newContent?: string;
+    sleepWindow: SleepWindowConfig;
+    controlRevision: number;
+    solConfigured: boolean;
+  }): { needsSol: boolean } {
+    const row = this.get(input.conversationId);
+    if (!row) return { needsSol: false };
+    const hadPending = row.pending_rest_message_id === input.messageId
+      && row.pending_rest_revision === input.supersededRevision;
+    const hadSettledRest = row.resting === 1 && row.rest_message_id === input.messageId;
+    if (!hadPending && !hadSettledRest) return { needsSol: false };
+
+    let resolvedContent = input.newContent;
+    if (resolvedContent === undefined) {
+      const revRow = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?')
+        .get(input.messageId, input.revision) as { content: string } | undefined;
+      if (!revRow) {
+        if (hadPending) this.clearPendingRestInTx(input.conversationId);
+        return { needsSol: false };
+      }
+      resolvedContent = effectiveRevisionText(this.db, input.messageId, input.revision, revRow.content);
+    }
+
+    const acceptedAtIso = hadPending && row.pending_rest_accepted_at
+      ? row.pending_rest_accepted_at
+      : (row.rest_decided_at ?? new Date().toISOString());
+    const acceptMs = Date.parse(acceptedAtIso);
+    const overnightDate = overnightMorningDate(input.sleepWindow, acceptMs);
+    const today = shanghaiDateOfMs(acceptMs);
+    const wasInNightPause = hadPending ? row.pending_rest_was_night_pause === 1 : this.isInNightPause(row, input.sleepWindow, acceptMs);
+    const gapEligible = hadPending ? row.pending_rest_gap_eligible === 1 : false;
+    const inSleepWindowNow = this.isInActiveSleepWindow(row, input.sleepWindow, acceptMs);
+
+    const precheck = classifyRestLocally(resolvedContent);
+    if (precheck.kind === 'needs_sol' && !input.solConfigured) {
+      const fallback = classifyRestFallbackWithoutSol(resolvedContent);
+      if (fallback === 'rest') {
+        this.applyRestDecisionInTx({
+          conversationId: input.conversationId,
+          prev: row,
+          messageId: input.messageId,
+          acceptedAtIso,
+          acceptMs,
+          restKind: detectRestKindLocally(resolvedContent),
+        });
+        return { needsSol: false };
+      }
+      if (fallback === 'not_rest') {
+        this.applyNotRestRecoveryInTx({
+          conversationId: input.conversationId,
+          prev: row,
+          messageId: input.messageId,
+          acceptedAtIso,
+          acceptMs,
+          wasInNightPause,
+          inSleepWindowNow,
+          gapEligible,
+          overnightDate,
+          today,
+        });
+        return { needsSol: false };
+      }
+      this.clearPendingRestInTx(input.conversationId);
+      return { needsSol: false };
+    }
+
+    if (precheck.kind === 'clear_rest') {
+      this.applyRestDecisionInTx({
+        conversationId: input.conversationId,
+        prev: row,
+        messageId: input.messageId,
+        acceptedAtIso,
+        acceptMs,
+        restKind: precheck.restKind,
+      });
+      return { needsSol: false };
+    }
+
+    if (precheck.kind === 'needs_sol') {
+      this.db.prepare(`
+        UPDATE conversation_activity SET
+          pending_rest_message_id = ?,
+          pending_rest_revision = ?,
+          pending_rest_accepted_at = ?,
+          pending_rest_control_revision = ?,
+          pending_rest_user_appearance_revision = ?,
+          pending_rest_was_night_pause = ?,
+          pending_rest_gap_eligible = ?,
+          updated_at = ?
+        WHERE conversation_id = ?
+      `).run(
+        input.messageId,
+        input.revision,
+        acceptedAtIso,
+        input.controlRevision,
+        row.user_appearance_revision,
+        wasInNightPause ? 1 : 0,
+        gapEligible ? 1 : 0,
+        new Date().toISOString(),
+        input.conversationId,
+      );
+      return { needsSol: true };
+    }
+
+    // clear_not_rest: supersede pending rev 1 (and clear settled rest if this exact message caused it).
+    this.applyNotRestRecoveryInTx({
+      conversationId: input.conversationId,
+      prev: row,
+      messageId: input.messageId,
+      acceptedAtIso,
+      acceptMs,
+      wasInNightPause,
+      inSleepWindowNow,
+      gapEligible,
+      overnightDate,
+      today,
+    });
+    return { needsSol: false };
   }
 
   private applyNotRestRecoveryInTx(input: {
@@ -341,6 +560,7 @@ export class ConversationActivityService {
     acceptedAtIso: string;
     acceptMs: number;
     wasInNightPause: boolean;
+    inSleepWindowNow: boolean;
     gapEligible: boolean;
     overnightDate: string | null;
     today: string;
@@ -356,9 +576,14 @@ export class ConversationActivityService {
 
     if (input.wasInNightPause) {
       if (input.gapEligible) {
-        // Early resume after >= 4h nighttime gap! Supersedes this morning's 08:00 fallback.
-        const targetMorningDate = input.overnightDate ?? input.prev?.rest_morning_date ?? input.today;
         const wasResting = input.prev?.resting === 1;
+        // ONLY grant an overnight early-resume exemption when the nighttime sleep window
+        // (e.g. 23:00–08:00) has ALREADY started. Returning from an 18:00 rest at 22:11 clears
+        // resting WITHOUT exempting the upcoming 23:00 cutoff!
+        const grantEarlyResume = input.inSleepWindowNow;
+        const targetMorningDate = grantEarlyResume
+          ? (input.overnightDate ?? input.prev?.rest_morning_date ?? input.today)
+          : null;
         this.db.prepare(`
           UPDATE conversation_activity SET
             resting = 0,
@@ -367,8 +592,8 @@ export class ConversationActivityService {
             rest_decided_at = CASE WHEN ? = 1 THEN ? ELSE rest_decided_at END,
             rest_source = CASE WHEN ? = 1 THEN 'owner_message' ELSE rest_source END,
             rest_message_id = CASE WHEN ? = 1 THEN ? ELSE rest_message_id END,
-            early_resumed_date = ?,
-            morning_fallback_superseded_date = ?,
+            early_resumed_date = CASE WHEN ? = 1 THEN ? ELSE early_resumed_date END,
+            morning_fallback_superseded_date = CASE WHEN ? = 1 THEN ? ELSE morning_fallback_superseded_date END,
             ${clearPending},
             updated_at = ?
           WHERE conversation_id = ?
@@ -376,7 +601,8 @@ export class ConversationActivityService {
           wasResting ? 1 : 0, input.acceptedAtIso,
           wasResting ? 1 : 0,
           wasResting ? 1 : 0, input.messageId,
-          targetMorningDate, targetMorningDate,
+          grantEarlyResume ? 1 : 0, targetMorningDate,
+          grantEarlyResume ? 1 : 0, targetMorningDate,
           input.acceptedAtIso, input.conversationId,
         );
       } else {
@@ -435,11 +661,18 @@ export class ConversationActivityService {
       if (row.pending_rest_message_id !== input.messageId || row.pending_rest_revision !== input.revision) {
         return false;
       }
+      // Verify the message has NOT been legally edited to a newer revision while Sol was in flight (Review #5).
+      const msgRev = this.db.prepare('SELECT current_revision FROM messages WHERE id = ?')
+        .get(input.messageId) as { current_revision: number } | undefined;
+      if (!msgRev || msgRev.current_revision !== input.revision) {
+        this.clearPendingRestInTx(input.conversationId);
+        return false;
+      }
       if (row.user_appearance_revision !== input.capturedUserAppearanceRevision) {
         return false;
       }
       if (row.pending_rest_control_revision !== input.capturedControlRevision || input.currentControlRevision !== input.capturedControlRevision) {
-        // Manual control changed while Sol was in flight: discard stale Sol result and clear pending marker.
+        // Manual keepwarm toggle changed while Sol was in flight: discard stale Sol result and clear pending marker.
         this.clearPendingRestInTx(input.conversationId);
         return false;
       }
@@ -452,32 +685,20 @@ export class ConversationActivityService {
       const today = shanghaiDateOfMs(acceptMs);
 
       if (input.result.status === 'ok' && input.result.decision === 'rest') {
-        const { mode, morningDate } = classifyRestRecoveryMode(acceptMs, input.result.restKind);
-        const nextEarlyResumed = mode === 'next_user_message' && row.early_resumed_date === today ? null : row.early_resumed_date;
-        this.db.prepare(`
-          UPDATE conversation_activity SET
-            resting = 1,
-            rest_decided_at = ?,
-            rest_source = 'owner_message',
-            rest_message_id = ?,
-            rest_recovery_mode = ?,
-            rest_morning_date = ?,
-            early_resumed_date = ?,
-            pending_rest_message_id = NULL,
-            pending_rest_revision = NULL,
-            pending_rest_accepted_at = NULL,
-            pending_rest_control_revision = NULL,
-            pending_rest_user_appearance_revision = NULL,
-            pending_rest_was_night_pause = NULL,
-            pending_rest_gap_eligible = NULL,
-            updated_at = ?
-          WHERE conversation_id = ? AND user_appearance_revision = ?
-        `).run(acceptedAtIso, input.messageId, mode, morningDate, nextEarlyResumed, acceptedAtIso, input.conversationId, input.capturedUserAppearanceRevision);
-        return true;
+        return this.applyRestDecisionInTx({
+          conversationId: input.conversationId,
+          prev: row,
+          messageId: input.messageId,
+          acceptedAtIso,
+          acceptMs,
+          restKind: input.result.restKind,
+          requireUserAppearanceRevision: input.capturedUserAppearanceRevision,
+        });
       }
 
       if (input.result.status === 'ok' && input.result.decision === 'not_rest') {
         const overnightDate = overnightMorningDate(input.sleepWindow, acceptMs);
+        const inSleepWindowNow = this.isInActiveSleepWindow(row, input.sleepWindow, acceptMs);
         this.applyNotRestRecoveryInTx({
           conversationId: input.conversationId,
           prev: row,
@@ -485,6 +706,7 @@ export class ConversationActivityService {
           acceptedAtIso,
           acceptMs,
           wasInNightPause: row.pending_rest_was_night_pause === 1,
+          inSleepWindowNow,
           gapEligible: row.pending_rest_gap_eligible === 1,
           overnightDate,
           today,
@@ -559,11 +781,9 @@ export class ConversationActivityService {
 
       const startedMs = Date.parse(input.startedAtIso);
       const businessDate = input.morningBusinessDate ?? shanghaiDateOfMs(Number.isFinite(startedMs) ? startedMs : Date.now());
-      const startsFreshDayChain = input.isMorningWake && (
-        (act.streak_paused_date !== null && act.streak_paused_date < businessDate)
-        || act.consecutive_unanswered_count >= MAX_CONSECUTIVE_UNANSWERED_HEARTBEATS
-      );
-      const nextCount = startsFreshDayChain ? 1 : act.consecutive_unanswered_count + 1;
+      // Per v2.1 §2.5 (Review #4): the 08:00 morning fallback ALWAYS starts the new day's
+      // chain at count 1 (even if the previous evening only reached 1 or 2 before 23:00).
+      const nextCount = input.isMorningWake ? 1 : act.consecutive_unanswered_count + 1;
       const nextPausedDate = nextCount >= MAX_CONSECUTIVE_UNANSWERED_HEARTBEATS ? businessDate : null;
 
       const clearExpiredMorningRest = input.isMorningWake
@@ -627,28 +847,22 @@ export class ConversationActivityService {
   noteRestDecision(conversationId: string, decision: RestDecision): boolean {
     if (decision.kind === 'rest') {
       const atMs = Date.parse(decision.atIso);
-      const { mode, morningDate } = classifyRestRecoveryMode(Number.isFinite(atMs) ? atMs : Date.now(), decision.restKind ?? 'sleep');
+      const effectiveMs = Number.isFinite(atMs) ? atMs : Date.now();
       const existing = this.get(conversationId);
       if (existing?.resting === 1 && existing.rest_message_id === decision.messageId) {
         return false;
       }
-      return Number(this.db.prepare(`
-        INSERT INTO conversation_activity(
-          conversation_id, resting, rest_decided_at, rest_source, rest_message_id,
-          rest_recovery_mode, rest_morning_date, updated_at
-        )
-        VALUES (?, 1, ?, 'owner_message', ?, ?, ?, ?)
-        ON CONFLICT(conversation_id) DO UPDATE SET
-          resting = 1,
-          rest_decided_at = excluded.rest_decided_at,
-          rest_source = 'owner_message',
-          rest_message_id = excluded.rest_message_id,
-          rest_recovery_mode = excluded.rest_recovery_mode,
-          rest_morning_date = excluded.rest_morning_date,
-          updated_at = excluded.updated_at
-        WHERE conversation_activity.resting = 0
-           OR COALESCE(conversation_activity.rest_message_id, '') != COALESCE(excluded.rest_message_id, '')
-      `).run(conversationId, decision.atIso, decision.messageId, mode, morningDate, decision.atIso).changes) === 1;
+      if (!existing) {
+        this.db.prepare('INSERT INTO conversation_activity(conversation_id, updated_at) VALUES (?, ?)').run(conversationId, decision.atIso);
+      }
+      return this.applyRestDecisionInTx({
+        conversationId,
+        prev: existing,
+        messageId: decision.messageId,
+        acceptedAtIso: decision.atIso,
+        acceptMs: effectiveMs,
+        restKind: decision.restKind ?? 'sleep',
+      });
     }
     return Number(this.db.prepare(`
       UPDATE conversation_activity SET
@@ -715,11 +929,11 @@ export class ConversationActivityService {
     return Number(r.changes) === 1;
   }
 
-  /** Unified 50-minute target: max of latest formal chat publication (L), latest effective
-   *  automatic heartbeat start (for quiet/tool-only rounds on the same window), and valid
-   *  same-window maintenance receipt. Old morningSatisfied short-circuit is retired. */
-  nextKeepwarmTarget(input: { conversationId: string; windowId: string; cacheTtlMs?: number }):
-    | { scheduled: true; dueAtMs: number; basis: 'real_message' | 'maintenance'; activityRevision: number }
+  /** Internal authoritative 50-minute anchor resolver returning both dueAtMs and the exact
+   *  anchor identity used for occurrence_key deduplication (prevents quiet autonomous wakes
+   *  from stalling keepwarm on a stale last_effective_heartbeat_run_id key — Review #3). */
+  private resolveKeepwarmAnchor(input: { conversationId: string; windowId: string }):
+    | { scheduled: true; dueAtMs: number; basis: 'real_message' | 'maintenance'; activityRevision: number; anchorKey: string }
     | { scheduled: false; reason: 'NO_REAL_ACTIVITY' } {
     const row = this.get(input.conversationId);
     if (!row) return { scheduled: false, reason: 'NO_REAL_ACTIVITY' };
@@ -738,18 +952,32 @@ export class ConversationActivityService {
 
     let bestMs = Number.isFinite(L) ? L : NaN;
     let basis: 'real_message' | 'maintenance' = 'real_message';
+    let anchorKey = 'real';
 
     if (Number.isFinite(hbAnchor) && (!Number.isFinite(bestMs) || hbAnchor >= bestMs)) {
       bestMs = hbAnchor;
       basis = 'maintenance';
+      anchorKey = `hb:${row.last_effective_heartbeat_run_id ?? 'none'}`;
     }
-    if (Number.isFinite(validMaint) && (!Number.isFinite(bestMs) || validMaint >= bestMs)) {
+    if (Number.isFinite(validMaint) && (!Number.isFinite(bestMs) || validMaint > bestMs || (validMaint === bestMs && !Number.isFinite(hbAnchor)))) {
       bestMs = validMaint;
       basis = 'maintenance';
+      anchorKey = `maint:${row.maintenance_request_id}`;
     }
 
     if (!Number.isFinite(bestMs)) return { scheduled: false, reason: 'NO_REAL_ACTIVITY' };
-    return { scheduled: true, dueAtMs: bestMs + idleMs, basis, activityRevision: row.activity_revision };
+    return { scheduled: true, dueAtMs: bestMs + idleMs, basis, activityRevision: row.activity_revision, anchorKey };
+  }
+
+  /** Unified 50-minute target: max of latest formal chat publication (L), latest effective
+   *  automatic heartbeat start (for quiet/tool-only rounds on the same window), and valid
+   *  same-window maintenance receipt. Old morningSatisfied short-circuit is retired. */
+  nextKeepwarmTarget(input: { conversationId: string; windowId: string; cacheTtlMs?: number }):
+    | { scheduled: true; dueAtMs: number; basis: 'real_message' | 'maintenance'; activityRevision: number }
+    | { scheduled: false; reason: 'NO_REAL_ACTIVITY' } {
+    const resolved = this.resolveKeepwarmAnchor(input);
+    if (!resolved.scheduled) return resolved;
+    return { scheduled: true, dueAtMs: resolved.dueAtMs, basis: resolved.basis, activityRevision: resolved.activityRevision };
   }
 
   private isMorningOccurrenceConsumed(conversationId: string, businessDate: string): boolean {
@@ -809,6 +1037,10 @@ export class ConversationActivityService {
       return { scheduled: false, businessDate, reason: 'ALREADY_CONSUMED' };
     }
     const baselineMs = Date.parse(`${businessDate}T08:00:00+08:00`);
+    const suppressedBeforeMs = act?.keepwarm_suppressed_due_before_at ? Date.parse(act.keepwarm_suppressed_due_before_at) : NaN;
+    if (Number.isFinite(suppressedBeforeMs) && baselineMs <= suppressedBeforeMs) {
+      return { scheduled: false, businessDate, reason: 'MISSED_WHILE_DISABLED', dueAtMs: baselineMs, basis: 'morning_baseline', postponedByAtMs: null };
+    }
     const onlineYieldValid = act?.morning_yielded_date === businessDate
       && act.morning_yielded_at !== null
       && input.nowMs - Date.parse(act.morning_yielded_at) < MORNING_WAKE_GRACE_MS;
@@ -840,6 +1072,7 @@ export class ConversationActivityService {
     const consecutiveUnansweredCount = act?.consecutive_unanswered_count ?? 0;
     const pendingRestJudgment = this.hasActivePendingRest(act, input.currentControlRevision);
     const base = {
+      anchorKey: null as string | null,
       businessDate: today,
       sleepWindowActive: effSleep.blocked,
       localTime: rawSleep.local_time,
@@ -911,9 +1144,9 @@ export class ConversationActivityService {
           nextMorningPreview: { targetAtMs: morning.dueAtMs, businessDate: morning.businessDate },
         };
       }
-      // Morning fallback missed grace or no active window: preview next day's 08:00 if appropriate.
+      // Morning fallback missed grace, missed while disabled, or no active window: preview next day's 08:00 if appropriate.
       const nextDay = addCalendarDays(today, 1);
-      const nextPreview = morning.reason === 'MISSED_GRACE' && input.windowId
+      const nextPreview = (morning.reason === 'MISSED_GRACE' || morning.reason === 'MISSED_WHILE_DISABLED') && input.windowId
         ? { targetAtMs: Date.parse(`${nextDay}T08:00:00+08:00`), businessDate: nextDay }
         : null;
       return {
@@ -1047,8 +1280,8 @@ export class ConversationActivityService {
           nextMorningPreview: { targetAtMs: morning.dueAtMs, businessDate: today },
         };
       }
-      if (morning.reason === 'MISSED_GRACE') {
-        // Truly offline past 08:10 with no chat since last night: do not backfill.
+      if (morning.reason === 'MISSED_GRACE' || morning.reason === 'MISSED_WHILE_DISABLED') {
+        // Truly offline past 08:10 or manually disabled across 08:00: do not backfill.
         const nextDay = addCalendarDays(today, 1);
         return {
           ...base,
@@ -1056,16 +1289,30 @@ export class ConversationActivityService {
           kind: 'none',
           dueAtMs: null,
           basis: null,
-          blockedReason: 'MORNING_WAKE_MISSED_GRACE',
+          blockedReason: morning.reason === 'MISSED_GRACE' ? 'MORNING_WAKE_MISSED_GRACE' : null,
           nextMorningPreview: { targetAtMs: Date.parse(`${nextDay}T08:00:00+08:00`), businessDate: nextDay },
         };
       }
     }
 
     // 8. Unified 50-minute cycle (active daytime OR early-resumed pre-08:00).
-    const ordinary = this.nextKeepwarmTarget({ conversationId: input.conversationId, windowId: input.windowId });
+    const ordinary = this.resolveKeepwarmAnchor({ conversationId: input.conversationId, windowId: input.windowId });
     if (!ordinary.scheduled) {
       return { ...base, scheduled: false, kind: 'none', dueAtMs: null, basis: null, blockedReason: null, nextMorningPreview: null };
+    }
+    // Suppress opportunities that already fell due while the manual switch was OFF (Review #2).
+    const suppressedBeforeMs = act?.keepwarm_suppressed_due_before_at ? Date.parse(act.keepwarm_suppressed_due_before_at) : NaN;
+    if (Number.isFinite(suppressedBeforeMs) && ordinary.dueAtMs <= suppressedBeforeMs) {
+      const nextDay = addCalendarDays(today, 1);
+      return {
+        ...base,
+        scheduled: false,
+        kind: 'none',
+        dueAtMs: null,
+        basis: null,
+        blockedReason: null,
+        nextMorningPreview: { targetAtMs: Date.parse(`${nextDay}T08:00:00+08:00`), businessDate: nextDay },
+      };
     }
     // An anchor from before today's 08:00 without early resume belongs to the overnight pause
     // (handled solely by Step 7's 08:00 fallback), never revived as an ordinary keepwarm round.
@@ -1101,6 +1348,7 @@ export class ConversationActivityService {
 
     return {
       ...base,
+      anchorKey: ordinary.anchorKey,
       scheduled: true,
       kind: 'cache_idle',
       dueAtMs: ordinary.dueAtMs,

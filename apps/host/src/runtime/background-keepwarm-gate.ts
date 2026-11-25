@@ -72,6 +72,10 @@ export function keepwarmDispatchGate(input: {
   }
   const target = input.activity!.nextKeepwarmTarget({ conversationId: input.conversationId, windowId: input.windowId });
   if (!target.scheduled) return noop('KEEPWARM_NO_REAL_ACTIVITY', '无有效心跳锚点');
+  const suppressedBeforeMs = act.keepwarm_suppressed_due_before_at ? Date.parse(act.keepwarm_suppressed_due_before_at) : NaN;
+  if (Number.isFinite(suppressedBeforeMs) && target.dueAtMs <= suppressedBeforeMs) {
+    return noop('KEEPWARM_SUPERSEDED', '手动关闭期间已错过的机会不补发');
+  }
   if (input.nowMs < target.dueAtMs) return noop('KEEPWARM_SUPERSEDED', '目标已被新证据推后');
   if (effectiveSw && effectiveSleepState(effectiveSw, target.dueAtMs, act.early_resumed_date).blocked) {
     return noop('KEEPWARM_SLEEP_WINDOW', '心跳目标落入夜间截止时段，作废');

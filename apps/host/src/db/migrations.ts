@@ -2121,4 +2121,12 @@ ALTER TABLE background_runs ADD COLUMN streak_counted_at TEXT;
   },
 });
 
+// v93（心跳 2.1 复审修复）：记录手动关→开事务内已过期的旧机会截止时间，
+// 避免手动重新开启时补发关闭期间错过的 08:00 或 50 分钟心跳，同时不伪造真实发言时间。
+MIGRATIONS.push({
+  version: 93,
+  name: 'heartbeat-v21-reenable-suppression',
+  sql: 'ALTER TABLE conversation_activity ADD COLUMN keepwarm_suppressed_due_before_at TEXT;',
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

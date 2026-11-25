@@ -247,7 +247,7 @@ export class Host {
     const restJudge = new ConversationRestJudge({
       apiKeyEnv: surfaceCfg.sol.api_key_env,
       baseUrl: surfaceCfg.sol.base_url,
-      model: surfaceCfg.sol.model,
+      model: () => solJudge.effectiveModel(),
       reasoningEffort: surfaceCfg.sol.reasoning_effort,
       maxOutputTokens: surfaceCfg.sol.max_output_tokens,
       verbosity: surfaceCfg.sol.verbosity,
@@ -259,7 +259,7 @@ export class Host {
       activity,
       judge: restJudge,
       sleepWindow: () => bgSettings.effective().keepwarm.sleep_window,
-      controlRevision: () => bgSettings.revision(),
+      controlRevision: () => bgSettings.keepwarmControlRevision(),
       userDisplayName: surfaceCfg.sol.user_display_name,
       assistantDisplayName: surfaceCfg.sol.assistant_display_name,
       onStateChanged: () => schedulerRef?.refreshKeepwarmSchedule(),
@@ -299,7 +299,7 @@ export class Host {
         restJudge: restCoordinator,
         heartbeatContext: {
           sleepWindow: () => bgSettings.effective().keepwarm.sleep_window,
-          controlRevision: () => bgSettings.revision(),
+          controlRevision: () => bgSettings.keepwarmControlRevision(),
         },
         onScheduleDirty: () => schedulerRef?.refreshKeepwarmSchedule(),
         voiceObservations: {
@@ -552,8 +552,9 @@ export class Host {
     });
     schedulerRef = scheduler;
     const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
-    // AUD-02 P1：注入关闭→终止回调
+    // AUD-02 P1：注入关闭→终止回调 + 心跳开关变化→即时刷新排程行
     bgSettings.onDisable = (kind) => scheduler.disableKind(kind);
+    bgSettings.onKeepwarmChange = () => scheduler.refreshKeepwarmSchedule();
     const bindConfig = opts.config.source_binding;
     const sourceBinding = new SourceBindingService({db, config:opts.config, mariposa:modelMariposaClient,
       glm:new GlmChatAdapter({baseUrl:bindConfig.base_url,apiKeyEnv:bindConfig.api_key_env,model:bindConfig.model}),

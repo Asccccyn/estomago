@@ -18,6 +18,7 @@ import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.
 import type { OrMessage } from '../../apps/host/src/runtime/or-payload.ts';
 import type { SdkQueryFactory } from '../../apps/host/src/runtime/sdk-host-query.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
+import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { keepwarmStatusText } from '../../apps/web/react/src/background-controls-model.ts';
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts';
 import { makeFixtureToolsResident, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
@@ -1006,5 +1007,382 @@ test('验收 R6：带图收到 413 payload_too_large 后解锁改稿并发出新
     assert.equal(saved2.content, '原话', '网络未知重试沿用原载荷');
   } finally {
     client.stop();
+  }
+});
+
+// ============================================================================
+// 独立复审 c0422cd 返修回归（问题 1–7 全部反例，含 API 与 SDK 双车道）
+// ============================================================================
+
+for (const lane of ['api', 'sdk'] as const) {
+  test(`复审 #1（${lane}）：18:00 睡→22:11 回来不得豁免 23:01；00:30 提前恢复→01:20 心跳→01:30 再睡须恢复 08:00`, async t => {
+    // 1a：18:00 说去睡，22:11 回来且双方末句在 22:11 → 目标 23:01 落入 23:00 截止，绝不在 23:01 误唤
+    {
+      const fx = await createV21Fixture(t, '2026-11-24T18:00:00+08:00', { lane });
+      await fx.sendHttpMessage('2026-11-24T18:00:00+08:00', '我睡了', 'rev1a-1', '晚安。');
+      await fx.sendHttpMessage('2026-11-24T22:11:00+08:00', '醒啦，聊聊今天的事', 'rev1a-2', '好呀，我在。');
+      const act = new ConversationActivityService(fx.host.db).get('primary')!;
+      assert.equal(act.resting, 0, '22:11 间隔满 4 小时可解除 18:00 的休息');
+      assert.equal(act.early_resumed_date, null, '23:00 尚未开始，不得提前授予未来静默窗豁免');
+      const st2211 = await fx.readSettings();
+      assert.equal(st2211.body.keepwarm_status.next_keepwarm_at, undefined, '23:01 落入截止时段，页面不预告 23:01');
+      assert.equal(st2211.body.keepwarm_status.morning_wake?.scheduled, true, '保留次晨 08:00 条件兜底');
+      fx.setClock('2026-11-24T23:01:00+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 0, `${lane}：23:01 零派发`);
+      await fx.stop();
+    }
+
+    // 1b：前晚 19:30 停聊，次日 00:30 满 4 小时提前回来，01:20 心跳后，01:30 再次明确去睡 → 保留当天 08:00
+    {
+      const fx = await createV21Fixture(t, '2026-11-24T19:30:00+08:00', { lane });
+      await fx.sendHttpMessage('2026-11-24T19:30:00+08:00', '先忙去了', 'rev1b-1', '好。');
+      await fx.sendHttpMessage('2026-11-25T00:30:00+08:00', '半夜醒了来看看你', 'rev1b-2', '我在呢。');
+      fx.steps.push({ calls: [{ id: 'rev1b-0120', name: 'background_complete', args: { outcome: 'noop' } }] });
+      fx.setClock('2026-11-25T01:20:00+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 1, `${lane}：01:20 提前恢复后心跳执行`);
+      // 01:30 再次明确去睡（< 02:00 正常夜休），必须清除先前 00:30 的提前恢复/取代标记
+      await fx.sendHttpMessage('2026-11-25T01:30:00+08:00', '晚安，我睡了', 'rev1b-3', '好梦。');
+      const act = new ConversationActivityService(fx.host.db).get('primary')!;
+      assert.equal(act.resting, 1);
+      assert.equal(act.rest_recovery_mode, 'morning_0800');
+      assert.equal(act.rest_morning_date, '2026-11-25');
+      assert.equal(act.early_resumed_date, null, '新正常夜休清除旧 early_resumed_date');
+      assert.equal(act.morning_fallback_superseded_date, null, '新正常夜休清除旧 morning_fallback_superseded_date');
+      const st0130 = await fx.readSettings();
+      assert.equal(st0130.body.keepwarm_status.morning_wake?.scheduled, true, '页面恢复预告今日 08:00');
+      assert.equal(st0130.body.keepwarm_status.morning_wake?.target_at, new Date('2026-11-25T08:00:00+08:00').toISOString());
+      fx.steps.push({ calls: [{ id: 'rev1b-0800', name: 'background_complete', args: { outcome: 'noop' } }] });
+      fx.setClock('2026-11-25T08:00:00+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 2, `${lane}：08:00 晨间兜底正常唤醒`);
+      await fx.stop();
+    }
+  });
+}
+
+for (const lane of ['api', 'sdk'] as const) {
+  test(`复审 #2（${lane}）：手动关闭期间错过的 08:00 与白天 12:50，手动重开后均不补发；未到期机会仍按原锚点执行`, async t => {
+    // 2a：08:00 期间开关关闭，08:05 打开 → 不补发 08:00，次日 08:00 正常
+    {
+      const fx = await createV21Fixture(t, '2026-11-24T22:00:00+08:00', { lane });
+      await fx.sendHttpMessage('2026-11-24T22:00:00+08:00', '晚安，我睡了', 'rev2a-1', '晚安。');
+      const bg = new BackgroundSettingsService(fx.host.db, fx.config);
+      fx.setClock('2026-11-25T07:50:00+08:00');
+      bg.applyUpdate({ expectedRevision: bg.revision(), patch: { keepwarm_enabled: false } });
+      fx.setClock('2026-11-25T08:00:00+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 0);
+      fx.setClock('2026-11-25T08:05:00+08:00');
+      bg.applyUpdate({ expectedRevision: bg.revision(), patch: { keepwarm_enabled: true } });
+      const st0805 = await fx.readSettings();
+      assert.equal(st0805.body.keepwarm_status.next_keepwarm_at, undefined, '08:05 重开后页面不再预告已过的 08:00');
+      assert.notEqual(st0805.body.keepwarm_status.morning_wake?.target_at, new Date('2026-11-25T08:00:00+08:00').toISOString());
+      fx.setClock('2026-11-25T08:05:01+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 0, `${lane}：08:05:01 不补发关闭期间错过的 08:00`);
+      await fx.stop();
+    }
+
+    // 2b：白天 12:00 停聊，12:48 关、12:50 零派发、12:52 开 → 12:52:01 不补发，不伪造 L；新消息后照常；未到期重开照常
+    {
+      const fx = await createV21Fixture(t, '2026-11-25T12:00:00+08:00', { lane });
+      await fx.sendHttpMessage('2026-11-25T12:00:00+08:00', '午饭吃了面', 'rev2b-1', '听起来不错。');
+      const originalL = new ConversationActivityService(fx.host.db).get('primary')!.last_real_activity_at;
+      const bg = new BackgroundSettingsService(fx.host.db, fx.config);
+      // 未到期切换对照：12:10 关 → 12:20 开 → 12:50 仍保留
+      fx.setClock('2026-11-25T12:10:00+08:00');
+      bg.applyUpdate({ expectedRevision: bg.revision(), patch: { keepwarm_enabled: false } });
+      fx.setClock('2026-11-25T12:20:00+08:00');
+      bg.applyUpdate({ expectedRevision: bg.revision(), patch: { keepwarm_enabled: true } });
+      assert.equal((await fx.readSettings()).render, '已开启 · 下次心跳 12:50', '未到期的 12:50 在 12:20 重开后保留');
+      // 跨到期关闭：12:48 关 → 12:50 零派发 → 12:52 开 → 12:52:01 不补发
+      fx.setClock('2026-11-25T12:48:00+08:00');
+      bg.applyUpdate({ expectedRevision: bg.revision(), patch: { keepwarm_enabled: false } });
+      fx.setClock('2026-11-25T12:50:00+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 0);
+      fx.setClock('2026-11-25T12:52:00+08:00');
+      bg.applyUpdate({ expectedRevision: bg.revision(), patch: { keepwarm_enabled: true } });
+      assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.last_real_activity_at, originalL, '点击开启不伪造双方末句时间');
+      fx.setClock('2026-11-25T12:52:01+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 0, `${lane}：12:52:01 不补发 12:50 心跳`);
+      // 新消息到来后按新锚点恢复
+      await fx.sendHttpMessage('2026-11-25T12:55:00+08:00', '刚开完会', 'rev2b-2', '辛苦啦。');
+      assert.equal((await fx.readSettings()).render, '已开启 · 下次心跳 13:45');
+      fx.steps.push({ calls: [{ id: 'rev2b-1345', name: 'background_complete', args: { outcome: 'noop' } }] });
+      fx.setClock('2026-11-25T13:45:00+08:00');
+      await fx.host.scheduler!.tick();
+      assert.equal(fx.heartbeatRequests().length, 1, `${lane}：新消息后的 13:45 正常执行`);
+      await fx.stop();
+    }
+  });
+}
+
+test('复审 #3：两次保温之间穿插安静自主预约，13:40 顺延到 14:10 后使用独立锚点领取键，14:10 正常执行第 2 轮不卡死', async t => {
+  const fx = await createV21Fixture(t, '2026-11-25T12:00:00+08:00');
+  const bg = new BackgroundSettingsService(fx.host.db, fx.config);
+  bg.applyUpdate({ expectedRevision: bg.revision(), patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
+  await fx.sendHttpMessage('2026-11-25T12:00:00+08:00', '中午好', 'rev3-1', '中午好呀。');
+  // 预置 13:20 的安静自主预约任务
+  const due1320 = new Date('2026-11-25T13:20:00+08:00').toISOString();
+  const created1200 = new Date('2026-11-25T12:00:00+08:00').toISOString();
+  fx.host.db.prepare(`
+    INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at)
+    VALUES ('rev3-wake','primary','jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',?,'jiaming','self_schedule',?,?)
+  `).run(due1320, due1320, JSON.stringify({ note: '静默检查' }), created1200, created1200);
+
+  // 12:50 第 1 轮普通心跳安静结束（计 1）
+  fx.steps.push({ calls: [{ id: 'rev3-hb1', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-25T12:50:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1);
+  assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.consecutive_unanswered_count, 1);
+
+  // 13:20 自主预约安静完成（无聊天正文）
+  fx.steps.push({ calls: [{ id: 'rev3-auto1', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-25T13:20:00+08:00');
+  await fx.host.scheduler!.tick();
+  const autoRun = fx.host.db.prepare("SELECT state FROM background_runs WHERE task_id='rev3-wake'").get() as { state: string };
+  assert.equal(autoRun.state, 'noop', '13:20 自主预约安静完成');
+
+  // 13:40 保温检测到 13:20 刚刷新缓存 → satisfied_by_request 不重复付费，目标推到 14:10
+  fx.setClock('2026-11-25T13:40:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1, '13:40 不重复付费');
+  assert.equal((await fx.readSettings()).render, '已开启 · 下次心跳 14:10');
+
+  // 14:10 必须用维护回执锚点生成新唯一领取键并真正启动第 2 轮心跳（不卡死在 14:10）
+  fx.steps.push({ calls: [{ id: 'rev3-hb2', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-25T14:10:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 2, '14:10 成功启动第 2 轮心跳，未因旧 occurrence_key 卡死');
+  assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.consecutive_unanswered_count, 2);
+  assert.equal((await fx.readSettings()).render, '已开启 · 下次心跳 15:00', '14:10 完成后排程推进到 15:00');
+});
+
+test('复审 #4：前晚仅有 2 次无人回应即达 23:00 停止，次日 08:00 晨间机会作为新一串第 1 次，随后 08:50(2)、09:40(3)、10:30 停', async t => {
+  const fx = await createV21Fixture(t, '2026-11-24T21:00:00+08:00');
+  await fx.sendHttpMessage('2026-11-24T21:00:00+08:00', '晚上好', 'rev4-1', '晚上好。');
+  fx.steps.push({ calls: [{ id: 'rev4-2150', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-24T21:50:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.consecutive_unanswered_count, 1);
+
+  fx.steps.push({ calls: [{ id: 'rev4-2240', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-24T22:40:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.consecutive_unanswered_count, 2);
+
+  // 23:00 停止
+  fx.setClock('2026-11-24T23:30:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 2);
+
+  // 次日 08:00 必须计为第 1 次（不是 2+1=3！）
+  for (const [iso, id, expectedCount] of [
+    ['2026-11-25T08:00:00+08:00', 'rev4-0800', 1],
+    ['2026-11-25T08:50:00+08:00', 'rev4-0850', 2],
+    ['2026-11-25T09:40:00+08:00', 'rev4-0940', 3],
+  ] as const) {
+    fx.steps.push({ calls: [{ id, name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock(iso);
+    await fx.host.scheduler!.tick();
+    assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.consecutive_unanswered_count, expectedCount, `${iso} 计数应为 ${expectedCount}`);
+  }
+  assert.equal(fx.heartbeatRequests().length, 5, '前晚 2 次 + 次日 08:00/08:50/09:40 恰 3 次');
+  fx.setClock('2026-11-25T10:30:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 5, '10:30 达 3 次暂停零新回合');
+});
+
+test('复审 #5：合法编辑旧修订使修订 1 的迟到 Sol 失效（且不计新出现）；仅切提醒开关不作废有效 Sol 休息判断', async t => {
+  // 5a：前一条正在生成时，排队消息从“我困了，打算休息”编辑为“我还在，继续聊” → 迟到修订 1 的 rest 结果被丢弃
+  {
+    let releaseFirstTurn!: () => void;
+    let firstTurnEntered!: () => void;
+    const enteredPromise = new Promise<void>(r => { firstTurnEntered = r; });
+    let releaseSolRev1!: () => void;
+    let solRev1Started!: () => void;
+    const solStartedPromise = new Promise<void>(r => { solRev1Started = r; });
+    const solTransport: SolTransport = async () => {
+      solRev1Started();
+      await new Promise<void>(r => { releaseSolRev1 = r; });
+      return {
+        status: 200,
+        json: {
+          id: 'resp_rev5a',
+          status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'sleep', basis: 'rev1' }) }] }],
+        },
+      };
+    };
+    const fx = await createV21Fixture(t, '2026-11-25T10:00:00+08:00', { solTransport });
+    // 先启动一条长回复占住会话串行链，使第二条消息处于可编辑排队态
+    fx.steps.push({
+      text: '第一条回复。',
+      onTransport: async () => { firstTurnEntered(); await new Promise<void>(r => { releaseFirstTurn = r; }); },
+    });
+    const r1 = await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'rev5a-m1' },
+      JSON.stringify({ content: '先聊一句', client_message_id: 'rev5a-m1' }));
+    assert.equal(r1.status, 201);
+    await enteredPromise;
+
+    // 提交第二条排队消息（修订 1）触发 Sol
+    fx.steps.push({ text: '好，继续聊。' });
+    const r2 = await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'rev5a-m2' },
+      JSON.stringify({ content: '我困了，打算休息', client_message_id: 'rev5a-m2' }));
+    assert.equal(r2.status, 201);
+    const msg2Id = r2.json().message.id as string;
+    await solStartedPromise;
+    const revBeforeEdit = new ConversationActivityService(fx.host.db).get('primary')!.user_appearance_revision;
+
+    // 经正式编辑接口把修订 1 改成修订 2“我还在，继续聊”
+    const editRes = await httpDispatch(fx.host, 'PUT', `/api/v1/conversations/primary/messages/${encodeURIComponent(msg2Id)}`,
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'If-Match': '"1"' },
+      JSON.stringify({ content: '我还在，继续聊' }));
+    assert.equal(editRes.status, 200);
+    assert.equal(editRes.json().message.current_revision, 2);
+    assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.user_appearance_revision, revBeforeEdit, '合法编辑不计为新的用户出现');
+
+    // 放行修订 1 的迟到 Sol 结果与前一条回复
+    releaseSolRev1();
+    await fx.host.restCoordinator?.waitIdle();
+    releaseFirstTurn();
+    await fx.host.supervisor.waitIdle();
+    assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), false, '修订 1 的过期休息结果必须被丢弃');
+    await fx.stop();
+  }
+
+  // 5b：09:00 表达休息，Sol 在途时仅切 reminders.enabled → 不得作废有效休息判断，09:50 零心跳
+  {
+    let releaseSol!: () => void;
+    let solStarted!: () => void;
+    const solStartedPromise = new Promise<void>(r => { solStarted = r; });
+    const solTransport: SolTransport = async () => {
+      solStarted();
+      await new Promise<void>(r => { releaseSol = r; });
+      return {
+        status: 200,
+        json: {
+          id: 'resp_rev5b',
+          status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'nap_or_wait', basis: 'explicit rest' }) }] }],
+        },
+      };
+    };
+    const fx = await createV21Fixture(t, '2026-11-25T09:00:00+08:00', { solTransport });
+    fx.steps.push({ text: '好好休息。' });
+    const r = await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'rev5b-1' },
+      JSON.stringify({ content: '今天撑不住了，先到这，明天说', client_message_id: 'rev5b-1' }));
+    assert.equal(r.status, 201);
+    await fx.host.supervisor.waitIdle();
+    await solStartedPromise;
+
+    // 经正式设置接口只切 reminders.enabled，不动 keepwarm.enabled
+    const beforeSet = await fx.readSettings();
+    const putRem = await httpDispatch(fx.host, 'PUT', '/api/v1/background/settings',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'If-Match': `"${beforeSet.body.revision}"`, 'Idempotency-Key': 'rev5b-rem' },
+      JSON.stringify({ reminders: { enabled: false } }));
+    assert.equal(putRem.status, 200);
+
+    releaseSol();
+    await fx.host.restCoordinator?.waitIdle();
+    assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), true, '切换无关提醒开关不得作废有效休息判断');
+    fx.setClock('2026-11-25T09:50:00+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 0, '09:50 零心跳');
+    await fx.stop();
+  }
+});
+
+test('复审 #6 与 #7：长消息尾句保留、短口语进 Sol、缺 Sol 保守同 503、拒绝 rest+null、跟随生效 Sol 型号并记录用量观测', async t => {
+  const capturedPayloads: Array<{ model: string; userMessage: string }> = [];
+  let nextReply: Record<string, unknown> = { decision: 'rest', rest_kind: 'sleep', basis: 'tail farewell' };
+  let nextStatus = 200;
+  let seq = 0;
+  const solTransport: SolTransport = async (_url, _headers, body) => {
+    const reqBody = body as { model: string; input: Array<{ role: string; content: string }> };
+    const userObj = JSON.parse(reqBody.input[1]!.content) as { current_user_message: string };
+    capturedPayloads.push({ model: reqBody.model, userMessage: userObj.current_user_message });
+    if (nextStatus !== 200) return { status: nextStatus, json: { error: { message: 'unavailable' } } };
+    return {
+      status: 200,
+      json: {
+        id: `resp_rest_${++seq}`,
+        status: 'completed',
+        usage: { input_tokens: 123, output_tokens: 17, input_tokens_details: { cached_tokens: 40 } },
+        output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify(nextReply) }] }],
+      },
+    };
+  };
+
+  // #7a：正式设置接口切到 gpt-6.2-sol，休息判断必须实时跟随
+  const fx = await createV21Fixture(t, '2026-11-25T14:00:00+08:00', { solTransport });
+  const putModel = await httpDispatch(fx.host, 'PUT', '/api/v1/memory-surfacing/settings',
+    { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json' },
+    JSON.stringify({ model: 'gpt-6.2-sol' }));
+  assert.equal(putModel.status, 200);
+  assert.equal(putModel.json().sol.model, 'gpt-6.2-sol');
+
+  // #6a：2000+ 字长消息结尾“我现在真的要睡了，明早再说”必须完整保留送给 Sol
+  const longText = `${'今天工作流水账记录一段普通叙述。'.repeat(140)}我现在真的要睡了，明早再说`;
+  assert.ok(longText.length > 2000);
+  await fx.sendHttpMessage('2026-11-25T14:00:00+08:00', longText, 'rev6a-long', '晚安。');
+  assert.equal(capturedPayloads.length, 1);
+  assert.equal(capturedPayloads[0]!.model, 'gpt-6.2-sol', '#7a：休息判断实时跟随生效 Sol 型号 gpt-6.2-sol');
+  assert.ok(capturedPayloads[0]!.userMessage.length <= 1500, '发送给 Sol 的摘录受 1500 字符上限约束');
+  assert.ok(capturedPayloads[0]!.userMessage.includes('我现在真的要睡了，明早再说'), '#6a：长消息结尾告别原句完整保留');
+  assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), true);
+
+  // #7b：核实实际 token 与请求身份落入 usage_observations（独立 purpose='rest_intent_sol'、费用未知、不存用户原话）
+  const obs = fx.host.db.prepare("SELECT request_id, model, input_tokens, output_tokens, cost_usd, purpose, source, window_id, background_run_id, raw_usage_json FROM usage_observations WHERE purpose = 'rest_intent_sol'").all() as Array<Record<string, unknown>>;
+  assert.equal(obs.length, 1);
+  assert.equal(obs[0]!.request_id, 'resp_rest_1');
+  assert.equal(obs[0]!.model, 'gpt-6.2-sol');
+  assert.equal(obs[0]!.input_tokens, 123);
+  assert.equal(obs[0]!.output_tokens, 17);
+  assert.equal(obs[0]!.cost_usd, null, '不臆造账单金额');
+  assert.equal(obs[0]!.window_id, null, '不污染主对话窗口长度观测');
+  assert.equal(obs[0]!.background_run_id, null, '不混算为一次心跳运行');
+  assert.equal(String(obs[0]!.raw_usage_json).includes('我现在真的要睡了'), false, '不保存用户原话');
+  const daySummary = new UsageCollector(fx.host.db).summaryByDay('2026-11-25');
+  const solRow = daySummary.purposes.find(p => p.purpose === 'rest_intent_sol');
+  assert.ok(solRow);
+  assert.equal(solRow.known_input_total, 123);
+  assert.equal(solRow.unknown_cost_count, 1);
+
+  // #6b：短口语“我先歇一会儿，醒来再和你聊。”必须进入 Sol，并返回 nap_or_wait
+  nextReply = { decision: 'rest', rest_kind: 'nap_or_wait', basis: 'taking a short break' };
+  await fx.sendHttpMessage('2026-11-25T14:05:00+08:00', '我先歇一会儿，醒来再和你聊。', 'rev6b-break', '好，等你。');
+  assert.equal(capturedPayloads.length, 2, '#6b：短口语进入 Sol');
+  assert.equal(new ConversationActivityService(fx.host.db).restState('primary').recovery_mode, 'next_user_message');
+
+  // #6d：注入 decision='rest' + rest_kind=null 必须被判无效（不得默认成 sleep 或预告次晨 08:00）
+  await fx.sendHttpMessage('2026-11-25T21:00:00+08:00', '晚上回来啦', 'rev6d-awake', '欢迎。');
+  assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), false);
+  nextReply = { decision: 'rest', rest_kind: null, basis: 'malformed null kind' };
+  await fx.sendHttpMessage('2026-11-25T21:05:00+08:00', '有点累，先去歇一会儿', 'rev6d-bad', '好。');
+  assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), false, '#6d：rest + rest_kind=null 拒收，不默认成 sleep');
+
+  // #6c 对照：午睡中 14:10 说“有点困，但我自己也说不准”——Sol 503 与未配置 Sol 行为一致，均保留午睡且 15:00 零唤醒
+  await fx.stop();
+  for (const mode of ['sol_503', 'no_sol'] as const) {
+    const fxNap = await createV21Fixture(t, '2026-11-25T13:30:00+08:00', {
+      solTransport: mode === 'sol_503' ? async () => ({ status: 503, json: { error: { message: 'down' } } }) : undefined,
+    });
+    await fxNap.sendHttpMessage('2026-11-25T13:30:00+08:00', '我去午睡了', `rev6c-nap-${mode}`, '好，睡个好觉。');
+    assert.equal(new ConversationActivityService(fxNap.host.db).resting('primary'), true);
+    await fxNap.sendHttpMessage('2026-11-25T14:10:00+08:00', '有点困，但我自己也说不准', `rev6c-ambig-${mode}`, '那先别勉强。');
+    assert.equal(new ConversationActivityService(fxNap.host.db).resting('primary'), true, `#6c（${mode}）：模糊表达在不可判定时保留既有午睡状态`);
+    fxNap.setClock('2026-11-25T15:00:00+08:00');
+    await fxNap.host.scheduler!.tick();
+    assert.equal(fxNap.heartbeatRequests().length, 0, `#6c（${mode}）：15:00 零心跳`);
+    await fxNap.stop();
   }
 });

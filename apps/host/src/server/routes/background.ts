@@ -42,7 +42,7 @@ if (route === 'GET /api/v1/background/settings') {
       sleepWindow: es.keepwarm.sleep_window,
       keepwarmEnabled: es.keepwarm.enabled,
       nowMs,
-      currentControlRevision: es.revision,
+      currentControlRevision: d.bgSettings.keepwarmControlRevision(),
     });
     const nextAtIso = schedule.scheduled && schedule.blockedReason === null && schedule.dueAtMs !== null
       ? new Date(schedule.dueAtMs).toISOString()

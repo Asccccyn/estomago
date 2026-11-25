@@ -301,7 +301,7 @@ export class BackgroundScheduler {
           sleepWindow: effSettings.keepwarm.sleep_window,
           keepwarmEnabled: effSettings.keepwarm.enabled,
           nowMs: curNow,
-          currentControlRevision: effSettings.revision,
+          currentControlRevision: this.d.settings.keepwarmControlRevision(),
         });
         if (!schedule.scheduled || schedule.dueAtMs === null || schedule.dueAtMs > curNow || schedule.blockedReason !== null) continue;
         if (isCallActivityActive(this.d.db, task.conversation_id, curNow) || this.hasForegroundTurnActive(task.conversation_id)) {
@@ -335,7 +335,7 @@ export class BackgroundScheduler {
             sleepWindow: effSettings.keepwarm.sleep_window,
             keepwarmEnabled: effSettings.keepwarm.enabled,
             nowMs: afterNow,
-            currentControlRevision: effSettings.revision,
+            currentControlRevision: this.d.settings.keepwarmControlRevision(),
           });
           if (schedule.scheduled && schedule.kind === 'morning_wake' && schedule.blockedReason === null && schedule.dueAtMs !== null && schedule.dueAtMs <= afterNow) {
             const morningRunId = this.claim(task, afterNow);
@@ -375,7 +375,7 @@ export class BackgroundScheduler {
         sleepWindow: effSettings.keepwarm.sleep_window,
         keepwarmEnabled: effSettings.keepwarm.enabled,
         nowMs,
-        currentControlRevision: effSettings.revision,
+        currentControlRevision: this.d.settings.keepwarmControlRevision(),
       });
       if (!schedule.scheduled || schedule.dueAtMs === null || schedule.dueAtMs > nowMs || schedule.blockedReason !== null) {
         return null;
@@ -392,7 +392,7 @@ export class BackgroundScheduler {
       if (schedule.kind === 'morning_wake') {
         occurrenceKey = morningWakeOccurrenceKey(task.conversation_id, schedule.businessDate);
       } else {
-        const anchorId = act?.last_effective_heartbeat_run_id ?? act?.maintenance_request_id ?? 'none';
+        const anchorId = schedule.anchorKey ?? 'none';
         occurrenceKey = `keepwarm:${task.conversation_id}:${win.id}:${act?.activity_revision ?? 0}:${anchorId}`;
       }
     } else {
@@ -441,7 +441,7 @@ export class BackgroundScheduler {
         sleepWindow: settings.keepwarm.sleep_window,
         keepwarmEnabled: settings.keepwarm.enabled,
         nowMs,
-        currentControlRevision: settings.revision,
+        currentControlRevision: this.d.settings.keepwarmControlRevision(),
       });
       const nextDueIso = schedule.scheduled && schedule.dueAtMs !== null
         ? new Date(schedule.dueAtMs).toISOString()
