@@ -3,7 +3,7 @@
 // 夜间四小时提前恢复与前夜截止；晨间兜底允许跨夜冷缓存与前夜正常夜休，普通 50 分钟循环
 // 沿用既有缓存证据与 satisfied_by_request 合同。
 import type { Db } from '../db/connection.ts';
-import { CACHE_TTL_MS, lastCacheEvidence } from './cache-observation.ts';
+import { CACHE_TTL_MS, lastCacheEvidence, provesMainChatOneHourCacheProtection } from './cache-observation.ts';
 import { effectiveSleepState, type SleepWindowConfig } from './keepwarm-sleep.ts';
 import type { SupervisorDeps } from './supervisor.ts';
 import { MAX_CONSECUTIVE_UNANSWERED_HEARTBEATS, shanghaiDateOfMs } from './wake-activity.ts';
@@ -83,15 +83,20 @@ export function keepwarmDispatchGate(input: {
   const evidence = lastCacheEvidence(input.db, input.windowId);
   if (evidence === null) return noop('KEEPWARM_CACHE_EVIDENCE_UNKNOWN', '无已确认缓存证据——保温不冷启动');
   if (input.nowMs - Date.parse(evidence.startedAt) >= CACHE_TTL_MS) return noop('KEEPWARM_CACHE_ALREADY_COLD', '缓存估计已冷——不补冷写');
-  // 05 satisfied_by_request：同机会内一次真实请求已实际刷新有效缓存（自主唤醒/普通
-  // 聊天）→ 本维护机会记技术回执进入后继，不重复付费。
+  // 05 satisfied_by_request + 2026-11-25 裁定：仅当同窗其他已完成请求逐笔证明保护了
+  // 同一主聊天的一小时缓存（同型号/同传输/受保护前缀规模/显式 1h 覆盖）时才顺延；
+  // 证据不足时沿原 2.1 正常执行，不凭猜测跳过自动心跳。
   const prq = input.db.prepare('SELECT purpose FROM provider_requests WHERE id = ?').get(evidence.requestId) as { purpose: string } | undefined;
   const anchorIso = act.last_real_activity_at ?? act.last_effective_heartbeat_at!;
   const L = Date.parse(anchorIso);
-  const refreshedByOther = prq && prq.purpose !== 'cache_keepalive' && Date.parse(evidence.startedAt) >= L && (input.nowMs - Date.parse(evidence.startedAt)) < 3_000_000;
+  const refreshedByOther = prq
+    && prq.purpose !== 'cache_keepalive'
+    && Date.parse(evidence.startedAt) >= L
+    && (input.nowMs - Date.parse(evidence.startedAt)) < 3_000_000
+    && provesMainChatOneHourCacheProtection(input.db, { windowId: input.windowId, candidateRequestId: evidence.requestId });
   if (refreshedByOther) {
     input.activity!.noteMaintenanceReceipt({ conversationId: input.conversationId, capturedActivityRevision: act.activity_revision, requestId: evidence.requestId, windowId: input.windowId, dispatchStartedAtIso: evidence.startedAt });
-    return noop('satisfied_by_request', '同机会缓存已由真实请求刷新——本维护机会不重复付费');
+    return noop('satisfied_by_request', '同机会一小时主聊天缓存已由同源真实请求保护——本维护机会顺延');
   }
   return { decision: 'proceed', capturedActivityRevision: act.activity_revision };
 }

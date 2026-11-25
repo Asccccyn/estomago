@@ -197,14 +197,22 @@ test('T-A05/T-A06：休息由首次接受的输入建立；重复提交、编辑
   const submit = (content: string, clientMessageId: string, attachments: Parameters<MessageService['submitUserMessageWithTurn']>[0]['attachments'] = []) =>
     messages.submitUserMessageWithTurn({ conversationId: 'primary', content, clientMessageId, attachments });
 
+  const earlier = submit('先聊一句', 'm-earlier');
   const goodnight = submit('晚安，我睡了', 'm-goodnight');
   assert.equal(activity.restState('primary').resting, true, '接纳入口同事务建立休息');
   assert.equal(activity.restState('primary').recovery_mode, 'morning_0800');
   assert.equal(activity.get('primary')!.rest_message_id, goodnight.message.id);
-  assert.deepEqual({ revision: activity.get('primary')!.activity_revision, duplicate: submit('晚安，我睡了', 'm-goodnight').duplicate }, { revision: 1, duplicate: true }, '重复提交不重复受理');
+  assert.deepEqual({ revision: activity.get('primary')!.activity_revision, duplicate: submit('晚安，我睡了', 'm-goodnight').duplicate }, { revision: 2, duplicate: true }, '重复提交不重复受理');
 
-  messages.editUserMessage(goodnight.message.id, '我醒了');
-  assert.equal(activity.restState('primary').resting, true, '编辑旧消息不改变休息');
+  messages.editUserMessage(earlier.message.id, '我醒了');
+  assert.equal(activity.restState('primary').resting, true, '编辑更早的旧消息不改变休息');
+  const revBeforeSelfEdit = activity.get('primary')!.user_appearance_revision;
+  messages.editUserMessage(goodnight.message.id, '我还在，继续聊');
+  assert.equal(activity.restState('primary').resting, false, '尚未派发前编辑当条休息消息为继续聊可撤销该条休息');
+  assert.equal(activity.get('primary')!.user_appearance_revision, revBeforeSelfEdit, '编辑本身不计为新的用户出现');
+  const goodnight2 = submit('晚安，我睡了', 'm-goodnight-2');
+  assert.equal(activity.restState('primary').resting, true);
+  assert.equal(activity.get('primary')!.rest_message_id, goodnight2.message.id);
   messages.publishAssistantMessage({ conversationId: 'primary', turnId: 'turn-assistant', content: '早安，我醒了' });
   assert.equal(activity.restState('primary').resting, true, '模型回复不解除休息');
 

@@ -18,6 +18,8 @@ import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.
 import type { OrMessage } from '../../apps/host/src/runtime/or-payload.ts';
 import type { SdkQueryFactory } from '../../apps/host/src/runtime/sdk-host-query.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
+import { provesMainChatOneHourCacheProtection } from '../../apps/host/src/runtime/cache-observation.ts';
+import { ConversationRestJudge, RestDecisionCoordinator } from '../../apps/host/src/runtime/conversation-rest-sol.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { keepwarmStatusText } from '../../apps/web/react/src/background-controls-model.ts';
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts';
@@ -1384,5 +1386,277 @@ test('复审 #6 与 #7：长消息尾句保留、短口语进 Sol、缺 Sol 保�
     await fxNap.host.scheduler!.tick();
     assert.equal(fxNap.heartbeatRequests().length, 0, `#6c（${mode}）：15:00 零心跳`);
     await fxNap.stop();
+  }
+});
+
+test('返修复验 #3：Sol HTTP 503、连接中断和超时均沿稳定本地请求身份记录 rest_intent_sol 未知观测（零重发、不存原文）', async t => {
+  // 1. HTTP 503 与连接中断（ECONNRESET）
+  let mode: 'http503' | 'disconnect' = 'http503';
+  let transportCalls = 0;
+  const solTransport: SolTransport = async () => {
+    transportCalls++;
+    if (mode === 'http503') return { status: 503, json: { error: { message: 'upstream 503' } } };
+    throw Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
+  };
+  const fx = await createV21Fixture(t, '2026-11-25T11:00:00+08:00', { solTransport });
+  await fx.sendHttpMessage('2026-11-25T11:00:00+08:00', '今天撑不住了，先到这，明天说', 'sol-unk-503', '好。');
+  mode = 'disconnect';
+  await fx.sendHttpMessage('2026-11-25T11:05:00+08:00', '有点困，但我自己也说不准', 'sol-unk-drop', '嗯。');
+  assert.equal(transportCalls, 2, '各只尝试一次，不重发');
+
+  const rows = fx.host.db.prepare(
+    "SELECT request_id, model, input_tokens, output_tokens, cost_usd, completeness, purpose, source, raw_usage_json FROM usage_observations WHERE purpose = 'rest_intent_sol' ORDER BY rowid ASC",
+  ).all() as Array<Record<string, unknown>>;
+  assert.equal(rows.length, 2, '503 与连接中断各留一条未知观测');
+  for (const [idx, expectedCode] of [[0, 'REST_SOL_HTTP_503'], [1, 'REST_SOL_NETWORK_ERROR']] as const) {
+    assert.ok(String(rows[idx]!.request_id).startsWith('rest_sol_'), '带稳定本地请求身份');
+    assert.equal(rows[idx]!.input_tokens, null);
+    assert.equal(rows[idx]!.output_tokens, null);
+    assert.equal(rows[idx]!.cost_usd, null);
+    assert.equal(rows[idx]!.completeness, 'unknown');
+    assert.equal(rows[idx]!.source, 'sol_rest');
+    const raw = JSON.parse(String(rows[idx]!.raw_usage_json)) as { code: string };
+    assert.equal(raw.code, expectedCode);
+    assert.equal(String(rows[idx]!.raw_usage_json).includes('撑不住'), false, '不保存用户原文');
+  }
+
+  // 2. 真实超时触发 abort（使用短 timeoutMs=25 验证计时器中止路径）
+  let timeoutCalls = 0;
+  const judge = new ConversationRestJudge({
+    apiKeyEnv: null,
+    baseUrl: 'https://sol.local',
+    model: 'gpt-6.2-sol',
+    reasoningEffort: 'low',
+    maxOutputTokens: 200,
+    verbosity: 'low',
+    userDisplayName: '宿主用户',
+    assistantDisplayName: 'char',
+    timeoutMs: 25,
+  }, async (_u, _h, _b, signal) => {
+    timeoutCalls++;
+    await new Promise<void>((_, reject) => {
+      signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+    return { status: 200, json: {} };
+  });
+  const activity = new ConversationActivityService(fx.host.db);
+  const coord = new RestDecisionCoordinator({
+    db: fx.host.db,
+    activity,
+    judge,
+    sleepWindow: () => fx.config.background.keepwarm.sleep_window,
+    controlRevision: () => 0,
+    userDisplayName: '宿主用户',
+    assistantDisplayName: 'char',
+  });
+  // 复用已有真实消息修订 1，经独立短超时判断器验证真实 timeoutMs 触发 abort 后的未知观测落库
+  const latestMsg = fx.host.db.prepare("SELECT id, current_revision FROM messages WHERE speaker='owner' ORDER BY sequence DESC LIMIT 1").get() as { id: string; current_revision: number };
+  fx.host.db.prepare("DELETE FROM usage_observations WHERE attempt_id = ?").run(`rest_sol:${latestMsg.id}:r${latestMsg.current_revision}`);
+  fx.host.db.prepare(`
+    UPDATE conversation_activity SET
+      pending_rest_message_id = ?, pending_rest_revision = ?,
+      pending_rest_accepted_at = ?, pending_rest_control_revision = 0,
+      pending_rest_user_appearance_revision = user_appearance_revision,
+      pending_rest_was_night_pause = 0, pending_rest_gap_eligible = 0
+    WHERE conversation_id = 'primary'
+  `).run(latestMsg.id, latestMsg.current_revision, new Date().toISOString());
+  coord.wake('primary');
+  // Host 在此单测未监听 TCP 端口，judge 内 timer.unref() 需测试侧短保活以等待 25ms 超时真正触发
+  const keepAlive = setInterval(() => {}, 10);
+  try {
+    await coord.waitIdle();
+  } finally {
+    clearInterval(keepAlive);
+  }
+  assert.equal(timeoutCalls, 1, '超时只尝试一次，不重发');
+  const timeoutRow = fx.host.db.prepare(
+    "SELECT request_id, model, input_tokens, output_tokens, cost_usd, completeness, raw_usage_json FROM usage_observations WHERE attempt_id = ?",
+  ).get(`rest_sol:${latestMsg.id}:r${latestMsg.current_revision}`) as Record<string, unknown> | undefined;
+  assert.ok(timeoutRow, '超时后留下未知观测记录');
+  assert.equal(timeoutRow.model, 'gpt-6.2-sol');
+  assert.equal(timeoutRow.completeness, 'unknown');
+  assert.equal(timeoutRow.cost_usd, null);
+  assert.equal(JSON.parse(String(timeoutRow.raw_usage_json)).code, 'REST_SOL_TIMEOUT');
+  await fx.stop();
+});
+
+test('返修复验最新裁定：satisfied_by_request 必须逐笔证明同型号/同传输/受保护前缀规模与 1h 覆盖；证据不足沿原 2.1 不顺延', async t => {
+  // 对照 1：证据不足（5m-only / 型号不同 / 读缓存为 0 / 前缀规模过小 / SDK 无 1h 证据）→ 不得顺延，13:40 照常启动心跳
+  for (const defect of ['model_mismatch', 'prefix_too_small', 'cold_read_zero', 'ttl_5m_only', 'no_1h_wire'] as const) {
+    const fx = await createV21Fixture(t, '2026-11-25T12:00:00+08:00');
+    const bg = new BackgroundSettingsService(fx.host.db, fx.config);
+    bg.applyUpdate({ expectedRevision: bg.revision(), patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 5 } });
+    await fx.sendHttpMessage('2026-11-25T12:00:00+08:00', '中午好', `cp-${defect}-1`, '中午好。');
+    const due1320 = new Date('2026-11-25T13:20:00+08:00').toISOString();
+    const created1200 = new Date('2026-11-25T12:00:00+08:00').toISOString();
+    fx.host.db.prepare(`
+      INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at)
+      VALUES ('cp-wake','primary','jiaming','autonomous',1,1,'once',?,?,'Asia/Shanghai',?,'jiaming','self_schedule',?,?)
+    `).run(due1320, due1320, JSON.stringify({ note: '检查' }), created1200, created1200);
+
+    // 12:50 第 1 轮心跳
+    fx.steps.push({ calls: [{ id: `cp-${defect}-hb1`, name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock('2026-11-25T12:50:00+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 1);
+
+    // 13:20 自主预约安静完成
+    fx.steps.push({ calls: [{ id: `cp-${defect}-auto`, name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock('2026-11-25T13:20:00+08:00');
+    await fx.host.scheduler!.tick();
+    const autoPrq = fx.host.db.prepare("SELECT id FROM provider_requests WHERE purpose = 'proactive_turn' ORDER BY rowid DESC LIMIT 1").get() as { id: string };
+    const winId = fx.host.windows.activeWindow('primary')!.id;
+
+    // 按各缺陷改写该笔自主预约的证据，使之无法证明保护同一主聊天的 1h 缓存
+    if (defect === 'model_mismatch') {
+      fx.host.db.prepare('UPDATE usage_observations SET model = ? WHERE request_id = ?').run('other/different-model', autoPrq.id);
+    } else if (defect === 'prefix_too_small') {
+      fx.host.db.prepare('UPDATE usage_observations SET cache_read_input_tokens = 200, cache_creation_input_tokens = 100 WHERE request_id = ?').run(autoPrq.id);
+    } else if (defect === 'cold_read_zero') {
+      fx.host.db.prepare('UPDATE usage_observations SET cache_read_input_tokens = 0, cache_creation_input_tokens = 2500 WHERE request_id = ?').run(autoPrq.id);
+    } else if (defect === 'ttl_5m_only') {
+      fx.host.db.prepare('UPDATE usage_observations SET raw_usage_json = ? WHERE request_id = ?')
+        .run(JSON.stringify({ cache_creation_split: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 } }), autoPrq.id);
+    } else if (defect === 'no_1h_wire') {
+      // 只剥除 payload_wire_json 里的 cache_control 1h 标记，保持 messages/tools 原样以通过 append-only 校验
+      const wireRow = fx.host.db.prepare('SELECT payload_wire_json FROM provider_requests WHERE id = ?').get(autoPrq.id) as { payload_wire_json: string };
+      const parsed = JSON.parse(wireRow.payload_wire_json) as Record<string, unknown>;
+      delete parsed.cache_control;
+      for (const m of (parsed.messages as Array<Record<string, unknown>>) ?? []) {
+        delete m.cache_control;
+        if (Array.isArray(m.content)) for (const b of m.content as Array<Record<string, unknown>>) delete b.cache_control;
+      }
+      fx.host.db.prepare('UPDATE provider_requests SET payload_wire_json = ? WHERE id = ?')
+        .run(JSON.stringify(parsed), autoPrq.id);
+    }
+    assert.equal(provesMainChatOneHourCacheProtection(fx.host.db, { windowId: winId, candidateRequestId: autoPrq.id }), false, `${defect} 证据不足不得证明 1h 缓存保护`);
+
+    // 13:40 必须沿原 2.1 正常执行第 2 轮自动心跳（不顺延到 14:10）
+    fx.steps.push({ calls: [{ id: `cp-${defect}-hb2`, name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock('2026-11-25T13:40:00+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 2, `${defect}：证据不足时 13:40 照常执行第 2 轮心跳`);
+    await fx.stop();
+  }
+
+  // 对照 2（SDK 1h 证据正反对照）：ephemeral_1h_input_tokens > 0 才允许证明，缺 1h 拆分则拒绝
+  const fxSdk = await createV21Fixture(t, '2026-11-25T12:00:00+08:00', { lane: 'sdk' });
+  await fxSdk.sendHttpMessage('2026-11-25T12:00:00+08:00', '午安', 'cp-sdk-1', '午安。');
+  const winId = fxSdk.host.windows.activeWindow('primary')!.id;
+  const nowIso = new Date('2026-11-25T12:20:00+08:00').toISOString();
+  const baseRow = fxSdk.host.db.prepare("SELECT u.model, pr.context_fingerprint_json FROM usage_observations u JOIN provider_requests pr ON pr.id = u.request_id WHERE pr.window_id = ? LIMIT 1").get(winId) as { model: string; context_fingerprint_json: string };
+  fxSdk.host.db.prepare(`
+    INSERT INTO provider_requests(id, window_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, outcome, dispatch_started_at, sent_at, created_at)
+    VALUES ('sdk-auto-1', ?, 'proactive_turn', '[]', '{}', ?, 'completed', ?, ?, ?)
+  `).run(winId, baseRow.context_fingerprint_json, nowIso, nowIso, nowIso);
+  fxSdk.host.db.prepare(`
+    INSERT INTO usage_observations(id, request_id, attempt_id, turn_id, scope, model, input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens, raw_usage_json, window_id, source, completeness, observed_at, purpose, budget_day, dispatch_started_at, legacy_observed_at)
+    VALUES ('use-sdk-auto-1', 'sdk-auto-1', 'att-auto', 'turn-auto', 'request', ?, 2000, 10, 35138, 995, NULL, ?, 'sdk_result', 'complete', ?, 'proactive_turn', '2026-11-25', ?, 0)
+  `).run(baseRow.model, winId, nowIso, nowIso);
+  assert.equal(provesMainChatOneHourCacheProtection(fxSdk.host.db, { windowId: winId, candidateRequestId: 'sdk-auto-1' }), false, 'SDK 缺 1h 拆分证据不得顺延');
+  fxSdk.host.db.prepare("UPDATE usage_observations SET raw_usage_json = ? WHERE id = 'use-sdk-auto-1'")
+    .run(JSON.stringify({ cache_creation_split: { ephemeral_1h_input_tokens: 995 } }));
+  assert.equal(provesMainChatOneHourCacheProtection(fxSdk.host.db, { windowId: winId, candidateRequestId: 'sdk-auto-1' }), true, 'SDK 带 1h 拆分+同型号同传输+前缀规模达标可证保护');
+  await fxSdk.stop();
+});
+
+test('返修复验技术记录 #1/#2：编辑更早排队消息不擦除更新消息的待判 Sol；21:00 已生效休息编辑为继续聊可正确撤销', async t => {
+  // #1：M1 生成中，M2(12:00:05 “我睡了”)已生效，M3(12:00:10 撑不住)待判 Sol；编辑 M2 不得擦掉 M3 待判
+  {
+    let releaseFirst!: () => void;
+    let firstEntered!: () => void;
+    const entered = new Promise<void>(r => { firstEntered = r; });
+    let releaseSolM3!: () => void;
+    let solM3Started!: () => void;
+    const solStarted = new Promise<void>(r => { solM3Started = r; });
+    const solTransport: SolTransport = async () => {
+      solM3Started();
+      await new Promise<void>(r => { releaseSolM3 = r; });
+      return {
+        status: 200,
+        json: {
+          id: 'resp_tr1_m3',
+          status: 'completed',
+          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'nap_or_wait', basis: 'm3 rest' }) }] }],
+        },
+      };
+    };
+    const fx = await createV21Fixture(t, '2026-11-25T12:00:00+08:00', { solTransport });
+    fx.steps.push({ text: '回复1', onTransport: async () => { firstEntered(); await new Promise<void>(r => { releaseFirst = r; }); } });
+    await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'tr1-m1' },
+      JSON.stringify({ content: '第一句', client_message_id: 'tr1-m1' }));
+    await entered;
+
+    fx.setClock('2026-11-25T12:00:05+08:00');
+    fx.steps.push({ text: '回复2' });
+    const r2 = await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'tr1-m2' },
+      JSON.stringify({ content: '我睡了', client_message_id: 'tr1-m2' }));
+    const m2Id = r2.json().message.id as string;
+
+    fx.setClock('2026-11-25T12:00:10+08:00');
+    fx.steps.push({ text: '回复3' });
+    const r3 = await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'tr1-m3' },
+      JSON.stringify({ content: '我有点撑不住了，等我再回来', client_message_id: 'tr1-m3' }));
+    const m3Id = r3.json().message.id as string;
+    await solStarted;
+
+    // 12:00:20 编辑旧的 M2 → M3 的待判标记必须原样保留
+    fx.setClock('2026-11-25T12:00:20+08:00');
+    const editM2 = await httpDispatch(fx.host, 'PUT', `/api/v1/conversations/primary/messages/${encodeURIComponent(m2Id)}`,
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'If-Match': '"1"' },
+      JSON.stringify({ content: '我还在，继续聊' }));
+    assert.equal(editM2.status, 200);
+    assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.pending_rest_message_id, m3Id, '编辑旧消息不得擦掉更新消息 M3 的待判标记');
+
+    releaseSolM3();
+    await fx.host.restCoordinator?.waitIdle();
+    releaseFirst();
+    await fx.host.supervisor.waitIdle();
+    assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), true, 'M3 的有效休息结果被采纳');
+    fx.setClock('2026-11-25T12:50:20+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 0, '12:50:20 零心跳');
+    await fx.stop();
+  }
+
+  // #2：21:00:05 “我睡了”已本地生效，15 秒后在尚未派发前编辑为“我还在，继续聊” → resting 归 0，21:50:20 正常派发
+  {
+    let releaseFirst!: () => void;
+    let firstEntered!: () => void;
+    const entered = new Promise<void>(r => { firstEntered = r; });
+    const fx = await createV21Fixture(t, '2026-11-25T21:00:00+08:00');
+    fx.steps.push({ text: '晚间回复1', onTransport: async () => { firstEntered(); await new Promise<void>(r => { releaseFirst = r; }); } });
+    await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'tr2-m1' },
+      JSON.stringify({ content: '晚上聊聊', client_message_id: 'tr2-m1' }));
+    await entered;
+
+    fx.setClock('2026-11-25T21:00:05+08:00');
+    fx.steps.push({ text: '晚间回复2' });
+    const r2 = await httpDispatch(fx.host, 'POST', '/api/v1/conversations/primary/messages',
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'Idempotency-Key': 'tr2-m2' },
+      JSON.stringify({ content: '我睡了', client_message_id: 'tr2-m2' }));
+    const m2Id = r2.json().message.id as string;
+    assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), true);
+    const revBefore = new ConversationActivityService(fx.host.db).get('primary')!.user_appearance_revision;
+
+    fx.setClock('2026-11-25T21:00:20+08:00');
+    const editRes = await httpDispatch(fx.host, 'PUT', `/api/v1/conversations/primary/messages/${encodeURIComponent(m2Id)}`,
+      { Authorization: `Bearer ${fx.token()}`, Origin: 'http://127.0.0.1', 'Content-Type': 'application/json', 'If-Match': '"1"' },
+      JSON.stringify({ content: '我还在，继续聊' }));
+    assert.equal(editRes.status, 200);
+    assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), false, '21:00 已生效休息编辑为继续聊可撤销');
+    assert.equal(new ConversationActivityService(fx.host.db).get('primary')!.user_appearance_revision, revBefore, '编辑不冒充新出现');
+
+    releaseFirst();
+    await fx.host.supervisor.waitIdle();
+    fx.steps.push({ calls: [{ id: 'tr2-2150', name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock('2026-11-25T21:50:20+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 1, '21:50:20 正常派发一次心跳');
+    await fx.stop();
   }
 });

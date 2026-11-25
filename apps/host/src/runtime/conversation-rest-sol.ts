@@ -128,6 +128,18 @@ export class ConversationRestJudge {
     timer.unref?.();
     const effectiveModel = this.effectiveModel();
     const dispatchStartedAt = new Date().toISOString();
+    const localRequestId = genId('rest_sol');
+    const unknownMeta = (): SolRestUsageMeta => ({
+      requestId: localRequestId,
+      model: effectiveModel,
+      dispatchStartedAt,
+      observedAt: new Date().toISOString(),
+      inputTokens: null,
+      outputTokens: null,
+      cacheReadTokens: null,
+      reasoningTokens: null,
+      rawUsage: null,
+    });
     try {
       const transport = this.isFixture() ? this.fixture! : defaultSolTransport;
       const key = this.isFixture() ? 'fixture-only' : process.env[this.cfg.apiKeyEnv!]!;
@@ -161,8 +173,8 @@ export class ConversationRestJudge {
         },
         controller.signal,
       );
-      if (timedOut) return { status: 'timeout', code: 'REST_SOL_TIMEOUT' };
-      if (controller.signal.aborted) return { status: 'failed', code: 'REST_SOL_ABORTED' };
+      if (timedOut) return { status: 'timeout', code: 'REST_SOL_TIMEOUT', meta: unknownMeta() };
+      if (controller.signal.aborted) return { status: 'failed', code: 'REST_SOL_ABORTED', meta: unknownMeta() };
       const observedAt = new Date().toISOString();
       const rawBody = response.json && typeof response.json === 'object'
         ? response.json as {
@@ -180,7 +192,7 @@ export class ConversationRestJudge {
       const numOrNull = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
       const responseId = typeof rawBody?.id === 'string' && rawBody.id.length > 0 && rawBody.id.length <= 256
         ? rawBody.id
-        : genId('rest_sol');
+        : localRequestId;
       const meta: SolRestUsageMeta = {
         requestId: responseId,
         model: effectiveModel,
@@ -226,8 +238,8 @@ export class ConversationRestJudge {
       }
       return { status: 'failed', code: 'REST_SOL_INVALID_OUTPUT', meta };
     } catch {
-      if (timedOut) return { status: 'timeout', code: 'REST_SOL_TIMEOUT' };
-      return { status: 'failed', code: 'REST_SOL_NETWORK_ERROR' };
+      if (timedOut) return { status: 'timeout', code: 'REST_SOL_TIMEOUT', meta: unknownMeta() };
+      return { status: 'failed', code: 'REST_SOL_NETWORK_ERROR', meta: unknownMeta() };
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', onParentAbort);

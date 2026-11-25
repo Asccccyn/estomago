@@ -440,6 +440,13 @@ export class ConversationActivityService {
   }): { needsSol: boolean } {
     const row = this.get(input.conversationId);
     if (!row) return { needsSol: false };
+    // Never let an edit to an older message clobber a newer owner message's pending or settled state.
+    if (row.pending_rest_message_id !== null && row.pending_rest_message_id !== input.messageId) {
+      return { needsSol: false };
+    }
+    if (row.last_user_message_id !== null && row.last_user_message_id !== input.messageId) {
+      return { needsSol: false };
+    }
     const hadPending = row.pending_rest_message_id === input.messageId
       && row.pending_rest_revision === input.supersededRevision;
     const hadSettledRest = row.resting === 1 && row.rest_message_id === input.messageId;
@@ -462,9 +469,11 @@ export class ConversationActivityService {
     const acceptMs = Date.parse(acceptedAtIso);
     const overnightDate = overnightMorningDate(input.sleepWindow, acceptMs);
     const today = shanghaiDateOfMs(acceptMs);
-    const wasInNightPause = hadPending ? row.pending_rest_was_night_pause === 1 : this.isInNightPause(row, input.sleepWindow, acceptMs);
-    const gapEligible = hadPending ? row.pending_rest_gap_eligible === 1 : false;
     const inSleepWindowNow = this.isInActiveSleepWindow(row, input.sleepWindow, acceptMs);
+    // When revoking this message's own settled rest (e.g. 21:00:05 "我睡了" -> "我还在，继续聊"),
+    // do not count the edited message's own resting=1 as a pre-existing nighttime pause.
+    const wasInNightPause = hadPending ? row.pending_rest_was_night_pause === 1 : inSleepWindowNow;
+    const gapEligible = hadPending ? row.pending_rest_gap_eligible === 1 : false;
 
     const precheck = classifyRestLocally(resolvedContent);
     if (precheck.kind === 'needs_sol' && !input.solConfigured) {
