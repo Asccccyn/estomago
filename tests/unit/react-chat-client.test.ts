@@ -66,15 +66,87 @@ test('晚到回执不清空新草稿；发送过程中不重复提交',async()=>
     resolve(Response.json({message:dto('m1','原草稿')}));await pending;assert.equal(h.client.snapshot.draft,'新草稿')
   }finally{h.client.stop()}
 })
-test('仅附件可发送，失败重试冻结完整载荷，新附件不被清除',async()=>{
+test('附件消息回执丢失时保留原发送键和附件，新草稿留在输入框',async()=>{
   let uploads=0,posts=0;const bodies:any[]=[]
   const h=await setup((url,init)=>{
     if(url.startsWith('/api/v1/assets?'))return Response.json({asset_id:'asset-'+(++uploads)})
     if(url.endsWith('/messages')&&init?.method==='POST'){bodies.push({body:JSON.parse(String(init.body)),key:(init.headers as any)['Idempotency-Key']});return ++posts===1?Promise.reject(new Error('lost response')):Response.json({message:dto('m1','')})}
   })
   try{await h.client.queue(new Blob(['a']),'a.png');assert.equal(h.client.canSend,true);await h.client.send()
-    await h.client.queue(new Blob(['b']),'b.png');await h.client.send();assert.deepEqual(bodies[0],bodies[1]);assert.equal(bodies[1].body.kind,undefined)
+    const original=h.client.snapshot.attachments[0]!
+    assert.equal(h.client.isAttachmentLocked(original.id),true)
+    h.client.removeAttachment(original.id)
+    assert.equal(h.calls.some(c=>c.init?.method==='DELETE'),false)
+    await h.client.queue(new Blob(['b']),'b.png');h.client.setDraft('给下一条消息')
+    await h.client.send();assert.deepEqual(bodies[0],bodies[1]);assert.equal(bodies[1].body.kind,undefined)
+    assert.equal(h.client.snapshot.draft,'给下一条消息')
     assert.equal(h.client.snapshot.attachments.length,1);assert.equal(h.client.snapshot.attachments[0].assetId,'asset-2')
+  }finally{h.client.stop()}
+})
+for (const [code,status] of [['asset_master_commit_failed',503],['too_many_attachments',422]] as const) {
+test(`发送中的附件受保护，明确未发出后可重选；仅载荷改变才使用新发送键（${code}）`,async()=>{
+  let uploads=0
+  let finishFirst!:(r:Response)=>void
+  const sends:Array<{ key:string|null; body:Record<string,unknown> }>=[]
+  const rejected=()=>Response.json({error:{code,message:'本次未发出。'}},{status})
+  const h=await setup((url,init)=>{
+    if(url.startsWith('/api/v1/assets?'))return Response.json({asset_id:'asset-'+(++uploads)})
+    if(url.endsWith('/messages')&&init?.method==='POST'){
+      sends.push({ key:new Headers(init.headers).get('idempotency-key'),body:JSON.parse(String(init.body)) })
+      if(sends.length===1)return new Promise(resolve=>{finishFirst=resolve})
+      return sends.length===2?rejected():Response.json({message:dto('m1','')})
+    }
+  })
+  try{
+    await h.client.queue(new Blob(['a']),'a.png')
+    await h.client.queue(new Blob(['b']),'b.png')
+    const [first,second]=h.client.snapshot.attachments
+    const inFlight=h.client.send()
+    assert.equal(h.client.isAttachmentLocked(first!.id),true)
+    assert.equal(h.client.isAttachmentLocked(second!.id),true)
+    h.client.removeAttachment(second!.id)
+    assert.equal(h.calls.some(c=>c.init?.method==='DELETE'),false)
+    finishFirst(rejected());await inFlight
+    assert.equal(h.client.isAttachmentLocked(second!.id),false)
+
+    await h.client.send()
+    assert.deepEqual(sends[0],sends[1])
+    h.client.removeAttachment(second!.id)
+    assert.ok(h.calls.some(c=>c.url==='/api/v1/assets/asset-2?staged=1'&&c.init?.method==='DELETE'))
+    await h.client.queue(new Blob(['b']),'b.png')
+    await h.client.send()
+    assert.notEqual(sends[1]!.key,sends[2]!.key)
+    assert.equal(sends[2]!.body.client_message_id,sends[2]!.key)
+    assert.deepEqual(sends[2]!.body.attachments,[
+      {asset_id:'asset-1',presentation:'image'},
+      {asset_id:'asset-3',presentation:'image'},
+    ])
+  }finally{h.client.stop()}
+})
+}
+test('选图的上传回执丢失时按同一资产键重试，直到点击发送才提交消息',async()=>{
+  const uploadKeys:Array<string|null>=[]
+  const file=new Blob(['selected bytes'])
+  const h=await setup((url,init)=>{
+    if(url==='/api/v1/assets?purpose=chat_image&staged=1'){
+      assert.equal(init?.body,file)
+      uploadKeys.push(new Headers(init?.headers).get('idempotency-key'))
+      return uploadKeys.length===1?Promise.reject(new Error('lost upload response')):Response.json({asset_id:'confirmed-asset'})
+    }
+    if(url.endsWith('/messages')&&init?.method==='POST')return Response.json({message:dto('m1','')})
+  })
+  try{
+    await h.client.queue(file,'a.png')
+    const attachment=h.client.snapshot.attachments[0]!
+    assert.equal(attachment.status,'failed')
+    await h.client.retryAttachment(attachment.id)
+    assert.ok(uploadKeys[0])
+    assert.deepEqual(uploadKeys,[uploadKeys[0],uploadKeys[0]])
+    assert.equal(attachment.assetId,'confirmed-asset')
+    assert.equal(h.calls.some(c=>c.url.endsWith('/messages')&&c.init?.method==='POST'),false)
+    await h.client.send()
+    const sent=h.calls.find(c=>c.url.endsWith('/messages')&&c.init?.method==='POST')!
+    assert.deepEqual(JSON.parse(String(sent.init?.body)).attachments,[{asset_id:'confirmed-asset',presentation:'image'}])
   }finally{h.client.stop()}
 })
 test('语音必须完成可信转写才可发送，正文请求不携带客户端派生文字',async()=>{

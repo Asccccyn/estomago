@@ -96,6 +96,7 @@ export class MediaService {
   private mediaDir: string;
   private config: Config;
   private mStore: MariposaMediaStore | null;
+  private readonly stagedSyncs = new Map<string, Promise<boolean>>();
   constructor(db: Db, mediaDir: string, config: Config, mStore: MariposaMediaStore | null = null) {
     this.db = db;
     this.mediaDir = mediaDir;
@@ -298,8 +299,16 @@ export class MediaService {
     return Boolean(this.db.prepare("SELECT 1 FROM media_assets WHERE id = ? AND state = 'available' AND m_sync_state = 'staged'").get(assetId));
   }
 
-  /** 暂存上传在被正式消息或内容引用的同一请求里落正 M。M 拿不下时抛错，调用方因此不发布任何
-   *  引用——未发送的附件从不出现在 M。M 未配置时与普通上传一致：如实转 pending，由后台补落正。 */
+  private syncStagedAsset(assetId: string): Promise<boolean> {
+    const inFlight = this.stagedSyncs.get(assetId);
+    if (inFlight) return inFlight;
+    const sync = this.attemptMSync(assetId, undefined, { staged: true }).finally(() => this.stagedSyncs.delete(assetId));
+    this.stagedSyncs.set(assetId, sync);
+    return sync;
+  }
+
+  /** 草稿在正式提交请求前保持本地暂存。M 拒绝落正时调用方不发布附件引用。
+   *  M 未配置时与普通上传一致：转 pending，由后台补落正。 */
   async commitStagedAssets(assetIds: readonly string[]): Promise<void> {
     const staged: string[] = [];
     for (const assetId of new Set(assetIds)) {
@@ -316,7 +325,7 @@ export class MediaService {
     for (const assetId of staged) {
       if (!this.mStore) {
         this.db.prepare("UPDATE media_assets SET m_sync_state = 'pending' WHERE id = ? AND m_sync_state = 'staged'").run(assetId);
-      } else if (!(await this.attemptMSync(assetId, undefined, { staged: true }))) {
+      } else if (!(await this.syncStagedAsset(assetId))) {
         throw new MediaError('ASSET_MASTER_COMMIT_FAILED', 503, '附件还没存入正本，本次未发出。请稍后重试。');
       }
     }
@@ -331,6 +340,9 @@ export class MediaService {
       for (const assetId of assetIds) {
         const view = this.staticSvgView(assetId);
         for (const id of view ? [assetId, view.id] : [assetId]) {
+          if (this.stagedSyncs.has(id)) {
+            throw new MediaError('ASSET_UPLOAD_IN_PROGRESS', 409, '附件正在确认正本，请等发送结果后再移除。');
+          }
           const row = this.db.prepare("SELECT storage_key, content_sha256 FROM media_assets WHERE id = ? AND m_sync_state = 'staged'").get(id) as { storage_key: string; content_sha256: string } | undefined;
           if (!row) continue;
           if (id === assetId && this.isAssetReferenced(assetId).referenced) {
@@ -359,7 +371,13 @@ export class MediaService {
       WHERE m_sync_state = 'staged' AND state = 'available' AND origin = 'upload' AND created_at < ?
       ORDER BY created_at LIMIT ?`).all(cutoff, limit) as Array<{ id: string }>;
     let pruned = 0;
-    for (const row of rows) if (!this.isAssetReferenced(row.id).referenced) pruned += this.discardStagedAssets([row.id]);
+    for (const row of rows) {
+      if (this.isAssetReferenced(row.id).referenced) continue;
+      try { pruned += this.discardStagedAssets([row.id]); }
+      catch (err) {
+        if (!(err instanceof MediaError) || err.code !== 'ASSET_UPLOAD_IN_PROGRESS') throw err;
+      }
+    }
     return pruned;
   }
 

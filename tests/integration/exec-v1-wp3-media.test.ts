@@ -334,3 +334,61 @@ test('C3 HTTP：聊天附件放弃不进 M，部分落正保留原操作重试�
     assert.equal(attempts.length, beforeDiscard, '未点击发送的草稿完全不进 M');
   } finally { storeSlot.mStore = null; }
 });
+
+test('同一张暂存图的并发发送重试共享一次正本上传，上传中不能丢弃', async (t) => {
+  const media = host.heartbeat.media;
+  const started = Promise.withResolvers<void>();
+  const proceed = Promise.withResolvers<void>();
+  const retried = Promise.withResolvers<void>();
+  let uploads = 0;
+  const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
+  storeSlot.mStore = {
+    uploadBytes: async (bytes: Uint8Array) => {
+      uploads++;
+      started.resolve();
+      await proceed.promise;
+      return { content_hash: sha256Hex(Buffer.from(bytes)), deduplicated: false };
+    },
+  } as unknown as MariposaMediaStore;
+  try {
+    const upload = await fetch(`${base}/api/v1/assets?purpose=chat_image&staged=1`, {
+      method: 'POST', headers: auth({ 'Idempotency-Key': 'retry-same-photo-upload', Origin: base }),
+      body: new Uint8Array(PNG),
+    });
+    assert.equal(upload.status, 201);
+    const { asset_id } = await upload.json() as { asset_id: string };
+    assert.equal(uploads, 0, '选图阶段没有写入 M');
+    const key = 'retry-same-photo-send';
+    const send = () => fetch(`${base}/api/v1/conversations/primary/messages`, {
+      method: 'POST', headers: auth({ 'Content-Type': 'application/json', 'Idempotency-Key': key, Origin: base }),
+      body: JSON.stringify({ content: '', client_message_id: key, attachments: [{ asset_id, presentation: 'image' }] }),
+    });
+    const validate = media.validateBeforeCommit.bind(media);
+    let validations = 0;
+    t.mock.method(media, 'validateBeforeCommit', (attachments: Parameters<MediaService['validateBeforeCommit']>[0]) => {
+      validate(attachments);
+      if (++validations === 2) retried.resolve();
+    });
+    const original = send();
+    await started.promise;
+    const retry = send();
+    await retried.promise;
+    const discard = await fetch(`${base}/api/v1/assets/${asset_id}?staged=1`, {
+      method: 'DELETE', headers: auth({ Origin: base }),
+    });
+    assert.equal(discard.status, 409);
+    assert.equal(((await discard.json()) as { error: { code: string } }).error.code, 'asset_upload_in_progress');
+    assert.equal(uploads, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_message_id=?').get(key)?.n, 0);
+    proceed.resolve();
+    const responses = await Promise.all([original, retry]);
+    assert.deepEqual(responses.map(r => r.status).sort(), [200, 201]);
+    const [first, second] = await Promise.all(responses.map(async r => (await r.json() as { message: { id: string } }).message.id));
+    assert.equal(first, second);
+    assert.equal(media.isAssetReferenced(asset_id).by_message_revisions, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE operation_key=?').get(`archive:${first}:1`)?.n, 1);
+  } finally {
+    proceed.resolve();
+    storeSlot.mStore = null;
+  }
+});

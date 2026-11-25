@@ -702,12 +702,15 @@ export default function App() {
           onEmpty={() => { if (confirm('确认不携带历史换窗？')) void client.confirmSelection(true) }}
           onCancel={client.cancelSelection} />
         ) : (<>
-        {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => <div key={a.id} className="flex items-center gap-1">
-          <button onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
-          {a.kind === 'voice' && <button aria-label="重新录制" onClick={() => { client.removeAttachment(a.id); void startRec() }} className="text-[#8a8780]">重录</button>}
-          {a.kind === 'voice' && a.assetId && <button aria-label="试听录音" onClick={() => togglePreview(a.assetId!)} className="text-[#8a8780]">试听</button>}
-          <button aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
-        </div>)}</div>}
+        {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => {
+          const locked = client.isAttachmentLocked(a.id)
+          return <div key={a.id} className="flex items-center gap-1">
+            <button disabled={locked} onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
+            {a.kind === 'voice' && <button disabled={locked} aria-label="重新录制" onClick={() => { client.removeAttachment(a.id); void startRec() }} className="text-[#8a8780]">重录</button>}
+            {a.kind === 'voice' && a.assetId && <button aria-label="试听录音" onClick={() => togglePreview(a.assetId!)} className="text-[#8a8780]">试听</button>}
+            <button disabled={locked} aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
+          </div>
+        })}</div>}
         <div className="flex items-center gap-2">
           <div className="relative shrink-0">
           {plus && (

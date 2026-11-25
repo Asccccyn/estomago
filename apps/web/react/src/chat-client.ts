@@ -12,6 +12,10 @@ const isHeartbeatMessage = (message: Json) => Boolean(message.heartbeat
   || (message.heartbeat_card?.run_id && message.heartbeat_card.origin !== 'chat'))
 class LifecycleEnded extends Error {}
 const terminalStates = new Set(['completed','failed','blocked','interrupted','cancelled'])
+const attachmentRejectionCodes = new Set([
+  'too_many_attachments', 'bad_attachment', 'attachment_mix_invalid',
+  'asset_not_found', 'asset_not_ready', 'asset_type_unsupported',
+])
 type Dependencies = { fetch?: typeof fetch; eventSource?: (url: string) => EventSource; redirect?: () => void }
 export type Snapshot = {
   messages: ChatMessage[]; draft: string; composing: boolean; sending: boolean; attachments: Attachment[];
@@ -77,7 +81,7 @@ export class EstomagoClient {
   private generation = 0
   private cursor = 0
   private draftRevision = 0
-  private pending: { id: string; draft: string; revision: number; entries: Attachment[]; body: Json } | null = null
+  private pending: { id: string; draft: string; revision: number; entries: Attachment[]; body: Json; confirmedUnsent: boolean } | null = null
   private edits = new Map<string,EditOperation>()
   private editBusy = new Set<string>()
   private replyRefreshes = new Map<string,{dirty:boolean;busy:boolean}>()
@@ -546,7 +550,11 @@ export class EstomagoClient {
   // R5（2026-10-23）：无转写语音可发——ASR failed/uncertain 的语音附件照常发送（服务端
   // 持可信状态：无转写走按需深听路径；unknown 绝不自动重放转写防双收费）。图片仍须 ready。
   private sendableAttachments = () => this.snapshot.attachments.filter(a => a.kind !== 'voice' ? a.status === 'ready' : a.status !== 'uploading' && a.status !== 'transcribing' && Boolean(a.assetId))
-  get canSend() {return this.snapshot.ready&&!this.redirecting&&!this.snapshot.composing&&!this.snapshot.sending&&!this.historyFetching()&&(Boolean(this.pending)||canSend(this.snapshot.draft,{composing:false,hasAttachment:this.sendableAttachments().length>0}))}
+  get canSend() {
+    return this.snapshot.ready && !this.redirecting && !this.snapshot.composing && !this.snapshot.sending && !this.historyFetching()
+      && (Boolean(this.pending && !this.pending.confirmedUnsent)
+        || canSend(this.snapshot.draft, { composing:false, hasAttachment:this.sendableAttachments().length>0 }))
+  }
   send = async () => {
     if(!this.canSend)return
     const draft=this.snapshot.draft
@@ -555,13 +563,22 @@ export class EstomagoClient {
       try{const result=await this.request('/route-decisions/'+encodeURIComponent(this.routeEdit),this.json('POST',{choice:'edit',content:draft}));this.absorb(result.message);this.routeEdit=null;if(revision===this.draftRevision)this.setDraft('');this.patch({route:null});this.render()}catch(e){this.report(e)}finally{this.patch({sending:false})}
       return
     }
-    if(!this.pending||(draft!==''&&draft!==this.pending.draft)){
-      const id=operationId(),entries=this.sendableAttachments()
+    const entries=this.sendableAttachments()
+    const previous=this.pending
+    const changedAfterRejection = previous?.confirmedUnsent && (
+      buildOutgoingDraft(draft, previous.id).content !== previous.body.content
+      || entries.length !== previous.entries.length
+      || entries.some((entry,index) => entry.assetId !== previous.entries[index]?.assetId || entry.kind !== previous.entries[index]?.kind)
+    )
+    if (!previous || changedAfterRejection || (previous.entries.length === 0 && draft !== '' && draft !== previous.draft)) {
+      const id=operationId()
       const body:Json=buildOutgoingDraft(draft,id)
       if(entries.length){delete body.kind;body.attachments=entries.map(a=>({asset_id:a.assetId,presentation:a.kind}))}
-      this.pending={id,draft,revision:this.draftRevision,entries,body}
+      this.pending={id,draft,revision:this.draftRevision,entries,body,confirmedUnsent:false}
     }
-    const pending=this.pending,generation=this.generation;this.patch({sending:true,notice:''})
+    const pending=this.pending!,generation=this.generation
+    pending.confirmedUnsent=false
+    this.patch({sending:true,notice:''})
     try{
       const data=await this.request('/conversations/primary/messages',this.json('POST',pending.body,{'Idempotency-Key':pending.id}))
       if(typeof data.message?.id!=='string'||typeof data.message?.revision?.content!=='string')throw new Error('消息回执不完整，发送结果尚未确认')
@@ -569,7 +586,16 @@ export class EstomagoClient {
       if(this.pending===pending)this.pending=null
       if(this.draftRevision===pending.revision&&this.snapshot.draft===pending.draft)this.setDraft('')
       this.patch({attachments:this.snapshot.attachments.filter(a=>!pending.entries.includes(a))})
-    }catch(e){this.report(e,'；草稿已保留，可以重试')}
+    }catch(e){
+      const error=e as Error & {status?:number;code?:string}
+      if (pending.entries.length > 0 && error.code) {
+        // These Host errors precede message acceptance. An unclassified or
+        // missing receipt keeps the original attachments available for replay.
+        pending.confirmedUnsent = error.status === 503 && error.code === 'asset_master_commit_failed'
+          || error.status !== undefined && error.status >= 400 && error.status < 500 && attachmentRejectionCodes.has(error.code)
+      }
+      this.report(e,'；草稿已保留，可以重试')
+    }
     finally{if(generation===this.generation)this.patch({sending:false})}
   }
   editMessage = async (id:string,content:string,resend=false,expectedRevision?:number):Promise<boolean> => {
@@ -614,15 +640,17 @@ export class EstomagoClient {
     const attachment:Attachment={id:operationId(),file,name,kind,status:'uploading',operationId:operationId()}
     this.patch({attachments:[...this.snapshot.attachments,attachment]});await this.upload(attachment)
   }
+  isAttachmentLocked = (id:string) => Boolean(this.pending && !this.pending.confirmedUnsent && this.pending.entries.some(a=>a.id===id))
   removeAttachment = (id:string) => {
+    if(this.isAttachmentLocked(id))return
     const removed=this.snapshot.attachments.find(a=>a.id===id)
     this.patch({attachments:this.snapshot.attachments.filter(a=>a.id!==id)});this.scheduleEstimate()
     // A staged upload exists only for this draft. The server discards it, or refuses when it was already sent.
     if(removed?.assetId)this.discard(removed.assetId)
   }
   /** An unsent file must not outlive its draft; the server's own sweep covers drafts abandoned by a closed page. */
-  private discard(assetId:string){void this.request('/assets/'+encodeURIComponent(assetId),{method:'DELETE'}).catch(()=>{})}
-  retryAttachment = async (id:string) => {const a=this.snapshot.attachments.find(a=>a.id===id);if(a)await this.upload(a)}
+  private discard(assetId:string){void this.request('/assets/'+encodeURIComponent(assetId)+'?staged=1',{method:'DELETE'}).catch(()=>{})}
+  retryAttachment = async (id:string) => {const a=this.snapshot.attachments.find(a=>a.id===id);if(a&&!this.isAttachmentLocked(id))await this.upload(a)}
   private async upload(a:Attachment) {
     if(a.busy)return
     a.busy=true;a.status='uploading';this.patch({attachments:[...this.snapshot.attachments]})
