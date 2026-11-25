@@ -15,6 +15,7 @@ function star(v: Obj): Obj {
 export function projectWishstarToolResult(name: string, v: Obj): Obj {
   switch (name) {
     case 'wishstar_hidden_stars': return {items:rows(v.items).map(star)};
+    case 'wishstar_shared_stars': return {items:rows(v.items).map(star)};
     case 'wishstar_special_dates': return {items:rows(v.items).map(d=>pick(d,['id','name','month','day','year','type','active']))};
     case 'wishstar_list_offers': return {incoming:rows(v.incoming).map(offer),outgoing:rows(v.outgoing).map(offer)};
     case 'wishstar_notifications': return {...pick(v,['unread_count','consumed']),items:rows(v.items).map(n=>pick(n,['id','type','title','body','star_id','created_at','is_read']))};

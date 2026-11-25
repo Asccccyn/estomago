@@ -142,6 +142,25 @@ test('读工具：GET 无幂等键、原样返回', async () => {
   } finally { db.close(); }
 });
 
+test('wishstar_read(what=shared)：转发共同瓶列表，对方写的可见星带正文投影', async () => {
+  const calls: ForwardCall[] = [];
+  const { tools, db } = makeTools(calls, () => ({ status: 200, body: { items: [
+    { id: 'star_21545ae0d3a4', content: '今天超级幸福', visibility: 'visible', state: 'SHARED', author_id: 'qiaosheng', author_name: '宿主用户', shared_origin: 'visible_from_start', shared_at: '2026-11-25T22:10:09', secret_internal: 'x' },
+    { id: 'star_5e0ca4f32ef9', content: '一起看机械姬', visibility: 'hidden', state: 'SHARED', author_id: 'qiaosheng', author_name: '宿主用户', shared_origin: 'revealed_by_offer', opened_by: 'jiaming' },
+  ] } }));
+  try {
+    const out = await tools.execute('wishstar_read', { what: 'shared' }, CTX as never);
+    assert.equal(out.ok, true);
+    assert.equal(calls[0]!.path, '/api/stars/shared', 'shared 枚举转发共同瓶列表接口');
+    assert.equal(calls[0]!.idempotencyKey, undefined, '读操作不带幂等键');
+    const items = (out.output as { items: Array<Record<string, unknown>> }).items;
+    assert.equal(items.length, 2);
+    assert.equal(items[0]!.content, '今天超级幸福', '共同瓶星正文对助手可见');
+    assert.equal(items[0]!.secret_internal, undefined, '投影白名单外的字段不透传');
+    assert.equal(items[1]!.opened_by, 'jiaming');
+  } finally { db.close(); }
+});
+
 test('错误如实：403 拒绝原样上抛；未配置=INTEGRATION_UNCONFIGURED', async () => {
   const { tools, db } = makeTools([], () => ({ status: 403, body: { detail: '纪念日只能在当天发起' } }));
   try {

@@ -186,7 +186,7 @@ export const WISHSTARNOTIFICATIONS_DEFINITION: HostToolSpec = {
   };
 
 export const WISHSTARREAD_DEFINITION: HostToolSpec = {
-  type:'function',function:{name:'wishstar_read',description:'读取自己的私人星、纪念日、待收星、开星请求或通知。hidden=自己的私人星，dates=特殊日期（发起仪式所需 id），offers=递星列表（收星所需 id），requests=开星请求（回应所需 id），notifications=通知；读取不打开对方的星。',parameters:{type:'object',properties:{what:{type:'string',enum:Object.keys(WISHSTAR_READ_ACTIONS)}},required:['what'],additionalProperties:false}},
+  type:'function',function:{name:'wishstar_read',description:'读取自己的私人星、纪念日、待收星、开星请求、通知或我们的瓶子。hidden=自己的私人星，dates=特殊日期（发起仪式所需 id），offers=递星列表（收星所需 id），requests=开星请求（回应所需 id），notifications=通知，shared=我们的瓶子里两人可见的星（含对方写进来的可见星正文）；读取不打开对方的星。',parameters:{type:'object',properties:{what:{type:'string',enum:Object.keys(WISHSTAR_READ_ACTIONS)}},required:['what'],additionalProperties:false}},
 };
 
 export type WishstarModuleDeps = {

@@ -7,6 +7,7 @@ import type { HeartbeatSource } from '../../../../../packages/contracts/src/hear
 export const WISHSTAR_READ_ACTIONS = {
   hidden:'wishstar_hidden_stars', dates:'wishstar_special_dates',
   offers:'wishstar_list_offers', notifications:'wishstar_notifications', requests:'wishstar_requests',
+  shared:'wishstar_shared_stars',
 } as const;
 
 const STAR_UNKNOWN_DETAIL = '写星可能已经提交。用相同参数和原 idempotency_key 重试以取得原星 ID。';
@@ -96,6 +97,7 @@ export class WishstarService {
       wishstar_accept_offer: { method: 'POST', path: `/api/offers/${encodeURIComponent(String(args.offer_id))}/accept`, write: true },
       wishstar_notifications: { method: 'GET', path: '/api/notifications', write: false },
       wishstar_requests: { method: 'GET', path: '/api/requests', write: false },
+      wishstar_shared_stars: { method: 'GET', path: '/api/stars/shared', write: false },
     };
     const call = calls[name];
     if (!call) return { ok: false, output: { error_code: 'TOOL_NOT_IN_ALLOWLIST' } };

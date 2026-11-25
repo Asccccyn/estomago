@@ -318,6 +318,39 @@
       "actor_a_count": 1,
       "actor_b_count": 1,
       "quota_cutoff_at": null
+    },
+    "wishstar_shared_stars": {
+      "items": [
+        {
+          "id": "star_21545ae0d3a4",
+          "author_id": "qiaosheng",
+          "recipient_id": "jiaming",
+          "content": "SYNTHETIC_SHARED_VISIBLE",
+          "mood_type": null,
+          "mood_text": null,
+          "note": null,
+          "visibility": "visible",
+          "state": "SHARED",
+          "written_at": "2026-11-25T22:10:09",
+          "shared_at": "2026-11-25T22:10:09",
+          "opened_at": "2026-11-25T22:10:09",
+          "opened_by": "qiaosheng",
+          "first_view_at": null,
+          "first_view_by": null,
+          "open_mode": "visible_from_start",
+          "shared_origin": "visible_from_start",
+          "cycle_id": null,
+          "created_at": "2026-11-25T22:10:09",
+          "updated_at": "2026-11-25T22:10:09",
+          "author_name": "宿主用户",
+          "being_offered": false,
+          "waiting_random_delivery": false,
+          "in_active_session": false,
+          "new_response_ids": [],
+          "responses": [],
+          "views": []
+        }
+      ]
     }
   }
 }

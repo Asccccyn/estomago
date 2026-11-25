@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "7ad961f916911d614a0223923dffdabcd5a61b10",
+  "baselineCommit": "1327fb2db4be9a8b0a48857ea5e21c50db64c8d6",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -101,7 +101,7 @@
     "oido_compare": "td_531c45af21260ea69a6c0fcf",
     "identity_milestone_write": "td_577aa1ab143661c5df508978",
     "wishstar_write_star": "td_c2196a8721a1bb683de5725d",
-    "wishstar_read": "td_8c101051bb0083cf6b9c2fb0",
+    "wishstar_read": "td_f027eafc50a236f6ef2ce952",
     "wishstar_start_session": "td_df84e69a2d3c58c1a54c5e2e",
     "wishstar_confirm_session": "td_6951feebfb5af5208310cfa5",
     "wishstar_take_star": "td_68e969661d67af8556bc0f9e",
@@ -123,7 +123,7 @@
     "heartbeat_draw": "td_fe22190ad1926fb33f2eb9a1",
     "wishstar_reply_star": "td_a374234a9f86d35d9ebb0a78"
   },
-  "toolsSha256": "1c4848fc7339b3e2fee3deb90d82cc2ed8ec2ecf03f4498b5675f5ff53520baf",
+  "toolsSha256": "394373ab4d03ef87be79591d6668eafd7a08e02b0ccb95bd18daf8e38ccdfc9f",
   "tools": [
     {
       "type": "function",
@@ -2054,7 +2054,7 @@
       "type": "function",
       "function": {
         "name": "wishstar_read",
-        "description": "读取自己的私人星、纪念日、待收星、开星请求或通知。hidden=自己的私人星，dates=特殊日期（发起仪式所需 id），offers=递星列表（收星所需 id），requests=开星请求（回应所需 id），notifications=通知；读取不打开对方的星。",
+        "description": "读取自己的私人星、纪念日、待收星、开星请求、通知或我们的瓶子。hidden=自己的私人星，dates=特殊日期（发起仪式所需 id），offers=递星列表（收星所需 id），requests=开星请求（回应所需 id），notifications=通知，shared=我们的瓶子里两人可见的星（含对方写进来的可见星正文）；读取不打开对方的星。",
         "parameters": {
           "type": "object",
           "properties": {
@@ -2065,7 +2065,8 @@
                 "dates",
                 "offers",
                 "notifications",
-                "requests"
+                "requests",
+                "shared"
               ]
             }
           },

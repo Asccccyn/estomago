@@ -19,7 +19,7 @@ test('共享制品过期可检出；生成副本不能靠改 golden 通过',t=>{
  fs.writeFileSync(path.join(root,'capabilities.v1.json'),JSON.stringify(stale));assert.notEqual(check().status,0);
 });
 
-test('许愿星实际领域 DTO：五种读取、请求定位、所有写分支和打开正文不丢失',async t=>{
+test('许愿星实际领域 DTO：六种读取、请求定位、所有写分支和打开正文不丢失',async t=>{
  const {db,root}=makeDb();t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true});});
  const fixture=JSON.parse(fs.readFileSync(new URL('../fixtures/wishstar-domain-responses.json',import.meta.url),'utf8')).responses;
  const messages=new MessageService(db);messages.ensureConversation('c1');
