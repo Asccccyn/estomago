@@ -57,3 +57,13 @@
 ## 验证范围
 
 以独立临时状态运行 `ESTOMAGO_TEST_MODE=1 ESTOMAGO_HOME=<临时目录> npm test`，273 个测试文件、1719 项通过。另运行 `npm run typecheck`、`npm run typecheck:web`、`npm run build:web` 和 `git diff --check`。Chrome 无头浏览器用延迟响应夹具验证存档展开和相册切页，并用实际构建产物核对朋友圈主体的卡面、A/B/C 顺序与旧样式记录。真实供应商与手机原故障未实测，交付为本地提交。
+
+## 单张聊天照片重复上传复查
+
+追加实现为 `fff9917`。只读核对运行中的 Host 与 Content 均为 `e3f514b`，Mariposa 为 `522dc24`。旧聊天页面选图时就上传，旧 Host 随即发送正本写入。草稿暂存提交 `9403224` 尚未随当前线上版本发布。实际查到的一张近期 JPEG 早于 E 正式发布约 16.5 秒进入 M 媒体库。其后 E 留下一条正式消息，M 的一条原文附件与原文同步回执都能对应到该消息。历史清理记录证实曾有三张未发送的上传成为孤儿对象。保留下来的日志没有客户端失败码，暂未定位本次反馈具体对应的照片或重试次数。
+
+本地候选里，聊天的选图接口只在 E 建暂存。上传回执丢失后，原草稿按原上传键重试。发送同一张暂存图时，Host 的并发请求复用同一次 M 落正。实际 HTTP 对照在落正完成前观察到 E 正式消息为零，结束后两份同键回执返回同一个正式消息 ID，只产生一个附件引用和一条原文同步任务。上传中清理被 `asset_upload_in_progress` 拒绝。聊天的移除操作只请求清理仍在暂存的图片。Host 明确拒绝，例如 503 `asset_master_commit_failed` 或 422 `too_many_attachments`，允许修改附件后再次发送。网络结果未知时沿原消息键和原附件发起确认。
+
+复跑 `react-chat-client`、`staged-uploads`、`album-upload`、`exec-v1-wp3-media`、`content-f0607-lifecycle`、`content-rf-recovery` 和 `content-rf2-protection`，7 个文件、83 项通过。前后端类型检查、前端构建和差异检查通过。使用隔离 E 和 Content 路由、临时数据及模拟 M。此处的 HTTP 错误码来自隔离复现。
+
+Mariposa 对话原文以 E 已发布消息为来源。M 媒体正本仍有跨库落正窗口，即 M 已写入字节而确认回执丢失或 E 在正式发布前退出。这个窗口的安全回收仍按上节保留给跨仓裁定。
