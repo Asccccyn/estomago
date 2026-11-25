@@ -539,6 +539,20 @@ export class Host {
       db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync, speakerLabels, archives,
     });
 
+    // 冷启动目录同步（她 2026-11-25 裁定：不换窗也要能用最新版工具）——全部能力
+    // 注册完成后、任何模型请求前，把 ACTIVE direct 窗口的冻结目录同步到当前版本。
+    // CLOSED 窗口与 legacy/deferred 协议不动（历史证据/结构差异，如实记 skipped）。
+    try {
+      const sync = (await import('./runtime/tool-discovery.ts')).syncWindowToolsetsToCurrent(db, capabilityRegistry.currentCatalog(), capabilityRegistry.currentGroups?.() ?? {});
+      if (sync.windows > 0) logger.info('window_toolsets_synced', {
+        windows: sync.windows, refreshed: sync.refreshed, skipped: sync.skipped.length,
+        replaced: [...new Set(sync.replaced)].join(',') || null,
+        added: [...new Set(sync.added)].join(',') || null,
+      });
+    } catch (err) {
+      logger.warn('window_toolsets_sync_failed', { error: String((err as Error).message ?? err).slice(0, 200) });
+    }
+
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一
     // 会话串行链（03 统一执行入口——chatBusy 用户在场门已删，排队与让位在执行位内处理）。

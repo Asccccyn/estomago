@@ -71,7 +71,7 @@ export function modelToolsAfterBindingRetirement(specs: readonly HostToolSpec[])
   return specs.flatMap(spec => modelDefinitionAfterBindingRetirement(spec) ?? []);
 }
 
-function directCatalog(catalog: readonly HostToolSpec[]): HostToolSpec[] {
+export function directCatalog(catalog: readonly HostToolSpec[]): HostToolSpec[] {
   return modelToolsAfterBindingRetirement(catalog).map(describeLiteralHanFields);
 }
 
@@ -290,4 +290,69 @@ export function recordToolContext(db: Db, requestId: string, windowId: string, m
 export function effectiveToolName(name:string,raw:unknown):string {
   if(name!=='tool_invoke')return name;
   try{const a=typeof raw==='string'?JSON.parse(raw):raw;return typeof a?.name==='string'?a.name:name}catch{return name}
+}
+
+/** 冷启动目录同步（她 2026-11-25 裁定：不换窗也要能用最新版工具）。
+ *  Host 启动时对每个 **ACTIVE** direct 窗口把冻结目录同步到当前版本：
+ *  - 同名工具：定义替换为当前目录版本（catalog 与 wire 的 C 组 compact 一并更新）；
+ *  - 当前新增：追加进目录，组别按当前 resolveToolGroups（新工具=D，按需发现）；
+ *  - 不删除旧条目（退休工具维持既有不可执行行为）、不动 groups/激活名单/initial_text
+ *    ——窗口内已交付的常驻文本与激活状态保持自身历史；
+ *  - CLOSED 窗口是"当时发请求用的目录"证据，一律不动；legacy/deferred 协议如实跳过。
+ *  冷启动本就重建 SDK 会话与前缀缓存，此同步不产生额外缓存代价。 */
+export function syncWindowToolsetsToCurrent(db: Db, catalog: readonly HostToolSpec[], declared: Record<string, ToolGroup> = {}): {
+  windows: number; refreshed: number; skipped: string[]; replaced: string[]; added: string[];
+} {
+  const fresh = directCatalog(catalog);
+  const freshByName = new Map(fresh.map(spec => [spec.function.name, spec]));
+  const freshGroups = resolveToolGroups(db, fresh, declared);
+  const rows = db.prepare(
+    `SELECT t.window_id FROM window_toolsets t JOIN windows w ON w.id=t.window_id WHERE w.status='ACTIVE'`,
+  ).all() as Array<{ window_id: string }>;
+  const out = { windows: rows.length, refreshed: 0, skipped: [] as string[], replaced: [] as string[], added: [] as string[] };
+  for (const { window_id } of rows) {
+    let set: WindowToolset;
+    try { set = storedToolset(db, window_id)!; } catch { out.skipped.push(window_id); continue; }
+    if (!set || set.protocol !== 'direct') { out.skipped.push(window_id); continue; }
+    const frozenCatalog = set.catalog;
+    const groups = { ...set.groups };
+    const merged = frozenCatalog.map(spec => {
+      const replacement = freshByName.get(spec.function.name);
+      return replacement && definitionId(replacement) !== definitionId(spec) ? replacement : spec;
+    });
+    for (const spec of fresh) {
+      if (frozenCatalog.some(frozen => frozen.function.name === spec.function.name)) continue;
+      merged.push(spec);
+      groups[spec.function.name] = freshGroups[spec.function.name] ?? 'D';
+    }
+    const summaries = Object.fromEntries(merged.map(spec => [spec.function.name, toolAbility(spec)]));
+    // wire 重建与 freeze 同构：discovery 两入口 + C 组 compact（按合并目录顺序）；
+    // 激活名单不在 wire——装载时从 catalog 动态物化，catalog 已同步。
+    const [search, define] = buildDeferredTools();
+    const wire = [compactNativeTool(search!), compactNativeTool(define!),
+      ...merged.filter(spec => groups[spec.function.name] === 'C').map(compactNativeTool)];
+    const next = {
+      catalog_json: JSON.stringify(merged),
+      groups_json: JSON.stringify(groups),
+      tool_summaries_json: JSON.stringify(summaries),
+      wire_tools_json: JSON.stringify(wire),
+    };
+    const current = db.prepare('SELECT wire_tools_json, catalog_json, groups_json, tool_summaries_json FROM window_toolsets WHERE window_id=?').get(window_id) as Record<string, string>;
+    if (Object.keys(next).every(key => current[key] === next[key as keyof typeof next])) continue;
+    for (const frozen of frozenCatalog) {
+      const replacement = freshByName.get(frozen.function.name);
+      if (replacement && definitionId(replacement) !== definitionId(frozen)) out.replaced.push(frozen.function.name);
+    }
+    for (const spec of fresh) {
+      if (!frozenCatalog.some(frozen => frozen.function.name === spec.function.name)) out.added.push(spec.function.name);
+    }
+    db.prepare('UPDATE window_toolsets SET wire_tools_json=?, catalog_json=?, groups_json=?, tool_summaries_json=? WHERE window_id=?')
+      .run(next.wire_tools_json, next.catalog_json, next.groups_json, next.tool_summaries_json, window_id);
+    // 写后校验：与生产同一条装载路径必须能读回（快照完整性 + published/expected 一致）。
+    try { storedToolset(db, window_id)!; } catch (err) {
+      throw new Error(`WINDOW_TOOLSET_SYNC_CORRUPTED:${window_id}:${(err as Error).message}`);
+    }
+    out.refreshed++;
+  }
+  return out;
 }
