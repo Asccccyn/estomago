@@ -35,7 +35,8 @@ test('睡眠 JSON 元数据：配置可见，23:00 active/无排程，08:00解�
   const sleep = await read();
   assert.deepEqual(sleep.keepwarm.sleep_window, { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' });
   assert.equal(sleep.keepwarm_status.sleep_window_active, true);
-  assert.equal(sleep.keepwarm_status.blocked_reason, 'KEEPWARM_SLEEP_WINDOW');
+  // v2.1：手动总开关关闭优先于一切自动暂停原因，同时仍如实暴露睡眠时段元数据。
+  assert.equal(sleep.keepwarm_status.blocked_reason, 'KEEPWARM_DISABLED');
   assert.equal(sleep.keepwarm_status.scheduled, false);
   assert.equal(sleep.keepwarm_status.local_time, '23:00');
   assert.equal(sleep.keepwarm_status.next_keepwarm_at, undefined);
@@ -181,13 +182,22 @@ test('T-A02：页面只给出调度器能兑现的预计时间——到点落在
   host.db.prepare("UPDATE conversation_activity SET last_real_activity_at='2026-10-23T20:55:00+08:00' WHERE conversation_id='primary'").run();
   const resumed = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-before-rest' }) })).json();
   assert.deepEqual(resumed, { resting: false, changed: false, duplicate: false }, '没有在休息时恢复是空操作');
-  host.db.prepare("UPDATE conversation_activity SET resting=1, rest_decided_at='2026-10-23T21:00:00+08:00', rest_source='owner_message' WHERE conversation_id='primary'").run();
+  host.db.prepare("UPDATE conversation_activity SET resting=1, rest_decided_at='2026-10-23T21:00:00+08:00', rest_source='owner_message', rest_recovery_mode='next_user_message', rest_morning_date=NULL WHERE conversation_id='primary'").run();
   const resting = (await read()).keepwarm_status;
   assert.equal(resting.resting, true);
   assert.equal(resting.rest_decided_at, '2026-10-23T21:00:00+08:00');
-  assert.equal(resting.blocked_reason, 'KEEPWARM_RESTING');
+  assert.equal(resting.blocked_reason, 'KEEPWARM_RESTING_WAIT_USER');
   assert.equal(resting.scheduled, false);
   assert.equal(resting.next_keepwarm_at, undefined);
+  // 正常夜休（morning_0800）按 v2.1 暂停普通心跳，并在 morning_wake 预告次晨 08:00 有条件兜底。
+  host.db.prepare("UPDATE conversation_activity SET rest_recovery_mode='morning_0800', rest_morning_date='2026-10-24' WHERE conversation_id='primary'").run();
+  const nightRest = (await read()).keepwarm_status as StatusBody['keepwarm_status'] & { morning_wake?: { scheduled: boolean; target_at?: string } };
+  assert.equal(nightRest.resting, true);
+  assert.equal(nightRest.blocked_reason, 'KEEPWARM_RESTING');
+  assert.equal(nightRest.scheduled, false);
+  assert.equal(nightRest.next_keepwarm_at, undefined);
+  assert.equal(nightRest.morning_wake?.scheduled, true);
+  assert.equal(nightRest.morning_wake?.target_at, '2026-10-24T00:00:00.000Z');
   const first = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-op' }) })).json();
   assert.deepEqual(first, { resting: false, changed: true, duplicate: false });
   const replay = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-op' }) })).json();

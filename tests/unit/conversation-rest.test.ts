@@ -1,11 +1,11 @@
-// 心跳保温修复 2026-11-23（C03/C04）：乔乔明确晚安后的休息状态、恢复，以及它在
-// 计时、调度、资格门和消息接纳入口上的实际行为。隔离临时库；无网络、无模型。
+// 心跳保温与休息意图（v2.1）：本地快速路径 + R1/R4 修复 + 迁移 v92 + 夜间四小时与白天恢复单元验证。
+// 隔离临时库；无网络、无模型。
 import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectRestIntent } from '../../apps/host/src/runtime/conversation-rest.ts';
+import { classifyRestLocally, classifyRestRecoveryMode, detectRestIntent } from '../../apps/host/src/runtime/conversation-rest.ts';
 import { ConversationActivityService } from '../../apps/host/src/runtime/wake-activity.ts';
 import { bindMessageLifecycle } from '../../apps/host/src/application/message-lifecycle.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
@@ -29,22 +29,49 @@ function database(t: Pick<TestContext, 'after'>, prefix: string, upTo?: number) 
   return { root, db };
 }
 
-test('T-A05：休息意图只认她本人明确的表达——引用、提问、讨论功能、否定、继续聊天、对别人说都不算', () => {
+test('T-A05 + R4：本地休息意图判定与 Sol 分流——明确表达、午睡、未来续聊与否定转述均正确', () => {
   const rest = ['晚安，我睡了', '我们睡吧', '晚安', '晚安！', '晚安，爱你', '我先睡了，明天再聊', '我睡了，你也早点休息', '跟你说晚安',
     '那我也睡了', '我睡觉了', '去睡觉啦', '我先去休息了', '我好困，先睡了', '困死了，睡了', '晚安，明天见', '晚安，梦里见', '晚安，不要熬夜',
-    '晚安，醒了叫我', '晚安不要熬夜', 'char晚安', '今天发生了很多很多事，工作也很累，就不一一说了，总之先这样吧，我先睡了', "I'm going to bed, good night", '晚安，等会再聊'];
+    '晚安，醒了叫我', '晚安不要熬夜', 'char晚安', '今天发生了很多很多事，工作也很累，就不一一说了，总之先这样吧，我先睡了', "I'm going to bed, good night",
+    '晚安，等会再聊', '晚安，明天再继续聊', '我去午睡了', '先去睡个午觉'];
   const resume = ['我醒了', '我已经醒了', '我刚醒了', '早安，继续聊', '我回来了，我们接着聊', '早安', '早上好', '我起床了', '起来了', '我回来了', '继续聊吧',
-    '今天睡得特别好，一起床就看到阳光，早安', '早安，今天几点出门？', '我醒了，你继续睡'];
+    '今天睡得特别好，一起床就看到阳光，早安', '早安，今天几点出门？', '我醒了，你继续睡', '我没说我睡了，我还醒着呢'];
   const neither = ['昨天你说了晚安', '晚安这个功能怎么改', '我还不睡，先聊一会', '为什么说晚安还会叫醒', '“晚安”', '“晚安”是什么意思', '你先睡吧，我再玩一会',
     '我不想说晚安', '宝宝睡了，我们轻声聊', '我家宝宝睡了', '我们睡吧？', '我们睡吧?',
-    '睡了吗', '今晚早点睡', '等会再睡', '我午睡了', '我今天下午睡了午觉，现在精神很好', '早点睡哦', '我还不困，再陪我聊会儿', '不要说晚安', '别跟我说晚安了',
+    '睡了吗', '今晚早点睡', '等会再睡', '我今天下午睡了午觉，现在精神很好', '早点睡哦', '我还不困，再陪我聊会儿', '不要说晚安', '别跟我说晚安了',
     '你醒了吗', '醒了叫我', '我还没醒', '明天起床叫我', '半夜又醒了', '他醒了', '昨天你说早安',
+    '我说的是“晚安”这个词', '我去修一下服务器',
     '爱你', '再抱一下', '🌙', '', '   ', '哈哈哈', '今天天气真好'];
   for (const text of rest) assert.equal(detectRestIntent(text), 'rest', text);
   for (const text of resume) assert.equal(detectRestIntent(text), 'resume', text);
   for (const text of neither) assert.equal(detectRestIntent(text), null, text);
   assert.equal(detectRestIntent(undefined), null);
   assert.equal(detectRestIntent(42), null);
+
+  // 本地快速路径 vs Sol 语义分流：简单直白走本地，口语/否定/引用/谈别人/暂离走 Sol
+  assert.deepEqual(classifyRestLocally('晚安'), { kind: 'clear_rest', restKind: 'sleep' });
+  assert.deepEqual(classifyRestLocally('我去睡了'), { kind: 'clear_rest', restKind: 'sleep' });
+  assert.deepEqual(classifyRestLocally('我去午睡了'), { kind: 'clear_rest', restKind: 'nap_or_wait' });
+  assert.deepEqual(classifyRestLocally('今天天气真好'), { kind: 'clear_not_rest' });
+  for (const semantic of [
+    '晚安，明天再继续聊',
+    '我没说我睡了，我还醒着呢',
+    '宝宝睡了，我们轻声聊',
+    '今天撑不住了，先到这，明天说',
+    '我去修一下服务器',
+    '我说的是“晚安”这个词',
+  ]) {
+    assert.deepEqual(classifyRestLocally(semantic), { kind: 'needs_sol' }, semantic);
+  }
+
+  // 02:00:00 整点分界
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-24T22:30:00+08:00'), 'sleep'), { mode: 'morning_0800', morningDate: '2026-11-25' });
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-25T01:59:59+08:00'), 'sleep'), { mode: 'morning_0800', morningDate: '2026-11-25' });
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-25T02:00:00+08:00'), 'sleep'), { mode: 'next_user_message', morningDate: null });
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-25T04:00:00+08:00'), 'sleep'), { mode: 'next_user_message', morningDate: null });
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-25T07:30:00+08:00'), 'sleep'), { mode: 'next_user_message', morningDate: null });
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-25T08:15:00+08:00'), 'sleep'), { mode: 'next_user_message', morningDate: null });
+  assert.deepEqual(classifyRestRecoveryMode(Date.parse('2026-11-24T22:30:00+08:00'), 'nap_or_wait'), { mode: 'next_user_message', morningDate: null });
 });
 
 test('T-A01：49 分 59 秒不到期，50 分钟按原锚点到期；新真实对话、有效维护回执照旧更新目标', (t) => {
@@ -68,42 +95,44 @@ test('T-A01：49 分 59 秒不到期，50 分钟按原锚点到期；新真实�
     '新真实对话重设锚点并使旧回执失效');
 });
 
-test('H07：v91 迁移可重跑；旧行按“未休息”读取；旧程序的写入形状仍可用；休息决定不动锚点和活动版本', (t) => {
-  const { db } = database(t, 'rest-migration-', 90);
-  const at = '2026-10-23T14:00:00.000Z';
-  // 修复前就已存在的会话：没有休息字段，也没有任何历史可据以猜测她是否已睡。
-  db.prepare("INSERT INTO conversation_activity(conversation_id,activity_revision,last_real_activity_at,updated_at) VALUES ('legacy',7,?,?)").run(at, at);
+test('H07 + R1 + v92 迁移：旧库升级保住有效休息与恢复模式，同键重放不改、新消息决定覆盖旧决定', (t) => {
+  const { db } = database(t, 'rest-migration-', 91);
+  const at = '2026-10-23T14:00:00.000Z'; // 22:00 Asia/Shanghai
+  db.prepare("INSERT INTO conversation_activity(conversation_id,activity_revision,last_real_activity_at,resting,rest_decided_at,rest_source,rest_message_id,updated_at) VALUES ('legacy-night',7,?,1,?,'owner_message','m-old',?)").run(at, at, at);
+  const atCatchup = '2026-10-23T19:00:00.000Z'; // 03:00 Asia/Shanghai
+  db.prepare("INSERT INTO conversation_activity(conversation_id,activity_revision,last_real_activity_at,resting,rest_decided_at,rest_source,rest_message_id,updated_at) VALUES ('legacy-catchup',2,?,1,?,'owner_message','m-old2',?)").run(atCatchup, atCatchup, atCatchup);
+  db.prepare("INSERT INTO conversation_activity(conversation_id,activity_revision,last_real_activity_at,updated_at) VALUES ('legacy-awake',3,?,?)").run(at, at);
   migrate(db, sha256Hex);
   migrate(db, sha256Hex);
   const activity = new ConversationActivityService(db);
-  assert.deepEqual(activity.restState('legacy'), { resting: false, decided_at: null, source: null });
-  assert.equal(activity.nextKeepwarmTarget({ conversationId: 'legacy', windowId: 'w1' }).dueAtMs, Date.parse(at) + 50 * 60_000, '原排程不变');
-  db.prepare("INSERT INTO conversation_activity(conversation_id,activity_revision,updated_at) VALUES ('written-by-old-shape',1,?)").run(at);
-  assert.equal(activity.restState('written-by-old-shape').resting, false);
+  assert.deepEqual(activity.restState('legacy-night'), { resting: true, decided_at: at, source: 'owner_message', recovery_mode: 'morning_0800', morning_date: '2026-10-24' });
+  assert.deepEqual(activity.restState('legacy-catchup'), { resting: true, decided_at: atCatchup, source: 'owner_message', recovery_mode: 'next_user_message', morning_date: null });
+  assert.deepEqual(activity.restState('legacy-awake'), { resting: false, decided_at: null, source: null, recovery_mode: null, morning_date: null });
+  assert.equal(activity.get('legacy-awake')!.consecutive_unanswered_count, 0, '旧库连续次数默认 0');
+  assert.equal(activity.nextKeepwarmTarget({ conversationId: 'legacy-awake', windowId: 'w1' }).dueAtMs, Date.parse(at) + 50 * 60_000, '原排程不变');
 
-  const decided = '2026-10-23T21:00:00.000Z';
-  assert.equal(activity.noteRestDecision('legacy', { kind: 'rest', source: 'owner_message', messageId: 'm-goodnight', atIso: decided }), true);
-  assert.equal(activity.noteRestDecision('legacy', { kind: 'rest', source: 'owner_message', messageId: 'm-goodnight-again', atIso: '2026-10-23T21:05:00.000Z' }), false, '重复晚安不改首次决定');
-  const row = activity.get('legacy')!;
-  assert.deepEqual({ resting: row.resting, at: row.rest_decided_at, source: row.rest_source, message: row.rest_message_id }, { resting: 1, at: decided, source: 'owner_message', message: 'm-goodnight' });
-  assert.deepEqual({ revision: row.activity_revision, anchor: row.last_real_activity_at }, { revision: 7, anchor: at }, '休息不是真实消息：锚点与活动版本都不动');
-  assert.equal(activity.noteRestDecision('legacy', { kind: 'resume', source: 'owner_message', messageId: 'm-morning', atIso: '2026-10-24T01:00:00.000Z' }), true);
-  assert.equal(activity.noteRestDecision('legacy', { kind: 'resume', source: 'owner_message', messageId: 'm-morning-2', atIso: '2026-10-24T01:01:00.000Z' }), false, '重复恢复是空操作');
-  assert.deepEqual(activity.restState('legacy'), { resting: false, decided_at: '2026-10-24T01:00:00.000Z', source: 'owner_message' });
+  // R1：同消息重放不改决定时间；新消息的晚安覆盖旧决定和恢复条件
+  const nightDecided = '2026-10-23T14:30:00.000Z'; // 22:30+08:00
+  assert.equal(activity.noteRestDecision('legacy-awake', { kind: 'rest', source: 'owner_message', messageId: 'm-gn-1', atIso: nightDecided }), true);
+  assert.equal(activity.noteRestDecision('legacy-awake', { kind: 'rest', source: 'owner_message', messageId: 'm-gn-1', atIso: '2026-10-23T14:35:00.000Z' }), false, '同消息重放不改决定');
+  assert.equal(activity.get('legacy-awake')!.rest_recovery_mode, 'morning_0800');
 
-  // 界面恢复：同一操作键回放首次结果；不同键再次恢复不改动任何东西。
-  assert.deepEqual(activity.resumeRest('legacy', { actorId: 'qiaosheng', operationId: 'ui-1' }), { resting: false, decided_at: '2026-10-24T01:00:00.000Z', source: 'owner_message', changed: false, duplicate: false });
-  activity.noteRestDecision('legacy', { kind: 'rest', source: 'owner_message', messageId: 'm-goodnight-3', atIso: '2026-10-24T02:00:00.000Z' });
-  const first = activity.resumeRest('legacy', { actorId: 'qiaosheng', operationId: 'ui-2' });
+  const morningCatchup = '2026-10-23T23:30:00.000Z'; // 07:30+08:00
+  assert.equal(activity.noteRestDecision('legacy-awake', { kind: 'rest', source: 'owner_message', messageId: 'm-gn-2', atIso: morningCatchup }), true, '新消息的休息决定必须覆盖旧决定');
+  assert.equal(activity.get('legacy-awake')!.rest_recovery_mode, 'next_user_message');
+  assert.equal(activity.get('legacy-awake')!.rest_decided_at, morningCatchup);
+  assert.equal(activity.get('legacy-awake')!.rest_message_id, 'm-gn-2');
+  assert.deepEqual({ revision: activity.get('legacy-awake')!.activity_revision, anchor: activity.get('legacy-awake')!.last_real_activity_at }, { revision: 3, anchor: at }, '直接调用 noteRestDecision 不动锚点');
+
+  // 界面恢复：同一操作键回放首次结果
+  const first = activity.resumeRest('legacy-awake', { actorId: 'qiaosheng', operationId: 'ui-2' });
   assert.equal(first.changed, true);
   assert.equal(first.source, 'control');
-  const anchorBefore = activity.get('legacy')!.last_real_activity_at;
-  assert.deepEqual(activity.resumeRest('legacy', { actorId: 'qiaosheng', operationId: 'ui-2' }), { ...first, duplicate: true });
-  assert.equal(activity.get('legacy')!.last_real_activity_at, anchorBefore, '界面操作不重设 50 分钟锚点');
+  assert.deepEqual(activity.resumeRest('legacy-awake', { actorId: 'qiaosheng', operationId: 'ui-2' }), { ...first, duplicate: true });
   assert.equal(activity.resumeRest('nobody-resting', { actorId: 'qiaosheng', operationId: 'ui-3' }).changed, false);
 });
 
-test('T-A04：休息期间调度 tick 不领取心跳、不保留到期目标；资格门在读取牌组之前就结束；自主预约照常', async (t) => {
+test('T-A04：正常夜休在 21:45–07:59:59 零领取，08:00 给晨间兜底机会；自主预约照常', async (t) => {
   const { db } = database(t, 'rest-scheduler-');
   const config = buildConfig({});
   const settings = new BackgroundSettingsService(db, config);
@@ -121,59 +150,48 @@ test('T-A04：休息期间调度 tick 不领取心跳、不保留到期目标；
   t.after(() => scheduler.stop());
   const activity = new ConversationActivityService(db);
   activity.noteRealPublication('primary', 'm1', 1, new Date(now - 3_000_001).toISOString());
-  const openHeartbeats = () => (db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind='keepwarm' AND state IN ('claimed','running','cancelling')").get() as { n: number }).n;
   const heartbeatRuns = () => (db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind='keepwarm'").get() as { n: number }).n;
   const shownDue = () => (db.prepare("SELECT next_due_at FROM background_tasks WHERE kind='keepwarm'").get() as { next_due_at: string | null }).next_due_at;
   await scheduler.tick();
   assert.deepEqual(executed, ['keepwarm'], '未休息时照常领取');
   const before = heartbeatRuns();
 
-  // 21:40 她明确说睡：夜间与 08:00 前零派发；次日 08:00 给一次晨间机会且保留休息状态，之后不再滚出普通心跳。
+  // 21:40 正常晚安：夜间零派发，任务行保留次晨 08:00 条件目标（R5）
   assert.equal(activity.noteRestDecision('primary', { kind: 'rest', source: 'owner_message', messageId: 'm-goodnight', atIso: iso }), true);
-  for (const [label, time, expectedDue] of [
-    ['21:45', '2026-10-23T21:45:00+08:00', null],
-    ['23:30', '2026-10-23T23:30:00+08:00', null],
-    ['00:10', '2026-10-24T00:10:00+08:00', null],
-    ['07:59:59', '2026-10-24T07:59:59+08:00', null],
+  const expectedMorningIso = new Date('2026-10-24T08:00:00+08:00').toISOString();
+  for (const [label, time] of [
+    ['21:45', '2026-10-23T21:45:00+08:00'],
+    ['23:30', '2026-10-23T23:30:00+08:00'],
+    ['00:10', '2026-10-24T00:10:00+08:00'],
+    ['07:59:59', '2026-10-24T07:59:59+08:00'],
   ] as const) {
     now = Date.parse(time);
-    db.prepare("UPDATE background_tasks SET next_due_at = ? WHERE kind = 'keepwarm'").run(new Date(now).toISOString());
     await scheduler.tick();
     assert.equal(activity.resting('primary'), true, label);
     assert.equal(heartbeatRuns(), before, `${label} 没有新的心跳执行`);
-    assert.equal(shownDue(), expectedDue, `${label} 到期目标`);
+    assert.equal(shownDue(), expectedMorningIso, `${label} 保留次晨 08:00 条件目标`);
   }
   now = Date.parse('2026-10-24T08:00:00+08:00');
   await scheduler.tick();
-  assert.equal(activity.resting('primary'), true, '08:00 晨间唤醒不清除休息状态');
-  assert.equal(heartbeatRuns(), before + 1, '08:00 执行唯一一次晨间唤醒');
+  assert.equal(heartbeatRuns(), before + 1, '08:00 执行当日晨间兜底');
   const morningRun = db.prepare("SELECT occurrence_key FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as { occurrence_key: string };
   assert.equal(morningRun.occurrence_key, 'morning-wake:primary:2026-10-24');
-  assert.equal(shownDue(), null, '晨间机会消费后保持休息无后续排程');
 
-  // char说话不会解除；显式自主预约在同一时段照常执行，且 08:05 / 08:50 不会再起心跳。
-  activity.noteRealPublication('primary', 'assistant-says-goodnight', 1, iso);
-  assert.equal(activity.resting('primary'), true);
+  // 显式自主预约在同一时段照常执行
   now = Date.parse('2026-10-24T08:05:00+08:00');
   db.prepare("UPDATE background_tasks SET next_due_at = ? WHERE id = 'auto'").run(new Date(now).toISOString());
   await scheduler.tick();
   assert.deepEqual(executed, ['keepwarm', 'keepwarm', 'autonomous']);
-  assert.equal(heartbeatRuns(), before + 1);
 
-  // 资格门在读取牌组之前就结束，所以普通抽卡轮和十张耗尽后的“回 1”走的是同一个门。
-  activity.noteRealPublication('primary', 'm2', 1, new Date(now - 3_000_001).toISOString());
-  assert.deepEqual(keepwarmDispatchGate({ db, activity, conversationId: 'primary', windowId: 'w-rest', inputActivityRevision: null, nowMs: now }), {
-    decision: 'noop', resultCode: 'KEEPWARM_RESTING', detail: '乔乔已休息：等她明确回来或手动恢复' });
-
-  // 她明确回来：按原真实活动和缓存资格重新计算，只领取一次，不补休息期间的机会。
-  assert.equal(activity.noteRestDecision('primary', { kind: 'resume', source: 'owner_message', messageId: 'm-morning', atIso: iso }), true);
-  await scheduler.tick();
-  assert.deepEqual(executed, ['keepwarm', 'keepwarm', 'autonomous', 'keepwarm']);
-  assert.equal(activity.resting('primary'), false);
+  // 处于休息时普通资格门在读牌组前即拒绝
+  assert.equal(activity.noteRestDecision('primary', { kind: 'rest', source: 'owner_message', messageId: 'm-nap', atIso: new Date(now).toISOString(), restKind: 'nap_or_wait' }), true);
+  assert.equal(keepwarmDispatchGate({ db, activity, conversationId: 'primary', windowId: 'w-rest', inputActivityRevision: null, nowMs: now }).resultCode, 'KEEPWARM_RESTING');
 });
 
-test('T-A05/T-A06：休息只由她本人首次正式接受的输入建立——重复提交、编辑、模型回复不触发；语音条按已接受的转写判定', async (t) => {
+test('T-A05/T-A06：休息由首次接受的输入建立；重复提交、编辑、模型回复不触发；夜间<4h保持暂停、白天新消息自动恢复；语音条按可信转写判定', async (t) => {
   const { root, db } = database(t, 'rest-acceptance-');
+  // 固定上海夜间 22:00 测试夜间行为
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-24T22:00:00+08:00') });
   const activity = new ConversationActivityService(db);
   const messages = new MessageService(db, bindMessageLifecycle({ surfacing: null, activity, voiceObservations: null }), activity);
   const submit = (content: string, clientMessageId: string, attachments: Parameters<MessageService['submitUserMessageWithTurn']>[0]['attachments'] = []) =>
@@ -181,23 +199,22 @@ test('T-A05/T-A06：休息只由她本人首次正式接受的输入建立——
 
   const goodnight = submit('晚安，我睡了', 'm-goodnight');
   assert.equal(activity.restState('primary').resting, true, '接纳入口同事务建立休息');
+  assert.equal(activity.restState('primary').recovery_mode, 'morning_0800');
   assert.equal(activity.get('primary')!.rest_message_id, goodnight.message.id);
   assert.deepEqual({ revision: activity.get('primary')!.activity_revision, duplicate: submit('晚安，我睡了', 'm-goodnight').duplicate }, { revision: 1, duplicate: true }, '重复提交不重复受理');
-  assert.equal(activity.get('primary')!.rest_decided_at, activity.restState('primary').decided_at);
 
   messages.editUserMessage(goodnight.message.id, '我醒了');
   assert.equal(activity.restState('primary').resting, true, '编辑旧消息不改变休息');
   messages.publishAssistantMessage({ conversationId: 'primary', turnId: 'turn-assistant', content: '早安，我醒了' });
   assert.equal(activity.restState('primary').resting, true, '模型回复不解除休息');
+
+  // 夜间 22:01 补话（间隔 < 4 小时）：保持夜间暂停，不提前恢复
+  t.mock.timers.setTime(Date.parse('2026-11-24T22:01:00+08:00'));
   for (const [index, line] of ['爱你', '再抱一下', '晚安', '🌙'].entries()) submit(line, `m-followup-${index}`);
-  assert.equal(activity.restState('primary').resting, true, '睡前补话、重复晚安和孤立表情不因“有新消息”而解除');
-  assert.equal(activity.get('primary')!.activity_revision, 6, '这些仍是真实消息，照常推进活动版本');
+  assert.equal(activity.restState('primary').resting, true, '夜间间隔不足 4 小时补话保持暂停');
 
-  // 她说“还不睡”时并没有在休息；这句话也不会误建休息。
-  assert.equal(detectRestIntent(submit('我还不睡，先聊一会', 'm-not-yet').message.revision.content), null);
-  assert.equal(activity.restState('primary').resting, true);
-
-  // 语音条：宿主只接受同字节的就绪转写，判定读的是这份已接受的文字。
+  // 切到白天 10:00：语音条按已接受的可信转写判定；新普通消息无需说“我醒了”即恢复
+  t.mock.timers.setTime(Date.parse('2026-11-25T10:00:00+08:00'));
   const config = buildConfig({});
   const media = new MediaService(db, buildPaths(root).mediaDir, config);
   const voice = async (id: string, transcript?: string) => {
@@ -214,11 +231,10 @@ test('T-A05/T-A06：休息只由她本人首次正式接受的输入建立——
     }
     return submit('', id, [{ asset_id: saved.id, presentation: 'voice' }]);
   };
-  assert.equal(detectRestIntent((await voice('m-voice-noop')).message.revision.content), null, '没有转写的语音条不产生休息决定');
-  await voice('m-voice-resume', '早安，我醒了');
-  assert.equal(activity.restState('primary').resting, false, '语音里明确说醒来即恢复');
-  await voice('m-voice-rest', '晚安');
-  assert.deepEqual(activity.restState('primary'), { resting: true, decided_at: activity.get('primary')!.rest_decided_at, source: 'owner_message' });
-  submit('我醒了', 'm-awake');
-  assert.equal(activity.restState('primary').resting, false);
+  await voice('m-voice-rest', '我去午睡了');
+  assert.equal(activity.restState('primary').resting, true, '语音转写里明确午睡即进入休息');
+  assert.equal(activity.restState('primary').recovery_mode, 'next_user_message');
+  t.mock.timers.setTime(Date.parse('2026-11-25T10:05:00+08:00'));
+  await voice('m-voice-resume', '喝口水继续聊');
+  assert.equal(activity.restState('primary').resting, false, '白天新普通消息自动恢复，无需特地说早安/我醒了');
 });

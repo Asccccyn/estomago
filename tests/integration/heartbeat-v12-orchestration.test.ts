@@ -137,9 +137,9 @@ async function fixture(t: TestContext, candidates: HeartbeatSource[] = CARDS, so
     const dueAnchor = new Date(Date.now() - 3_030_000 + (++elapsedCalls * 2000)).toISOString();
     host.db.prepare('UPDATE provider_requests SET dispatch_started_at=? WHERE id=?').run(dueAnchor, evidence.requestId);
     if (activity().maintenance_request_id) {
-      host.db.prepare("UPDATE conversation_activity SET maintenance_dispatch_started_at=? WHERE conversation_id='primary'").run(dueAnchor);
+      host.db.prepare("UPDATE conversation_activity SET maintenance_dispatch_started_at=?, last_effective_heartbeat_at=CASE WHEN last_effective_heartbeat_at IS NOT NULL THEN ? ELSE NULL END WHERE conversation_id='primary'").run(dueAnchor, dueAnchor);
     } else {
-      host.db.prepare("UPDATE conversation_activity SET last_real_activity_at=? WHERE conversation_id='primary'").run(dueAnchor);
+      host.db.prepare("UPDATE conversation_activity SET last_real_activity_at=?, last_effective_heartbeat_at=CASE WHEN last_effective_heartbeat_at IS NOT NULL THEN ? ELSE NULL END WHERE conversation_id='primary'").run(dueAnchor, dueAnchor);
     }
   }
   function seedNineCards() {
@@ -963,71 +963,85 @@ test('R13: a second choice in the same live turn returns first-card metadata wit
   assert.equal(ctx.projections().n, 1);
 });
 
-for (const hour of ['09:00', '21:00'] as const) {
-  test(`T-A04/T-A05/T-A07: ${hour} 明确晚安后暂停普通保温；次日一次晨间唤醒也不解除休息`, async t => {
-    t.mock.timers.enable({ apis: ['Date'], now: Date.parse(`2026-11-24T${hour}+08:00`) });
-    const ctx = await fixture(t);
-    const activity = new ConversationActivityService(ctx.host.db);
-    const heartbeats = () => (ctx.host.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind='keepwarm' AND task_id!='fixture-history'").get() as { n: number }).n;
-    const wake = async (): Promise<void> => { ctx.elapsed(); ctx.replies.push(asMessage('合成回复')); await ctx.scheduler.tick(); };
-    await ctx.chat('建立当前会话');
-    // 反例：引用、讨论功能、否定、继续聊天——都不是休息，心跳照常唤醒。
-    for (const line of ['昨天你说了晚安', '晚安这个功能怎么改', '我还不睡，先聊一会', '为什么说晚安还会叫醒', '“晚安”']) {
-      await ctx.chat(line);
-      const before = heartbeats();
-      await wake();
-      assert.equal(heartbeats(), before + 1, line);
-      assert.equal(activity.resting('primary'), false, line);
-    }
-    // 正例：白天或晚上的明确晚安，和固定夜间静默无关。
-    await ctx.chat('晚安，我睡了');
-    const state = activity.restState('primary');
-    assert.equal(state.resting, true);
-    assert.equal(state.source, 'owner_message');
-    const requests = ctx.wire.length;
-    const runs = heartbeats();
-    for (let tick = 0; tick < 3; tick++) await wake();
-    assert.equal(ctx.wire.length, requests, '多个 tick 都不再唤醒，也不发模型请求');
-    assert.equal(heartbeats(), runs);
-    assert.equal((ctx.host.db.prepare("SELECT next_due_at FROM background_tasks WHERE kind='keepwarm'").get() as { next_due_at: string | null }).next_due_at, null);
-    // 睡前补一句、重复晚安、孤立表情，以及char每轮的回复，都不因“有新消息”解除。
-    for (const line of ['爱你', '再抱一下', '晚安', '🌙']) {
-      await ctx.chat(line);
-      await wake();
-    }
-    assert.equal(ctx.wire.length, requests + 4, '只有普通聊天的请求，没有心跳请求');
-    assert.equal(activity.resting('primary'), true);
-    assert.equal(activity.restState('primary').decided_at, state.decided_at, '重复晚安不改动首次决定');
-    // 隔日仅在到达 08:00 时有晨间机会；整个过程继续休息。
-    t.mock.timers.setTime(Date.parse('2026-11-25T07:59:59+08:00'));
-    await ctx.scheduler.tick();
-    assert.equal(ctx.wire.length, requests + 4);
-    t.mock.timers.setTime(Date.parse('2026-11-25T08:00:00+08:00'));
-    ctx.replies.push(asMessage('晨间合成回复'));
-    await ctx.scheduler.tick();
-    assert.equal(ctx.wire.length, requests + 5);
-    assert.equal(heartbeats(), runs + 1);
-    const morningInput = text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user'));
-    assert.match(morningInput, /2026-11-25 08:00/);
-    assert.match(morningInput, /晨间活动机会/);
-    t.mock.timers.setTime(Date.parse('2026-11-25T08:50:00+08:00'));
-    await ctx.scheduler.tick();
-    assert.equal(ctx.wire.length, requests + 5, '晨间发言没有滚出另一轮普通保温');
-    assert.equal(activity.resting('primary'), true);
-    assert.equal(activity.restState('primary').decided_at, state.decided_at);
-    // 明确回来：按既有真实活动重算，只发生一次正常心跳，不补休息期间的机会。
-    await ctx.chat('早安，我醒了');
-    assert.equal(activity.resting('primary'), false);
+test('T-A04/T-A05/T-A07 (v2.1): 21:00 正常夜休保次晨 08:00 兜底并续跑 50 分钟循环，09:00 补觉等用户下条普通消息', async t => {
+  // Part 1: 21:00 正常夜休（morning_0800）
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-24T21:00:00+08:00') });
+  const ctx = await fixture(t);
+  const activity = new ConversationActivityService(ctx.host.db);
+  const heartbeats = () => (ctx.host.db.prepare("SELECT COUNT(*) n FROM background_runs WHERE kind='keepwarm' AND task_id!='fixture-history'").get() as { n: number }).n;
+  const wake = async (): Promise<void> => { ctx.elapsed(); ctx.replies.push(asMessage('合成回复')); await ctx.scheduler.tick(); };
+  await ctx.chat('建立当前会话');
+  // 反例：引用、讨论功能、否定、继续聊天——都不是休息，心跳照常唤醒。
+  for (const line of ['昨天你说了晚安', '晚安这个功能怎么改', '我还不睡，先聊一会', '为什么说晚安还会叫醒', '“晚安”']) {
+    await ctx.chat(line);
+    const before = heartbeats();
     await wake();
-    assert.equal(ctx.wire.length, requests + 7, '一条普通聊天请求加一次心跳请求');
-    assert.equal(heartbeats(), runs + 2);
-    const regularInput = text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user'));
-    assert.match(regularInput, /^\[心跳唤醒\] 2026-11-25 08:50 \w{3} UTC\+8\n/);
-    assert.doesNotMatch(regularInput, /晨间活动机会/);
-  });
-}
+    assert.equal(heartbeats(), before + 1, line);
+    assert.equal(activity.resting('primary'), false, line);
+  }
+  // 21:00 明确晚安：进入正常夜休，保留次晨 08:00 有条件兜底。
+  await ctx.chat('晚安，我睡了');
+  const state = activity.restState('primary');
+  assert.equal(state.resting, true);
+  assert.equal(state.source, 'owner_message');
+  assert.equal(state.recovery_mode, 'morning_0800');
+  const requests = ctx.wire.length;
+  const runs = heartbeats();
+  for (let tick = 0; tick < 3; tick++) await wake();
+  assert.equal(ctx.wire.length, requests, '夜休期间多个 tick 都不再唤醒，也不发模型请求');
+  assert.equal(heartbeats(), runs);
+  assert.equal(
+    (ctx.host.db.prepare("SELECT next_due_at FROM background_tasks WHERE kind='keepwarm'").get() as { next_due_at: string | null }).next_due_at,
+    new Date('2026-11-25T08:00:00+08:00').toISOString(),
+  );
+  // 睡前不久补一句（间隔 < 4h）保持夜间暂停；新消息再道晚安按 R1 覆盖原决定时间。
+  t.mock.timers.setTime(Date.parse('2026-11-24T21:05:00+08:00'));
+  await ctx.chat('爱你');
+  await wake();
+  assert.equal(activity.resting('primary'), true);
+  t.mock.timers.setTime(Date.parse('2026-11-24T21:06:00+08:00'));
+  await ctx.chat('晚安');
+  await wake();
+  assert.equal(ctx.wire.length, requests + 2, '只有普通聊天的请求，没有心跳请求');
+  assert.equal(activity.resting('primary'), true);
+  assert.notEqual(activity.restState('primary').decided_at, state.decided_at, 'R1：新消息的休息决定覆盖原决定时间');
+  // 隔日 07:59:59 仍不发，08:00:00 正常触发晨间兜底（第 1 次），之后按 50 分钟继续（08:50 第 2 次）。
+  t.mock.timers.setTime(Date.parse('2026-11-25T07:59:59+08:00'));
+  await ctx.scheduler.tick();
+  assert.equal(ctx.wire.length, requests + 2);
+  t.mock.timers.setTime(Date.parse('2026-11-25T08:00:00+08:00'));
+  ctx.replies.push(asMessage('晨间合成回复'));
+  await ctx.scheduler.tick();
+  assert.equal(ctx.wire.length, requests + 3);
+  assert.equal(heartbeats(), runs + 1);
+  const morningInput = text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user'));
+  assert.match(morningInput, /2026-11-25 08:00/);
+  assert.match(morningInput, /晨间活动机会/);
+  assert.equal(activity.resting('primary'), false, '08:00 有效晨间机会解除到期的正常夜休');
+  // v2.1：08:50 合法进入第二轮 50 分钟心跳。
+  t.mock.timers.setTime(Date.parse('2026-11-25T08:50:00+08:00'));
+  ctx.replies.push(asMessage('第二轮合成回复'));
+  await ctx.scheduler.tick();
+  assert.equal(ctx.wire.length, requests + 4, 'v2.1：08:50 正常启动第二轮自动心跳');
+  assert.equal(heartbeats(), runs + 2);
+  const regularInput = text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user'));
+  assert.match(regularInput, /^\[心跳唤醒\] 2026-11-25 08:50 \w{3} UTC\+8\n/);
+  assert.doesNotMatch(regularInput, /晨间活动机会/);
+  // Part 2: 09:00 白天补觉（next_user_message）：不预告 08:00，跨日仍等待用户，普通新消息即可恢复。
+  t.mock.timers.setTime(Date.parse('2026-11-25T09:00:00+08:00'));
+  await ctx.chat('晚安，我睡了');
+  assert.equal(activity.restState('primary').recovery_mode, 'next_user_message');
+  assert.equal((ctx.host.db.prepare("SELECT next_due_at FROM background_tasks WHERE kind='keepwarm'").get() as { next_due_at: string | null }).next_due_at, null);
+  t.mock.timers.setTime(Date.parse('2026-11-26T08:00:00+08:00'));
+  await ctx.scheduler.tick();
+  assert.equal(heartbeats(), runs + 2, '补觉跨到次日 08:00 也不启动');
+  t.mock.timers.setTime(Date.parse('2026-11-26T09:00:00+08:00'));
+  await ctx.chat('起来啦，吃点什么');
+  assert.equal(activity.resting('primary'), false, 'v2.1：白天普通新消息直接恢复，无需特地说早安');
+});
 
 test('T-A06: 休息跨重启保留；晚安前已排队的心跳在执行时读到新决定；手动恢复只领取一次，不动总开关', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-24T21:30:00+08:00') });
   const root = tempRoot('heartbeat-rest-restart-');
   const first = await fixture(t, CARDS, 'available', 0, { root });
   const activityOf = () => new ConversationActivityService(first.host.db);

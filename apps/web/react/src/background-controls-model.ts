@@ -22,6 +22,7 @@ export function appendBackgroundPage<T extends Record<string, any>>(previous: T[
 export const backgroundTaskStatus: Record<string, string> = { scheduled: '已预约', completed: '已完成', cancelled: '已取消', needs_review: '待核对' }
 
 export type KeepwarmStatus = {
+  enabled?: boolean
   scheduled?: boolean
   blocked_reason?: string | null
   sleep_window_active?: boolean
@@ -37,35 +38,64 @@ export type KeepwarmStatus = {
   }
   resting?: boolean
   rest_decided_at?: string | null
+  rest_recovery_mode?: 'morning_0800' | 'next_user_message' | null
+  rest_morning_date?: string | null
+  consecutive_unanswered_count?: number
+  pending_rest_judgment?: boolean
 }
 
-/** Words for the eligibility the server reports. The page never derives a schedule of its own. */
+/** Words for the eligibility the server reports (v2.1 single-switch display).
+ *  The page never derives a schedule of its own. */
 export function keepwarmStatusText(
   status: KeepwarmStatus | undefined,
   sleepWindow: { start: string; end: string; timezone: string } | undefined,
   formatTime: (iso: string) => string,
 ): string {
   const window = sleepWindow ? `（${sleepWindow.start}–${sleepWindow.end}，${sleepWindow.timezone}）` : ''
+  const morningTarget = status?.morning_wake?.scheduled && status.morning_wake.target_at
+    ? formatTime(status.morning_wake.target_at)
+    : null
+
   switch (status?.blocked_reason) {
-    case 'KEEPWARM_DISABLED': return '心跳保温已关闭'
-    case 'KEEPWARM_RESTING': return `休息中：乔乔说晚安后暂停，等她明确醒来或在这里恢复${status.rest_decided_at ? `（${formatTime(status.rest_decided_at)} 起）` : ''}`
-    case 'KEEPWARM_SLEEP_CONFIG_INVALID': return '睡眠时段配置无效，心跳已暂停'
-    case 'KEEPWARM_SLEEP_WINDOW': return status.sleep_window_active ? `睡眠时段暂停${window}` : `下次到点落在睡眠时段，届时暂停${window}`
-    default: break
+    case 'KEEPWARM_DISABLED':
+      return '已关闭 · 等待手动开启'
+    case 'KEEPWARM_SLEEP_CONFIG_INVALID':
+      return '已开启 · 睡眠时段配置无效，心跳已暂停'
+    case 'REST_JUDGMENT_PENDING':
+      return '已开启 · 正在判断休息状态'
+    case 'KEEPWARM_RESTING_WAIT_USER':
+      return '已开启 · 正在补觉，等你下条消息'
+    case 'KEEPWARM_RESTING':
+      return morningTarget
+        ? `已开启 · 正常夜休暂停，次晨 ${morningTarget} 有条件兜底`
+        : '已开启 · 休息中，等你下条消息'
+    case 'KEEPWARM_CONSECUTIVE_LIMIT':
+      return morningTarget
+        ? `已开启 · 连续三次未出现，今日暂停（次晨 ${morningTarget} 恢复）`
+        : '已开启 · 连续三次未出现，今日暂停'
+    case 'KEEPWARM_SLEEP_WINDOW':
+      if (status.sleep_window_active) {
+        return morningTarget
+          ? `已开启 · 夜间暂停${window}，次晨 ${morningTarget} 有条件兜底`
+          : `已开启 · 夜间暂停${window}`
+      }
+      return morningTarget
+        ? `已开启 · 下次到点落在睡眠时段，今晚暂停（次晨 ${morningTarget} 有条件兜底）`
+        : `已开启 · 下次到点落在睡眠时段，届时暂停${window}`
+    case 'MORNING_WAKE_MISSED_GRACE':
+      return morningTarget
+        ? `已开启 · 今日晨间机会已错过，次晨 ${morningTarget} 有条件兜底`
+        : '已开启 · 今日晨间机会已错过'
+    default:
+      break
   }
+
   if (status?.scheduled && status.next_keepwarm_at) {
-    const nextIsMorning = status.next_keepwarm_basis === 'morning_baseline' || status.next_keepwarm_basis === 'morning_postponed'
-    const morning = status.morning_wake
-    const morningAt = morning?.scheduled ? morning.target_at : nextIsMorning ? status.next_keepwarm_at : undefined
-    const ordinary = nextIsMorning ? '' : `下次 ${formatTime(status.next_keepwarm_at)}（${status.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）`
-    if (morningAt) {
-      const postponedBy = morning?.postponed_by_at ?? status.morning_postponed_by_at
-      const postponed = (morning?.basis ?? status.next_keepwarm_basis) === 'morning_postponed'
-      const reason = postponed ? (postponedBy ? `按 ${formatTime(postponedBy)} 聊天顺延` : '按晨间聊天顺延') : '每日 08:00'
-      const morningText = `晨间唤醒预计 ${formatTime(morningAt)}（${reason}）`
-      return ordinary ? `${ordinary} · ${morningText}` : morningText
+    const formatted = formatTime(status.next_keepwarm_at)
+    if (status.next_keepwarm_basis === 'morning_baseline') {
+      return `已开启 · 下次心跳 ${formatted}（晨间兜底）`
     }
-    return ordinary
+    return `已开启 · 下次心跳 ${formatted}`
   }
-  return '暂无排程（还没有真实聊天）'
+  return '已开启 · 暂无排程（还没有真实聊天）'
 }

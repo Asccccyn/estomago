@@ -68,9 +68,9 @@ import { WindowBootstrapMachine, BOOTSTRAP_DEADLINE_MS } from './window-bootstra
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { renderToolContext, resolveToolGroups } from './tool-initial-visible.ts';
-import { isMorningWakeRun } from './wake-activity.ts';
+import { isMorningWakeRun, shanghaiDateOfMs } from './wake-activity.ts';
 import { ConversationActivityService } from './wake-activity.ts';
-import { keepwarmSleepState } from './keepwarm-sleep.ts';
+import { effectiveSleepState } from './keepwarm-sleep.ts';
 import { keepwarmDispatchGate } from './background-keepwarm-gate.ts';
 import { classifyBackgroundOutcome } from './background-outcome.ts';
 import { HEARTBEAT_BLOCKED_BEFORE_SEND, settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
@@ -410,11 +410,12 @@ export class TurnSupervisor {
     const dv = this.drv();
     if (dv === null) return { outcome: 'failed', result_code: 'SDK_BACKGROUND_POLICY_UNVERIFIED', detail: '当前驱动不支持后台回合（SDK 背景策略未验证）' };
     if (opts.kind === 'keepwarm') {
-      const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
+      const earlyResumedDate = d.activity?.get(opts.conversationId)?.early_resumed_date;
+      const sleep = effectiveSleepState(d.config.background.keepwarm.sleep_window, this.nowMs(), earlyResumedDate);
       if (sleep.blocked) return { outcome: 'noop', result_code: sleep.code!, detail: '睡眠时段暂停心跳——排队任务零派发' };
     }
     // —— 执行位内重检（03：领取≠执行；开关/任务 revision/取消只在 15 秒 tick 查一次不算数）——
-    const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null } | undefined;
+    const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision, input_user_appearance_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null; input_user_appearance_revision: number | null } | undefined;
     if (!runRow) return { outcome: 'failed', result_code: 'RUN_NOT_FOUND' };
     if (runRow.state !== 'claimed' && runRow.state !== 'running') return { outcome: 'noop', result_code: `CANCELLED_${runRow.state.toUpperCase()}` };
     const taskRow = d.db.prepare('SELECT revision, enabled, control_reason, payload_json, origin FROM background_tasks WHERE id = ?').get(runRow.task_id) as { revision: number; enabled: number; control_reason: string | null; payload_json: string; origin: string } | undefined;
@@ -440,16 +441,25 @@ export class TurnSupervisor {
     const morningWake = opts.kind === 'keepwarm' && isMorningWakeRun(d.db, opts.runId);
     // —— 心跳专属派发门（R4a 迁 runtime/background-keepwarm-gate.ts；05 §派发门与异常）——
     if (opts.kind === 'keepwarm') {
-      const gate = keepwarmDispatchGate({ db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id, inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs(), morningWake: morningWake ? { sleepWindow: d.config.background.keepwarm.sleep_window } : null });
+      const gate = keepwarmDispatchGate({
+        db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id,
+        inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs(),
+        sleepWindow: d.config.background.keepwarm.sleep_window,
+        morningWake: morningWake ? { sleepWindow: d.config.background.keepwarm.sleep_window } : null,
+      });
       if (gate.decision === 'noop') return { outcome: 'noop', result_code: gate.resultCode, detail: gate.detail };
       capturedActivityRevision = gate.capturedActivityRevision;
     }
+    const capturedUserAppearanceRevision = runRow.input_user_appearance_revision ?? (d.activity?.get(opts.conversationId)?.user_appearance_revision ?? 0);
     const yieldEligible = opts.yieldEligible ?? opts.kind === 'keepwarm';
     const yieldRequested = () => Boolean(yieldEligible && d.keepwarmYieldCheck?.(opts.runId))
-      // Telephone turns use the same acceptance transaction as chat and do not notify the scheduler.
-      || (morningWake && ((d.activity?.get(opts.conversationId)?.activity_revision ?? 0) !== capturedActivityRevision
-        || isCallActivityActive(d.db, opts.conversationId, this.nowMs())));
-    if (morningWake && yieldRequested()) return { outcome: 'noop', result_code: 'KEEPWARM_YIELDED' };
+      // Telephone turns and foreground chat advance user_appearance_revision;
+      // yield on live call or newly accepted owner message without self-yielding on own chat_send_text.
+      || (opts.kind === 'keepwarm' && (
+        (d.activity?.get(opts.conversationId)?.user_appearance_revision ?? 0) !== capturedUserAppearanceRevision
+        || isCallActivityActive(d.db, opts.conversationId, this.nowMs())
+      ));
+    if (opts.kind === 'keepwarm' && yieldRequested()) return { outcome: 'noop', result_code: 'KEEPWARM_YIELDED' };
     const baseTools = this.windowTools(window.id);
     const toolset = storedToolset(d.db, window.id)!;
 
@@ -622,7 +632,7 @@ export class TurnSupervisor {
   }
 
   private confirmModelRequest(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
-    'windowId' | 'turnId' | 'attemptId' | 'purpose' | 'background' | 'heartbeatMode' | 'heartbeatHostText' | 'morningWake' | 'flushChatTail'>, input: {
+    'conversationId' | 'windowId' | 'turnId' | 'attemptId' | 'purpose' | 'background' | 'heartbeatMode' | 'heartbeatHostText' | 'morningWake' | 'flushChatTail'>, input: {
     requestId: string; round: number; attemptIndex: number; generationId: string | null;
     messages: OrMessage[]; confirmedSeen: ManifestEntry[];
   }): void {
@@ -644,6 +654,20 @@ export class TurnSupervisor {
       markSent();
     }
     if (o.background?.kind === 'keepwarm') {
+      const runInfo = db.prepare('SELECT occurrence_key, first_dispatch_started_at FROM background_runs WHERE id = ?')
+        .get(o.background.runId) as { occurrence_key: string; first_dispatch_started_at: string | null } | undefined;
+      const reqInfo = db.prepare('SELECT dispatch_started_at, sent_at FROM provider_requests WHERE id = ?')
+        .get(requestId) as { dispatch_started_at: string | null; sent_at: string | null } | undefined;
+      const startedAtIso = reqInfo?.dispatch_started_at ?? runInfo?.first_dispatch_started_at ?? reqInfo?.sent_at ?? new Date(this.nowMs()).toISOString();
+      const morningDate = o.morningWake && runInfo?.occurrence_key ? runInfo.occurrence_key.split(':').at(-1) ?? null : null;
+      this.d.activity?.noteEffectiveHeartbeat({
+        conversationId: o.conversationId,
+        runId: o.background.runId,
+        windowId: o.windowId,
+        startedAtIso,
+        isMorningWake: Boolean(o.morningWake),
+        morningBusinessDate: morningDate,
+      });
       heartbeat?.observeDelivery(o.background.runId, requestId, messages, o.heartbeatHostText);
     } else if (o.purpose === 'chat' && o.turnId) {
       heartbeat?.observeChatDelivery(o.turnId, requestId, messages, o.flushChatTail);
@@ -1485,18 +1509,21 @@ export class TurnSupervisor {
   }
 
   private keepwarmHold(conversationId: string, runId?: string): 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | 'KEEPWARM_RESTING' | null {
-    const sleep = keepwarmSleepState(this.d.config.background.keepwarm.sleep_window, this.nowMs());
+    const nowMs = this.nowMs();
+    const act = this.d.activity?.get(conversationId) ?? null;
+    const sleep = effectiveSleepState(this.d.config.background.keepwarm.sleep_window, nowMs, act?.early_resumed_date);
     if (sleep.blocked) return sleep.code!;
-    if (!this.d.activity?.resting(conversationId)) return null;
-    if (runId && isMorningWakeRun(this.d.db, runId)) {
-      const nowMs = this.nowMs();
-      const shanghaiDate = new Date(nowMs + 8 * 3_600_000).toISOString().slice(0, 10);
-      const today08Ms = Date.parse(`${shanghaiDate}T08:00:00+08:00`);
+    if (!act || act.resting !== 1) return null;
+    // Only a normal evening rest (morning_0800) whose target morning has arrived allows today's
+    // morning-wake run to execute; any new rest decision or wait-next-user rest immediately holds.
+    if (runId && isMorningWakeRun(this.d.db, runId) && act.rest_recovery_mode === 'morning_0800') {
+      const shanghaiDate = shanghaiDateOfMs(nowMs);
+      const targetDate = act.rest_morning_date ?? shanghaiDate;
+      const today08Ms = Date.parse(`${targetDate}T08:00:00+08:00`);
       const run = this.d.db.prepare('SELECT COALESCE(first_dispatch_started_at, created_at) AS started_at FROM background_runs WHERE id = ?').get(runId) as { started_at: string | null } | undefined;
-      const rest = this.d.db.prepare('SELECT rest_decided_at FROM conversation_activity WHERE conversation_id = ?').get(conversationId) as { rest_decided_at: string | null } | undefined;
-      const restMs = rest?.rest_decided_at ? Date.parse(rest.rest_decided_at) : NaN;
+      const restMs = act.rest_decided_at ? Date.parse(act.rest_decided_at) : NaN;
       const startedMs = run?.started_at ? Date.parse(run.started_at) : today08Ms;
-      if (Number.isFinite(restMs) && restMs < today08Ms && (!Number.isFinite(startedMs) || restMs < startedMs)) {
+      if (nowMs >= today08Ms && Number.isFinite(restMs) && restMs < today08Ms && (!Number.isFinite(startedMs) || restMs < startedMs)) {
         return null;
       }
     }

@@ -170,6 +170,7 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
     occurredAt: new Date().toISOString(),
     ...(attachment ? { attachments: [attachment] } : {}),
   });
+  if (!sub.duplicate) d.scheduler?.notePendingUserChat();
   // JV-08（联合审计 2026-10-26）：语音接纳行统一发布普通消息入口的既有合同
   // （message.persisted/turn.started，防重判据与 conversations.ts 相同：kind+turn_id）
   // ——SDK driver 不触发 dispatch 补发时，用户语音消息不再"落库但页面刷新才可见"。

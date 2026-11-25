@@ -179,7 +179,7 @@ export class MessageService {
       const msgDto = this.getMessage(messageId)!;
       this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: opts.conversationId, messageId, revision: 1,
         sequence: seqRow.next, content: effectiveRevisionText(this.db, messageId, 1, content), contentHash: msgDto.revision.content_hash,
-        occurredAt, firstAcceptance: true, dispatchable: cancelled === null });
+        occurredAt, receivedAt: nowIso, firstAcceptance: true, dispatchable: cancelled === null });
       // WAKE_KEEPWARM_V1 §05：真实发布（非幂等重放路径）同事务更新 L 锚点
       this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
       return { message: msgDto, duplicate: false, turnId, attemptId, repaired: false };

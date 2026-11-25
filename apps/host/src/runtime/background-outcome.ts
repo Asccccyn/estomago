@@ -98,11 +98,13 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
       .run(input.toolCallsObserved, published(conn).length, now, runId);
     // A recovered full tool-call batch proves this request even if its local
     // SDK stop was interrupted. Cache/usage evidence stays untouched.
-    if (kind === 'keepwarm' && !morningWake && completed && input.activity && input.capturedActivityRevision !== null) {
+    // v2.1: quiet or tool-only automatic heartbeats (including morning wake) anchor the
+    // next 50-minute cycle at the run's actual FIRST model dispatch time (ASC), never tool/finish time.
+    if (kind === 'keepwarm' && completed && input.activity && input.capturedActivityRevision !== null) {
       const request = db.prepare(`
         SELECT id,dispatch_started_at FROM provider_requests
         WHERE background_run_id=? AND (outcome='completed' OR id=?) AND sent_at IS NOT NULL AND dispatch_started_at IS NOT NULL
-        ORDER BY dispatch_started_at DESC,rowid DESC LIMIT 1
+        ORDER BY dispatch_started_at ASC,rowid ASC LIMIT 1
       `).get(runId, input.recoveredRequestId ?? null) as { id: string; dispatch_started_at: string } | undefined;
       if (request) input.activity.noteMaintenanceReceipt({
         conversationId: input.conversationId, capturedActivityRevision: input.capturedActivityRevision,

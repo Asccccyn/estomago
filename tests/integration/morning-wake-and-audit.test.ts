@@ -186,8 +186,8 @@ test('A1：22:00 未晚安→22:50 派发；22:00 晚安→22:50 零派发；22:
   }
 });
 
-test('A2：昨晚已晚安（含两步抽牌发言且不清除休息）、昨晚未晚安冷缓存、凌晨 01:00 续聊三组均在 08:00 唯一首发且 08:50 零衍生唤醒', { timeout: 25000 }, async (t) => {
-  // 1) 昨晚晚安 + 次日 08:00 两步晨唤（抽牌 + 发言）：第 2 步不被旧晚安误杀，发言正常落盘，resting 保持 true，08:50 零衍生唤醒
+test('A2（v2.1）：昨晚晚安两步抽牌发言、昨晚未晚安冷缓存、凌晨短间隔续聊均在 08:00 首发第 1 轮，随后按统一 50 分钟循环进入第 2 轮', { timeout: 25000 }, async (t) => {
+  // 1) 昨晚晚安 + 次日 08:00 两步晨唤（抽牌 + 发言）：第 2 步不被昨晚夜休拦截，计为连续第 1 次；08:50 合法启动第 2 轮
   {
     const fx = await createMorningFixture(t, '2026-11-24T21:40:00+08:00');
     await fx.chatAt('2026-11-24T21:40:00+08:00', '晚安，我睡了', '晚安，好梦。');
@@ -210,15 +210,18 @@ test('A2：昨晚已晚安（含两步抽牌发言且不清除休息）、昨晚
     assert.equal(run.occurrence_key, 'morning-wake:primary:2026-11-25');
     assert.equal(run.state, 'completed');
     assert.equal(run.published_message_count, 1, '晨间发言未被旧 resting 扣留');
-    assert.equal(fx.activity.resting('primary'), true, '晨间唤醒不清除昨晚的休息状态');
+    assert.equal(fx.activity.resting('primary'), false, 'v2.1：次晨 08:00 触发后正常夜休结束，进入当日自动循环');
+    assert.equal(fx.activity.get('primary')!.consecutive_unanswered_count, 1, '同轮多步只计为连续第 1 次');
 
-    fx.setClock('2026-11-25T08:50:01+08:00');
+    fx.steps.push({ calls: [{ id: 'mw-r2-noop', name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock('2026-11-25T08:50:00+08:00');
     await fx.host.scheduler!.tick();
-    assert.equal(fx.heartbeatRequests().length, 2, '08:50 不因晨间自身发言/派发产生衍生唤醒');
+    assert.equal(fx.heartbeatRequests().length, 3, 'v2.1：08:50 合法启动第 2 轮');
+    assert.equal(fx.activity.get('primary')!.consecutive_unanswered_count, 2);
     await fx.stop();
   }
 
-  // 2) 昨晚未晚安但隔夜缓存已冷（21:30 停聊）→ 08:00 唯一晨唤，08:50 零衍生唤醒
+  // 2) 昨晚未晚安但隔夜缓存已冷（22:15 停聊）→ 08:00 第 1 轮，08:50 第 2 轮
   {
     const fx = await createMorningFixture(t, '2026-11-24T22:15:00+08:00');
     await fx.chatAt('2026-11-24T22:15:00+08:00', '先去忙点事', '好。');
@@ -231,17 +234,24 @@ test('A2：昨晚已晚安（含两步抽牌发言且不清除休息）、昨晚
     fx.setClock('2026-11-25T08:00:00+08:00');
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 1);
+    assert.equal(fx.activity.get('primary')!.consecutive_unanswered_count, 1);
 
-    fx.setClock('2026-11-25T08:50:01+08:00');
+    fx.steps.push({ calls: [{ id: 'mw-r2-noop-2', name: 'background_complete', args: { outcome: 'noop' } }] });
+    fx.setClock('2026-11-25T08:50:00+08:00');
     await fx.host.scheduler!.tick();
-    assert.equal(fx.heartbeatRequests().length, 1, '08:50 不因晨间自身发言滚出下一轮自动唤醒');
+    assert.equal(fx.heartbeatRequests().length, 2, 'v2.1：08:50 合法启动第 2 轮');
+    assert.equal(fx.activity.get('primary')!.consecutive_unanswered_count, 2);
     await fx.stop();
   }
 
-  // 3) 凌晨 01:00 续聊后睡觉，07:11 起无新聊天 → 08:00 晨唤
+  // 3) 凌晨 00:55 / 01:00 短间隔续聊（<4h）→ 保持夜间暂停、01:50 零派发、保留 08:00 兜底
   {
-    const fx = await createMorningFixture(t, '2026-11-25T01:00:00+08:00');
-    await fx.chatAt('2026-11-25T01:00:00+08:00', '半夜醒来喝口水', '快接着睡吧。');
+    const fx = await createMorningFixture(t, '2026-11-25T00:55:00+08:00');
+    await fx.chatAt('2026-11-25T00:55:00+08:00', '先喝口水', '好呀。');
+    await fx.chatAt('2026-11-25T01:00:00+08:00', '半夜醒来喝口水', '快接着睡吧。', '2026-11-25T01:02:00+08:00');
+    fx.setClock('2026-11-25T01:52:00+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 0, '夜间间隔不足 4 小时保持暂停');
     fx.setClock('2026-11-25T07:59:59+08:00');
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 0);
@@ -254,10 +264,8 @@ test('A2：昨晚已晚安（含两步抽牌发言且不清除休息）、昨晚
   }
 });
 
-test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07:12 回复→08:02、只开页不顺延、连续顺延至 09:10、08:00 先接受新消息顺延至 08:50', { timeout: 30000 }, async (t) => {
+test('A3（v2.1）：夜间满四小时提前恢复后 07:11→08:01、07:09/07:12→08:02、连续聊天→09:10、08:00 抢先→08:50:05', { timeout: 30000 }, async (t) => {
   const matrix: Array<{ chatIso: string; beforeIso: string; dueIso: string }> = [
-    { chatIso: '2026-11-25T07:10:00+08:00', beforeIso: '2026-11-25T07:59:59+08:00', dueIso: '2026-11-25T08:00:00+08:00' },
-    { chatIso: '2026-11-25T07:10:59+08:00', beforeIso: '2026-11-25T07:59:59+08:00', dueIso: '2026-11-25T08:00:00+08:00' },
     { chatIso: '2026-11-25T07:11:00+08:00', beforeIso: '2026-11-25T08:00:59+08:00', dueIso: '2026-11-25T08:01:00+08:00' },
     { chatIso: '2026-11-25T07:11:30+08:00', beforeIso: '2026-11-25T08:01:29+08:00', dueIso: '2026-11-25T08:01:30+08:00' },
     { chatIso: '2026-11-25T07:20:00+08:00', beforeIso: '2026-11-25T08:09:59+08:00', dueIso: '2026-11-25T08:10:00+08:00' },
@@ -266,13 +274,12 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
   ];
 
   for (const row of matrix) {
-    const fx = await createMorningFixture(t, row.chatIso);
+    const fx = await createMorningFixture(t, '2026-11-24T22:30:00+08:00');
+    await fx.chatAt('2026-11-24T22:30:00+08:00', '昨晚停聊', '晚安前最后一句');
     await fx.chatAt(row.chatIso, '早起说一句', '嗯嗯。');
-    if (Date.parse(row.dueIso) > Date.parse('2026-11-25T08:00:00+08:00')) {
-      fx.setClock('2026-11-25T08:00:00+08:00');
-      await fx.host.scheduler!.tick();
-      assert.equal(fx.heartbeatRequests().length, 0, `${row.chatIso} 在原 08:00 目标零首发`);
-    }
+    fx.setClock('2026-11-25T08:00:00+08:00');
+    await fx.host.scheduler!.tick();
+    assert.equal(fx.heartbeatRequests().length, 0, `${row.chatIso} 提前恢复后不在 08:00 另外插一轮`);
     fx.setClock(row.beforeIso);
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 0, `${row.chatIso} 在 ${row.beforeIso} 零首发`);
@@ -281,27 +288,21 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
     fx.setClock(row.dueIso);
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 1, `${row.chatIso} 在 ${row.dueIso} 恰好一次首发`);
-    const occ = fx.host.db.prepare("SELECT occurrence_key FROM background_runs WHERE kind='keepwarm' AND state!='noop' OR (kind='keepwarm' AND model_requests_started=1) ORDER BY rowid DESC LIMIT 1")
-      .get() as { occurrence_key: string };
-    assert.equal(occ.occurrence_key, 'morning-wake:primary:2026-11-25');
     await fx.stop();
   }
 
-  // 07:09 用户发话、07:12 前台助手正式回复 → 08:02 晨唤；07:50 只读快照/设置与消息编辑不推动目标
+  // 07:09 用户发话（满 4h 提前恢复）、07:12 前台助手正式回复 → 08:02 自动心跳；不另外插 08:00 兜底
   {
-    const fx = await createMorningFixture(t, '2026-11-25T07:09:00+08:00', { listenHttp: true });
+    const fx = await createMorningFixture(t, '2026-11-24T22:30:00+08:00');
+    await fx.chatAt('2026-11-24T22:30:00+08:00', '昨晚停聊', '好。');
     const sub = await fx.chatAt('2026-11-25T07:09:00+08:00', '早起问个问题', '我想好了，给你答复。', '2026-11-25T07:12:00+08:00');
-    fx.setClock('2026-11-25T07:50:00+08:00');
-    const base = `http://127.0.0.1:${fx.host.port}`;
-    const token = fs.readFileSync(path.join(fx.root, 'config/auth.token'), 'utf8').trim();
-    const headers = { Authorization: `Bearer ${token}` };
-    const settingsRes = await (await fetch(`${base}/api/v1/background/settings`, { headers })).json() as any;
-    assert.equal(settingsRes.keepwarm_status.next_keepwarm_at, new Date('2026-11-25T08:02:00+08:00').toISOString());
-    assert.equal(settingsRes.keepwarm_status.next_keepwarm_basis, 'morning_postponed');
-    const text = keepwarmStatusText(settingsRes.keepwarm_status, settingsRes.keepwarm.sleep_window, (iso) =>
-      new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(iso)));
-    assert.match(text, /晨间唤醒预计 08:02（按 07:12 聊天顺延）/);
-    await fetch(`${base}/api/v1/conversations/primary/snapshot`, { headers });
+    const winId = fx.host.windows.activeWindow('primary')!.id;
+    const sched = fx.activity.evaluateHeartbeatSchedule({
+      conversationId: 'primary', windowId: winId, sleepWindow: fx.config.background.keepwarm.sleep_window,
+      keepwarmEnabled: true, nowMs: Date.parse('2026-11-25T07:50:00+08:00'),
+    });
+    assert.equal(sched.scheduled, true);
+    assert.equal(sched.dueAtMs, Date.parse('2026-11-25T08:02:00+08:00'));
 
     fx.setClock('2026-11-25T08:01:59+08:00');
     await fx.host.scheduler!.tick();
@@ -311,29 +312,26 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
     fx.setClock('2026-11-25T08:02:00+08:00');
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 1, '08:02:00 唯一首发');
-    const runsResponse = await fetch(`${base}/api/v1/background/runs`, { headers });
-    assert.equal(runsResponse.status, 200);
-    const { runs } = await runsResponse.json() as { runs: Array<{ keepwarm_source?: string; model_requests_started: number }> };
-    assert.ok(runs.some(run => run.keepwarm_source === 'morning_wake' && run.model_requests_started === 1));
     assert.ok(sub.message.id);
     await fx.stop();
   }
 
-  // 07:11 → 07:40 → 08:20 连续真实聊天：先排 08:01，再排 08:30，最终仅 09:10 首发（距离 08:00 已 70 分钟但距最新目标 0 分钟，不过期）
+  // 07:11 → 07:40 → 08:20 连续真实聊天：先排 08:01，再排 08:30，最终仅 09:10 首发
   {
-    const fx = await createMorningFixture(t, '2026-11-25T07:11:00+08:00');
+    const fx = await createMorningFixture(t, '2026-11-24T22:30:00+08:00');
+    await fx.chatAt('2026-11-24T22:30:00+08:00', '昨晚聊过', '好。');
     const winId = () => fx.host.windows.activeWindow('primary')!.id;
     const sw = fx.config.background.keepwarm.sleep_window;
 
     await fx.chatAt('2026-11-25T07:11:00+08:00', '第一句', '回第一句');
     assert.equal(
-      fx.activity.morningWakeTarget({ conversationId: 'primary', windowId: winId(), sleepWindow: sw, nowMs: fx.getNowMs() }).dueAtMs,
+      fx.activity.evaluateHeartbeatSchedule({ conversationId: 'primary', windowId: winId(), sleepWindow: sw, keepwarmEnabled: true, nowMs: fx.getNowMs() }).dueAtMs,
       Date.parse('2026-11-25T08:01:00+08:00'),
     );
 
     await fx.chatAt('2026-11-25T07:40:00+08:00', '第二句', '回第二句');
     assert.equal(
-      fx.activity.morningWakeTarget({ conversationId: 'primary', windowId: winId(), sleepWindow: sw, nowMs: fx.getNowMs() }).dueAtMs,
+      fx.activity.evaluateHeartbeatSchedule({ conversationId: 'primary', windowId: winId(), sleepWindow: sw, keepwarmEnabled: true, nowMs: fx.getNowMs() }).dueAtMs,
       Date.parse('2026-11-25T08:30:00+08:00'),
     );
 
@@ -343,7 +341,7 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
 
     await fx.chatAt('2026-11-25T08:20:00+08:00', '第三句', '回第三句');
     assert.equal(
-      fx.activity.morningWakeTarget({ conversationId: 'primary', windowId: winId(), sleepWindow: sw, nowMs: fx.getNowMs() }).dueAtMs,
+      fx.activity.evaluateHeartbeatSchedule({ conversationId: 'primary', windowId: winId(), sleepWindow: sw, keepwarmEnabled: true, nowMs: fx.getNowMs() }).dueAtMs,
       Date.parse('2026-11-25T09:10:00+08:00'),
     );
 
@@ -354,13 +352,12 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
     fx.steps.push({ calls: [{ id: 'mw-0910', name: 'background_complete', args: { outcome: 'noop' } }] });
     fx.setClock('2026-11-25T09:10:00+08:00');
     await fx.host.scheduler!.tick();
-    assert.equal(fx.heartbeatRequests().length, 1, '09:10 唯一晨间首发（同时覆盖普通保温重叠，合计恰一次）');
+    assert.equal(fx.heartbeatRequests().length, 1, '09:10 唯一首发');
     assert.match(fx.heartbeatRequests()[0]!.lastUser, /09:10/);
-    assert.doesNotMatch(fx.heartbeatRequests()[0]!.lastUser, /现在八点|还没来过/);
     await fx.stop();
   }
 
-  // 07:11 起无消息，08:00:00 新用户输入先于晨间首发被正式接受 → 08:00 晨间让位零派发，目标顺延至 08:50:05（回复时间+50m）
+  // 08:00:00 新用户输入先于晨间首发被正式接受 → 08:00 零派发，目标顺延至 08:50:05（回复时间+50m）
   {
     const fx = await createMorningFixture(t, '2026-11-24T22:00:00+08:00');
     await fx.chatAt('2026-11-24T22:00:00+08:00', '昨晚聊过一句', '好。');
@@ -372,7 +369,6 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
       clientMessageId: 'race-0800-user',
     });
     fx.host.scheduler!.notePendingUserChat();
-    // 即使调度器在用户回合完成前 tick，晨间也会检测到新前台聊天已将目标推后而零派发释放机会
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 0, '08:00 先接受用户输入时晨间零首发');
 
@@ -380,19 +376,20 @@ test('A3：07:10/07:10:59 不顺延，07:11:00 起逐秒顺延、07:09 发话 07
     fx.host.supervisor.enqueue(sub.turnId);
     await fx.host.supervisor.waitIdle();
 
-    const target = fx.activity.morningWakeTarget({
+    const sched = fx.activity.evaluateHeartbeatSchedule({
       conversationId: 'primary',
       windowId: fx.host.windows.activeWindow('primary')!.id,
       sleepWindow: fx.config.background.keepwarm.sleep_window,
+      keepwarmEnabled: true,
       nowMs: fx.getNowMs(),
     });
-    assert.equal(target.scheduled, true);
-    if (target.scheduled) assert.equal(target.dueAtMs, Date.parse('2026-11-25T08:50:05+08:00'));
+    assert.equal(sched.scheduled, true);
+    assert.equal(sched.dueAtMs, Date.parse('2026-11-25T08:50:05+08:00'));
 
     fx.steps.push({ calls: [{ id: 'mw-085005', name: 'background_complete', args: { outcome: 'noop' } }] });
     fx.setClock('2026-11-25T08:50:05+08:00');
     await fx.host.scheduler!.tick();
-    assert.equal(fx.heartbeatRequests().length, 1, '顺延后的同一晨间机会在 08:50:05 唯一首发');
+    assert.equal(fx.heartbeatRequests().length, 1, '08:50:05 唯一首发');
     await fx.stop();
   }
 });
@@ -416,16 +413,17 @@ test('A4：总开关关闭零首发、恢复休息不偷开总开关、顺延期
     await fx.stop();
   }
 
-  // 2) 顺延期间模拟重启恢复 + 首发后用户插话让位不重开本日晨间 + 下一上海业务日独立机会
+  // 2) 提前恢复后重启恢复 + 首发后用户插话让位 + 下一上海业务日独立机会
   {
-    const fx = await createMorningFixture(t, '2026-11-25T07:40:00+08:00');
+    const fx = await createMorningFixture(t, '2026-11-24T22:30:00+08:00');
+    await fx.chatAt('2026-11-24T22:30:00+08:00', '昨晚聊过', '好。');
     await fx.chatAt('2026-11-25T07:40:00+08:00', '早起聊一句', '好呀。');
     fx.setClock('2026-11-25T08:10:00+08:00');
     fx.host.scheduler!.recoverOnStart();
     await fx.host.scheduler!.tick();
     assert.equal(fx.heartbeatRequests().length, 0, '重启后在 08:10 不提前派发');
 
-    // 08:30 晨间首发后，在工具步骤期间用户插话 → 让位收口，当天不再重开晨间
+    // 08:30 首发后，在工具步骤期间用户插话 → 让位收口
     fx.steps.push({
       calls: [{ id: 'mw-draw-yield', name: 'heartbeat_draw', args: { card_number: 1 } }],
       onTransport: () => {
@@ -438,7 +436,7 @@ test('A4：总开关关闭零首发、恢复休息不偷开总开关、顺延期
 
     fx.setClock('2026-11-25T08:40:00+08:00');
     await fx.host.scheduler!.tick();
-    assert.equal(fx.heartbeatRequests().length, 1, '首发后插话让位当天不重开晨间');
+    assert.equal(fx.heartbeatRequests().length, 1, '08:40 不重复重开');
 
     // 下一上海业务日 08:00 有独立晨间机会
     fx.steps.push({ calls: [{ id: 'mw-next-day', name: 'background_complete', args: { outcome: 'noop' } }] });
@@ -506,10 +504,9 @@ test('A4：总开关关闭零首发、恢复休息不偷开总开关、顺延期
   }
 });
 
-test('A4：晨间首发前接纳聊天使机会顺延，通话结束后仍是同一天的机会', { timeout: 20000 }, async (t) => {
-  const fx = await createMorningFixture(t, '2026-11-24T22:20:00+08:00', { listenHttp: true, sleepWindowEnabled: false });
+test('A4（v2.1）：晨间首发前接纳聊天使机会取消并转入 50m 循环，通话让位结束后正常执行', { timeout: 20000 }, async (t) => {
+  const fx = await createMorningFixture(t, '2026-11-24T22:20:00+08:00', { sleepWindowEnabled: false });
   await fx.chatAt('2026-11-24T22:20:00+08:00', '睡前说一句。', '好。');
-  const base = `http://127.0.0.1:${fx.host.port}`;
 
   const started = Promise.withResolvers<void>();
   const resume = Promise.withResolvers<void>();
@@ -524,14 +521,13 @@ test('A4：晨间首发前接纳聊天使机会顺延，通话结束后仍是同
   const tick = fx.host.scheduler!.tick();
   try {
     await started.promise;
-    const token = fs.readFileSync(path.join(fx.root, 'config/auth.token'), 'utf8').trim();
-    const response = await fetch(`${base}/api/v1/conversations/primary/messages`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ client_message_id: 'chat-before-morning-dispatch', content: '我刚醒。' }),
+    const sub = fx.host.messages.submitUserMessageWithTurn({
+      conversationId: 'primary',
+      content: '我刚醒。',
+      clientMessageId: 'chat-before-morning-dispatch',
     });
-    assert.equal(response.status, 201);
-    await response.json();
+    fx.host.scheduler!.notePendingUserChat();
+    fx.host.supervisor.enqueue(sub.turnId);
   } finally {
     resume.resolve();
     await tick;
@@ -547,52 +543,35 @@ test('A4：晨间首发前接纳聊天使机会顺延，通话结束后仍是同
   fx.setClock('2026-11-25T08:49:59+08:00');
   await fx.host.scheduler!.tick();
   assert.equal(fx.heartbeatRequests().length, 0);
-  const originalIngressToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
-  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'morning-fixture-ingress';
-  t.after(() => {
-    if (originalIngressToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
-    else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = originalIngressToken;
-  });
-  const voiceAuth = { Authorization: 'Bearer morning-fixture-ingress', 'Content-Type': 'application/json' };
-  const call = await fetch(`${base}/v1/calls`, {
-    method: 'POST',
-    headers: voiceAuth,
-    body: JSON.stringify({ call_id: 'morning-call', conversation_id: 'primary' }),
-  });
-  assert.equal(call.status, 200);
-  await call.json();
+
+  // 08:50 通话进行中 → 让位零派发；08:51 挂断 → 正常启动
+  const nowIso = new Date(fx.getNowMs()).toISOString();
+  fx.host.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at) VALUES ('morning-call','primary','active',?)").run(nowIso);
   fx.steps.push({ calls: [{ id: 'morning-after-chat', name: 'background_complete', args: { outcome: 'noop' } }] });
   fx.setClock('2026-11-25T08:50:00+08:00');
   await fx.host.scheduler!.tick();
-  assert.equal(fx.heartbeatRequests().length, 0, '通话开始但未说话，不该在预计时间发出晨间请求');
+  assert.equal(fx.heartbeatRequests().length, 0, '通话开始但未说话，不该在预计时间发出心跳请求');
   fx.setClock('2026-11-25T08:51:00+08:00');
-  const hangup = await fetch(`${base}/v1/calls/morning-call`, { method: 'DELETE', headers: voiceAuth });
-  assert.equal(hangup.status, 200);
-  await hangup.json();
+  fx.host.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id='morning-call'").run(new Date(fx.getNowMs()).toISOString());
   await fx.host.scheduler!.tick();
   assert.equal(fx.heartbeatRequests().length, 1);
   assert.match(fx.heartbeatRequests()[0]!.lastUser, /08:51/);
-  const completed = fx.host.db.prepare("SELECT model_requests_started, scheduled_for FROM background_runs WHERE occurrence_key = ?")
-    .get('morning-wake:primary:2026-11-25') as { model_requests_started: number; scheduled_for: string };
-  assert.equal(completed.model_requests_started, 1);
-  assert.equal(completed.scheduled_for, new Date('2026-11-25T08:50:00+08:00').toISOString());
   await fx.stop();
 });
 
-test('A4：迟到按最新顺延目标计算，+09:59 可首发，+10:00 已错过', { timeout: 15000 }, async (t) => {
-  for (const [now, canDispatch] of [['08:39:59', true], ['08:40:00', false]] as const) {
-    const fx = await createMorningFixture(t, '2026-11-25T07:40:00+08:00');
-    await fx.chatAt('2026-11-25T07:40:00+08:00', '早起聊一句。', '好。');
+test('A4（v2.1）：真正离线错过 08:00 宽限（+09:59 可发，+10:00 错过）；助手分段发布推进统一 50 分钟目标', { timeout: 15000 }, async (t) => {
+  for (const [now, canDispatch] of [['08:09:59', true], ['08:10:00', false]] as const) {
+    const fx = await createMorningFixture(t, '2026-11-24T22:20:00+08:00');
+    await fx.chatAt('2026-11-24T22:20:00+08:00', '晚安，我睡了', '好。');
     fx.steps.push({ calls: [{ id: 'morning-late-complete', name: 'background_complete', args: { outcome: 'noop' } }] });
     fx.setClock(`2026-11-25T${now}+08:00`);
     await fx.host.scheduler!.tick();
-    assert.equal(fx.heartbeatRequests().length, Number(canDispatch));
-    if (canDispatch) assert.match(fx.heartbeatRequests()[0]!.lastUser, /08:39/);
+    assert.equal(fx.heartbeatRequests().length, Number(canDispatch), `08:00 基准离线至 ${now}`);
     await fx.stop();
   }
-  // Both published revisions are real events. The first paragraph keeps the opportunity pending
-  // across 08:40:00; the second arrives in the same visible bubble and advances the same target.
-  const fx = await createMorningFixture(t, '2026-11-25T07:40:00+08:00');
+  const fx = await createMorningFixture(t, '2026-11-24T22:30:00+08:00');
+  await fx.chatAt('2026-11-24T22:30:00+08:00', '昨晚聊过', '好。');
+  fx.setClock('2026-11-25T07:40:00+08:00');
   fx.host.messages.ensureConversation('primary');
   fx.steps.push({ timedText: [
     { text: '先给你一段。\n\n', at: '2026-11-25T08:39:59+08:00' },
@@ -607,16 +586,16 @@ test('A4：迟到按最新顺延目标计算，+09:59 可首发，+10:00 已错�
     WHERE m.turn_id = ? AND r.source = 'assistant_publish' ORDER BY r.revision`)
     .all(submission.turnId).map(row => row.received_at);
   assert.deepEqual(revisions, ['2026-11-25T00:39:59.000Z', '2026-11-25T00:40:01.000Z']);
-  const target = fx.activity.morningWakeTarget({
+  const sched = fx.activity.evaluateHeartbeatSchedule({
     conversationId: 'primary', windowId: fx.host.windows.activeWindow('primary')!.id,
-    sleepWindow: fx.config.background.keepwarm.sleep_window, nowMs: fx.getNowMs(),
+    sleepWindow: fx.config.background.keepwarm.sleep_window, keepwarmEnabled: true, nowMs: fx.getNowMs(),
   });
-  assert.equal(target.scheduled, true);
-  assert.equal(target.dueAtMs, Date.parse('2026-11-25T09:30:01+08:00'));
+  assert.equal(sched.scheduled, true);
+  assert.equal(sched.dueAtMs, Date.parse('2026-11-25T09:30:01+08:00'));
   await fx.stop();
 });
 
-test('A5：晨间仍要求有效窗口和预算，零模型首发', { timeout: 15000 }, async (t) => {
+test('A5：仍要求有效窗口和预算，零模型首发', { timeout: 15000 }, async (t) => {
   const fx = await createMorningFixture(t, '2026-11-25T08:00:00+08:00');
   assert.equal(fx.host.windows.activeWindow('primary'), null);
   await fx.host.scheduler!.tick();
@@ -628,8 +607,8 @@ test('A5：晨间仍要求有效窗口和预算，零模型首发', { timeout: 1
   fx.setClock('2026-11-25T08:51:00+08:00');
   await fx.host.scheduler!.tick();
   assert.equal(fx.heartbeatRequests().length, 0);
-  const run = fx.host.db.prepare('SELECT result_code, model_requests_started FROM background_runs WHERE occurrence_key=?')
-    .get('morning-wake:primary:2026-11-25');
+  const run = fx.host.db.prepare("SELECT result_code, model_requests_started FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1")
+    .get() as { result_code: string; model_requests_started: number };
   assert.deepEqual({ ...run }, { result_code: 'BACKGROUND_BUDGET_EXHAUSTED', model_requests_started: 0 });
   await fx.stop();
 });

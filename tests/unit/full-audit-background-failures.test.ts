@@ -249,10 +249,10 @@ test('FA-F06 retained unread tool fragments stay pending until a later real disp
  assert.equal(JSON.stringify(payloads).includes('pending_dispatch'),false,'pending source metadata remains host-only');
 });
 
-test('FA-F07 a no-text refusal confirms previously pending sources and retains its own tool receipt',async t=>{
+ test('FA-F07 a no-text refusal confirms previously pending sources and retains its own tool receipt',async t=>{
  let phase='seed',round=0;const now={nowMs:Date.now()};
  const ctx=compose(tempRoot('fa-pending-heartbeat-'),async p=>{
-  if(phase==='read'){if(++round===1)return response(toolCallBody([{id:'read',name:'conversation_read',args:JSON.stringify({anchor:{speaker:'宿主用户',quote:'pending source for later'}})}]));return {status:500,headers:new Headers(),body:Readable.from([])};}
+  if(phase==='read'){if(++round===1)return response(toolCallBody([{id:'read',name:'conversation_read',args:JSON.stringify({anchor:{speaker:'宿主用户',quote:'pending source for later'}})}],{prompt_tokens:500,completion_tokens:10,prompt_tokens_details:{cached_tokens:400,cache_write_tokens:100},cost:0.001}as any));return {status:500,headers:new Headers(),body:Readable.from([])};}
   if(phase==='decline')return response(toolCallBody([{id:'confirm-and-decline',name:'background_complete',args:'{"outcome":"noop"}'}]));
   return response(chatBody('seed'));
  },now);cleanup(t,ctx);
@@ -262,7 +262,8 @@ test('FA-F07 a no-text refusal confirms previously pending sources and retains i
  // bookkeeping before admitting a later occurrence for the same actor.
  ctx.db.prepare("UPDATE background_runs SET state=?,result_code=? WHERE id='sleep-run'").run(first.outcome,first.result_code??null);
  const win=ctx.windows.activeWindow('c1')!.id;const before=ctx.trajectory.forWindow(win)!;assert.equal(before.pendingManifest[0].id,source.id);
- ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('second-heartbeat','sleep-task','c1','jiaming','keepwarm',1,'second-heartbeat','running','now','now')").run();
+ now.nowMs=Date.now()+3_005_000;const secondIso=new Date(now.nowMs).toISOString();
+ ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('second-heartbeat','sleep-task','c1','jiaming','keepwarm',1,'second-heartbeat','running',?,?)").run(secondIso,secondIso);
  phase='decline';const result=await ctx.supervisor.enqueueBackground('c1',()=>ctx.supervisor.runBackgroundTurn({kind:'keepwarm',runId:'second-heartbeat',conversationId:'c1',payload:{},isCancelRequested:()=>false,registerAbort:()=>{},maxModelRequests:4,recordDispatch:info=>scheduler.recordDispatchStart({runId:'second-heartbeat',...info,capabilityName:info.capabilityName??null})}));
  assert.equal(result.result_code,'complete:noop');const after=ctx.trajectory.forWindow(win)!;
  const added=after.messages.slice(before.messages.length);

@@ -159,13 +159,6 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
   }
 
   const kw = settings?.keepwarm_status ?? {}
-  const resumeKeepwarm = async (): Promise<void> => {
-    if (busy) return
-    setBusy(true); setError(null)
-    try { await client.backgroundResumeHeartbeat(`ui-keepwarm-resume-${Date.now()}`); void refresh() }
-    catch (e) { setError((e as Error).message || '恢复失败') }
-    finally { setBusy(false) }
-  }
   const openRun = (runs ?? []).find((r) => ['claimed', 'running', 'cancelling'].includes(r.state))
 
   return (
@@ -199,12 +192,6 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 </span>
                 <input type="checkbox" checked={settings.keepwarm?.enabled === true} disabled={busy} onChange={() => void toggle('keepwarm')} />
               </label>
-              {kw.resting === true && (
-                <div className="flex items-center justify-between rounded-2xl bg-[#f3f1ea] px-3 py-2 text-[12.5px]" role="status">
-                  <span>普通保温休息中</span>
-                  <button className="text-[#a4552f]" disabled={busy} onClick={() => void resumeKeepwarm()}>恢复心跳</button>
-                </div>
-              )}
               <label className="flex items-center justify-between rounded-2xl border border-black/5 bg-white px-3 py-2.5">
                 <span><span className="block">自由活动</span><span className="block text-[11.5px] text-[#8a8780]">非预约的额外自主任务；预约与心跳单独控制</span></span>
                 <input type="checkbox" checked={settings.free_activity?.enabled === true} disabled={busy} onChange={() => void toggle('free_activity')} />

@@ -2061,4 +2061,64 @@ MIGRATIONS.push({
     ALTER TABLE conversation_activity ADD COLUMN rest_message_id TEXT;`,
 });
 
+// v92（心跳规则重构 v2.1）：分离"她是否出现"、"双方末句/有效心跳锚点"与"连续未出现次数"；
+// 区分正常夜休（次晨 08:00 兜底）与 02:00 起补觉/午睡（等下条新消息）；绑定夜间四小时判定、
+// 异步 Sol 休息判断版本栅栏与在线让位事实。不扫描历史对话；旧库保留既有手动关、有效休息与
+// 已确认机会，连续未出现次数从 0 起算（旧库无独立出现版本与单机会计数标记，无法可靠反推）。
+MIGRATIONS.push({
+  version: 92,
+  name: 'heartbeat-unified-v21-state',
+  sql: `
+ALTER TABLE conversation_activity ADD COLUMN user_appearance_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversation_activity ADD COLUMN last_user_message_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN last_user_message_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN rest_recovery_mode TEXT CHECK (rest_recovery_mode IS NULL OR rest_recovery_mode IN ('morning_0800','next_user_message'));
+ALTER TABLE conversation_activity ADD COLUMN rest_morning_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN early_resumed_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN morning_fallback_superseded_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN morning_yielded_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN morning_yielded_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN consecutive_unanswered_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversation_activity ADD COLUMN last_effective_heartbeat_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN last_effective_heartbeat_run_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN last_effective_heartbeat_window_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN streak_paused_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_message_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_revision INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_accepted_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_control_revision INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_user_appearance_revision INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_was_night_pause INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_gap_eligible INTEGER;
+ALTER TABLE background_runs ADD COLUMN input_user_appearance_revision INTEGER;
+ALTER TABLE background_runs ADD COLUMN streak_counted_at TEXT;
+`,
+  repair: (db: Db): number => {
+    const SHANGHAI_OFFSET_MS = 8 * 3_600_000;
+    const rows = db.prepare('SELECT conversation_id, rest_decided_at FROM conversation_activity WHERE resting = 1 AND rest_recovery_mode IS NULL').all() as Array<{ conversation_id: string; rest_decided_at: string | null }>;
+    let touched = 0;
+    for (const row of rows) {
+      const ms = row.rest_decided_at ? Date.parse(row.rest_decided_at) : NaN;
+      let mode: 'morning_0800' | 'next_user_message' = 'next_user_message';
+      let morningDate: string | null = null;
+      if (Number.isFinite(ms)) {
+        const sh = new Date(ms + SHANGHAI_OFFSET_MS);
+        const hour = sh.getUTCHours();
+        const dateStr = sh.toISOString().slice(0, 10);
+        if (hour >= 18) {
+          mode = 'morning_0800';
+          morningDate = new Date(Date.parse(`${dateStr}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+        } else if (hour < 2) {
+          mode = 'morning_0800';
+          morningDate = dateStr;
+        }
+      }
+      db.prepare('UPDATE conversation_activity SET rest_recovery_mode = ?, rest_morning_date = ? WHERE conversation_id = ?')
+        .run(mode, morningDate, row.conversation_id);
+      touched++;
+    }
+    return touched;
+  },
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

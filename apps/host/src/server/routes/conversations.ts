@@ -235,8 +235,12 @@ if (postMsgs) {
   if (eventExists.n === 0) {
     d.events.publish('message.persisted', { conversationId, turnId: submitted.turnId, entityRef: message.id, entityRevision: message.sequence, payload: { message } });
   }
-  // EXEC_V1 §04.7.1（WP4）：用户消息入库即请求取消可取消背景步骤（聊天优先——不排在用户前面）
-  d.scheduler?.notePendingUserChat();
+  // EXEC_V1 §04.7.1（WP4）+ R3 修复：只对首次接受、修复出待执行任务、或当前仍待前台执行的请求
+  // 发送让位信号；已完成消息的幂等回执查询保持纯幂等，不打断正在执行的晨间/心跳抽卡。
+  const attemptState = (d.db.prepare('SELECT state FROM attempts WHERE id = ?').get(submitted.attemptId) as { state: string } | undefined)?.state;
+  if (!submitted.duplicate || submitted.repaired || attemptState === 'pending' || attemptState === 'running') {
+    d.scheduler?.notePendingUserChat();
+  }
   const startedExists = d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('turn.started', submitted.turnId) as { n: number };
   if (startedExists.n === 0) {
     d.events.publish('turn.started', { conversationId, turnId: submitted.turnId, attemptId: submitted.attemptId, payload: {} });

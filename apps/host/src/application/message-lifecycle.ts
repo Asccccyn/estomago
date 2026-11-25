@@ -5,7 +5,10 @@
 import type { MessageLifecycleFact, MessageLifecycleHooks } from '../messages/lifecycle.ts';
 import type { SurfacingService } from '../memory-surfacing/service.ts';
 import { detectRestIntent } from '../runtime/conversation-rest.ts';
-import type { RestDecision } from '../runtime/wake-activity.ts';
+import type { SleepWindowConfig } from '../runtime/keepwarm-sleep.ts';
+import type { ConversationActivityService, RestDecision } from '../runtime/wake-activity.ts';
+
+const DEFAULT_SLEEP_WINDOW: SleepWindowConfig = { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' };
 
 export type MessageLifecycleConsumers = {
   /** 浮现作业随正式输入登记，由目标回合领取。 */
@@ -14,7 +17,20 @@ export type MessageLifecycleConsumers = {
   activity: {
     noteRealPublication(conversationId: string, messageId: string, revision: number, atIso: string): void;
     noteRestDecision?(conversationId: string, decision: RestDecision): boolean;
+    noteOwnerMessageAccepted?: ConversationActivityService['noteOwnerMessageAccepted'];
   } | null;
+  /** 异步 Sol 休息意图协调器（与记忆浮现独立；仅在需要语义判断的首次受理消息提交后唤醒）。 */
+  restJudge?: {
+    configured(): boolean;
+    wake(conversationId: string): void;
+  } | null;
+  /** 心跳睡眠时段与控制版本读取（同事务内用于夜间四小时判定与控制版本绑定）。 */
+  heartbeatContext?: {
+    sleepWindow(): SleepWindowConfig;
+    controlRevision(): number;
+  } | null;
+  /** 正式消息提交后同步刷新心跳预计目标（只在实际变化时写任务行）。 */
+  onScheduleDirty?: (() => void) | null;
   /** GLM_VOICE_UNIFICATION P06：语音消息默认分析——接纳即登记观察 sidecar（pending），
    *  提交后唤醒后台一跳。SQL-only 登记（observations.ensureForMessage）；不依赖打开气泡。
    *  RV01（复审 20261106）：修订被取代/派发前取消（dispatchable=false）时终结该修订
@@ -56,18 +72,35 @@ export function bindMessageLifecycle(consumers: MessageLifecycleConsumers): Mess
       // （dispatchable=false，如电话准备阶段挂断）接纳即终结——同一资格不悬空。
       if (fact.kind === 'revised') consumers.voiceObservations?.abandonRevision(fact.messageId, fact.supersededRevision);
       if (fact.kind === 'accepted' && !fact.dispatchable) consumers.voiceObservations?.abandonRevision(fact.messageId, fact.revision);
-      // 休息决定只读她本人首次正式接受的输入；幂等重放、改后重发、编辑、模型回复和工具都不触发。
-      if (fact.kind === 'accepted' && fact.firstAcceptance && consumers.activity?.noteRestDecision) {
-        const intent = detectRestIntent(fact.content);
-        if (intent) consumers.activity.noteRestDecision(fact.conversationId, {
-          kind: intent, source: 'owner_message', messageId: fact.messageId, atIso: new Date().toISOString(),
-        });
+      // 首次正式接受的用户消息：在覆盖 last_real_activity_at 之前完成出现版本递增、
+      // 连续次数归零、夜间四小时间隔判定，以及本地/Sol 休息意图登记。
+      // 幂等重放、改后重发、编辑、模型回复和工具都不触发。
+      if (fact.kind === 'accepted' && fact.firstAcceptance) {
+        if (consumers.activity?.noteOwnerMessageAccepted) {
+          consumers.activity.noteOwnerMessageAccepted({
+            conversationId: fact.conversationId,
+            messageId: fact.messageId,
+            revision: fact.revision,
+            content: fact.content,
+            acceptedAtIso: fact.receivedAt ?? new Date().toISOString(),
+            sleepWindow: consumers.heartbeatContext?.sleepWindow() ?? DEFAULT_SLEEP_WINDOW,
+            controlRevision: consumers.heartbeatContext?.controlRevision() ?? 0,
+            solConfigured: consumers.restJudge?.configured() === true,
+          });
+        } else if (consumers.activity?.noteRestDecision) {
+          const intent = detectRestIntent(fact.content);
+          if (intent) consumers.activity.noteRestDecision(fact.conversationId, {
+            kind: intent, source: 'owner_message', messageId: fact.messageId, atIso: fact.receivedAt ?? new Date().toISOString(),
+          });
+        }
       }
       // published：浮现不消费；活动锚点在发布动作内由消息服务原端口调用（noteRealPublication），
       // 保持 L 记账与发布同事务的现行次序——不改为事实流旁路（行为等价红线）。
     },
     afterCommit: (conversationId) => {
       consumers.voiceObservations?.wake(conversationId);
+      if (conversationId) consumers.restJudge?.wake(conversationId);
+      consumers.onScheduleDirty?.();
     },
   };
 }

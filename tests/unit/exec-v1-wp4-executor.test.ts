@@ -643,9 +643,10 @@ test('T-A04/T-A07：21:00 的晚安只拦心跳——排队的心跳在任何牌
 
   // 休息在心跳开始前已成立：未读牌组就结束，抽卡轮和十张耗尽后的“回 1”走的是同一个门。
   assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight', atIso: iso }), true);
-  assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight-again', atIso: iso }), false, '重复晚安不改动已成立的休息');
+  assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight', atIso: iso }), false, '同消息幂等重放不改动已成立的休息');
+  assert.equal(ctx.activity.noteRestDecision('c1', { kind: 'rest', source: 'owner_message', messageId: 'owner-goodnight-again', atIso: iso }), true, 'R1：新消息的休息决定可覆盖原决定');
   const begin = t.mock.method(ctx.supervisor['d'].heartbeat!, 'begin');
-  assert.deepEqual(await ctx.supervisor.enqueueBackground('c1', run), { outcome: 'noop', result_code: 'KEEPWARM_RESTING', detail: '乔乔已休息：等她明确回来或手动恢复' });
+  assert.deepEqual(await ctx.supervisor.enqueueBackground('c1', run), { outcome: 'noop', result_code: 'KEEPWARM_RESTING', detail: '乔乔已休息：等她回来或次晨兜底' });
   assert.equal(begin.mock.callCount(), 0, '没有读取牌组，也就没有抽卡轮或回 1 的分别');
   assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM turns WHERE trigger='cache_keepalive'").get() as { n: number }).n, 0);
   assert.equal((ctx.db.prepare("SELECT COUNT(*) n FROM background_dispatches WHERE run_id='sleep-run'").get() as { n: number }).n, 0);

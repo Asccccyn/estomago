@@ -18,82 +18,92 @@ export async function handleBackgroundRoutes(req: IncomingMessage, res: ServerRe
 if (route === 'GET /api/v1/background/settings') {
   if (!d.bgSettings) return json(res, 503, { error: { code: 'background_unavailable', message: '后台服务未装配' } });
   const es = d.bgSettings.effective();
-  // 08 精简返回：两个开关、revision、就绪、预算摘要 + 保温权威派生状态
+  // 08 + Heartbeat v2.1：页面与调度器共读同一权威资格评估器（evaluateHeartbeatSchedule）。
   const nowMs = d.scheduler?.currentNowMs() ?? Date.now();
-  const sleep = keepwarmSleepState(es.keepwarm.sleep_window, nowMs);
   const activityRow = d.activity?.get('primary') ?? null;
-  const resting = activityRow?.resting === 1;
   const activeWindow = d.windows.activeWindow('primary');
   const frozenTools = activeWindow ? storedToolset(d.db, activeWindow.id) : null;
   const wakeToolAvailable = frozenTools ? frozenTools.catalog.some((tool) => tool.function.name === 'wake_manage') : null;
-  // The page may only show a time the scheduler can actually keep. A due point
-  // inside the sleep window, a resting owner or a closed switch pause the heartbeat,
-  // except that an enabled morning wake outside the sleep window remains scheduled across night/rest.
-  let blockedReason: string | null = sleep.blocked ? sleep.code
-    : !es.keepwarm.enabled ? 'KEEPWARM_DISABLED' : resting ? 'KEEPWARM_RESTING' : null;
-  let keepwarmStatus: Record<string, unknown> = { scheduled: false };
-  if (d.activity && d.scheduler) {
-    const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
-    if (win) {
-      const target = d.activity.nextKeepwarmTarget({ conversationId: 'primary', windowId: win.id });
-      const morning = es.keepwarm.enabled
-        ? d.activity.morningWakeTarget({ conversationId: 'primary', windowId: win.id, sleepWindow: es.keepwarm.sleep_window, nowMs })
-        : null;
-      const ev = (d.db.prepare(
-        `SELECT u.cache_read_input_tokens AS rt, u.cache_creation_input_tokens AS wt, pr.dispatch_started_at AS started
-         FROM usage_observations u JOIN provider_requests pr ON pr.id = u.request_id
-         WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
-           AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0) OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
-         ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC LIMIT 1`,
-      ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined);
-      const cacheStatus = !ev ? 'unknown' : (ev.started && nowMs - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
-      const ordinaryBlocked = blockedReason !== null || (target.scheduled && keepwarmSleepState(es.keepwarm.sleep_window, target.dueAtMs).blocked);
-      if (blockedReason === null && target.scheduled && keepwarmSleepState(es.keepwarm.sleep_window, target.dueAtMs).blocked) {
-        blockedReason = 'KEEPWARM_SLEEP_WINDOW';
-      }
-      const cacheWarm = cacheStatus === 'observed_hit' || cacheStatus === 'observed_write';
-      const useMorning = morning?.scheduled === true && (
-        ordinaryBlocked || !target.scheduled || !cacheWarm || morning.dueAtMs <= target.dueAtMs
-      );
-      if (useMorning && morning?.scheduled) {
-        blockedReason = null;
-        const morningAt = new Date(morning.dueAtMs).toISOString();
-        const postponedBy = morning.postponedByAtMs !== null ? new Date(morning.postponedByAtMs).toISOString() : null;
-        keepwarmStatus = {
+  const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+  const ev = win ? (d.db.prepare(
+    `SELECT u.cache_read_input_tokens AS rt, u.cache_creation_input_tokens AS wt, pr.dispatch_started_at AS started
+     FROM usage_observations u JOIN provider_requests pr ON pr.id = u.request_id
+     WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+       AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0) OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
+     ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC LIMIT 1`,
+  ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined) : undefined;
+  const cacheStatus = !ev ? 'unknown' : (ev.started && nowMs - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
+
+  let keepwarmStatus: Record<string, unknown>;
+  if (d.activity) {
+    const schedule = d.activity.evaluateHeartbeatSchedule({
+      conversationId: 'primary',
+      windowId: win?.id ?? null,
+      sleepWindow: es.keepwarm.sleep_window,
+      keepwarmEnabled: es.keepwarm.enabled,
+      nowMs,
+      currentControlRevision: es.revision,
+    });
+    const nextAtIso = schedule.scheduled && schedule.blockedReason === null && schedule.dueAtMs !== null
+      ? new Date(schedule.dueAtMs).toISOString()
+      : undefined;
+    const morningPreview = schedule.nextMorningPreview
+      ? {
           scheduled: true,
-          next_keepwarm_at: morningAt,
-          next_keepwarm_basis: morning.basis,
-          morning_postponed_by_at: postponedBy,
-          morning_wake: { scheduled: true, target_at: morningAt, basis: morning.basis, postponed_by_at: postponedBy },
-          last_real_activity_at: activityRow?.last_real_activity_at ?? null,
-          cache_status: cacheStatus,
+          target_at: new Date(schedule.nextMorningPreview.targetAtMs).toISOString(),
+          basis: 'morning_baseline' as const,
+          postponed_by_at: null,
+        }
+      : {
+          scheduled: false,
+          reason: schedule.blockedReason === 'KEEPWARM_RESTING_WAIT_USER'
+            ? 'WAIT_NEXT_USER_MESSAGE'
+            : schedule.blockedReason === 'KEEPWARM_DISABLED'
+              ? 'KEEPWARM_DISABLED'
+              : schedule.blockedReason === 'MORNING_WAKE_MISSED_GRACE'
+                ? 'MISSED_GRACE'
+                : 'NOT_SCHEDULED',
+          postponed_by_at: null,
         };
-      } else {
-        const scheduled = target.scheduled && blockedReason === null;
-        keepwarmStatus = {
-          scheduled,
-          ...(scheduled ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
-          ...(morning ? {
-            morning_wake: morning.scheduled
-              ? {
-                  scheduled: true,
-                  target_at: new Date(morning.dueAtMs).toISOString(),
-                  basis: morning.basis,
-                  postponed_by_at: morning.postponedByAtMs !== null ? new Date(morning.postponedByAtMs).toISOString() : null,
-                }
-              : {
-                  scheduled: false,
-                  reason: morning.reason,
-                  ...(morning.dueAtMs !== undefined ? { target_at: new Date(morning.dueAtMs).toISOString() } : {}),
-                  ...(morning.basis ? { basis: morning.basis } : {}),
-                  postponed_by_at: morning.postponedByAtMs !== undefined && morning.postponedByAtMs !== null ? new Date(morning.postponedByAtMs).toISOString() : null,
-                },
-          } : {}),
-          last_real_activity_at: activityRow?.last_real_activity_at ?? null,
-          cache_status: cacheStatus,
-        };
-      }
-    }
+    keepwarmStatus = {
+      enabled: es.keepwarm.enabled,
+      scheduled: schedule.scheduled && schedule.blockedReason === null,
+      ...(nextAtIso ? { next_keepwarm_at: nextAtIso, next_keepwarm_basis: schedule.basis } : {}),
+      morning_wake: morningPreview,
+      last_real_activity_at: activityRow?.last_real_activity_at ?? null,
+      last_effective_heartbeat_at: activityRow?.last_effective_heartbeat_at ?? null,
+      cache_status: cacheStatus,
+      sleep_window_active: schedule.sleepWindowActive,
+      blocked_reason: schedule.blockedReason,
+      local_time: schedule.localTime,
+      resting: schedule.resting,
+      rest_decided_at: activityRow?.rest_decided_at ?? null,
+      rest_source: activityRow?.rest_source ?? null,
+      rest_recovery_mode: schedule.restRecoveryMode,
+      rest_morning_date: schedule.restMorningDate,
+      early_resumed_date: schedule.earlyResumedDate,
+      consecutive_unanswered_count: schedule.consecutiveUnansweredCount,
+      pending_rest_judgment: schedule.pendingRestJudgment,
+    };
+  } else {
+    const sleep = keepwarmSleepState(es.keepwarm.sleep_window, nowMs);
+    const blockedReason = sleep.blocked ? sleep.code : !es.keepwarm.enabled ? 'KEEPWARM_DISABLED' : null;
+    keepwarmStatus = {
+      enabled: es.keepwarm.enabled,
+      scheduled: false,
+      sleep_window_active: sleep.blocked,
+      blocked_reason: blockedReason,
+      local_time: sleep.local_time,
+      resting: false,
+      rest_decided_at: null,
+      rest_source: null,
+      rest_recovery_mode: null,
+      rest_morning_date: null,
+      early_resumed_date: null,
+      consecutive_unanswered_count: 0,
+      pending_rest_judgment: false,
+      cache_status: cacheStatus,
+    };
   }
   return json(res, 200, {
     revision: es.revision,
@@ -103,8 +113,7 @@ if (route === 'GET /api/v1/background/settings') {
     reminders: { enabled: es.reminders.enabled },
     executor_ready:{...(d.bgExecutorReady ?? {autonomous:false,keepwarm:false}),free_activity:d.bgExecutorReady?.autonomous ?? false},
     current_window: { id: activeWindow?.id ?? null, wake_manage_available: wakeToolAvailable, requires_normal_rotation: activeWindow !== null && wakeToolAvailable === false },
-    keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: blockedReason, local_time: sleep.local_time,
-      resting, rest_decided_at: activityRow?.rest_decided_at ?? null, rest_source: activityRow?.rest_source ?? null },
+    keepwarm_status: keepwarmStatus,
     notice: '预约唤醒、心跳保温、额外自由活动分别控制。关闭只停止对应来源的新执行及后续步骤，已完成动作与费用保留。',
   });
 }

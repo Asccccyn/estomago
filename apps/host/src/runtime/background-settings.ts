@@ -109,6 +109,17 @@ export class BackgroundSettingsService {
           this.onDisable?.(control);
         }
       }
+      if (opts.patch.keepwarm_enabled !== undefined) {
+        // Manual toggle supersedes any in-flight Sol rest judgment bound to an older control revision.
+        this.db.prepare(`
+          UPDATE conversation_activity SET
+            pending_rest_message_id = NULL, pending_rest_revision = NULL,
+            pending_rest_accepted_at = NULL, pending_rest_control_revision = NULL,
+            pending_rest_user_appearance_revision = NULL, pending_rest_was_night_pause = NULL,
+            pending_rest_gap_eligible = NULL
+          WHERE pending_rest_message_id IS NOT NULL
+        `).run();
+      }
       if (opts.patch.keepwarm_enabled === false) {
         this.db.prepare("UPDATE background_runs SET state = 'cancelled', cancel_reason = 'KEEPWARM_DISABLED', result_code = 'KEEPWARM_DISABLED', finished_at = ?, updated_at = ? WHERE state = 'claimed' AND kind IN ('keepwarm','heartbeat_memory')").run(nowIso, nowIso);
         // AUD-02 P1 修复：终止运行中的保温执行

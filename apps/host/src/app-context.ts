@@ -63,6 +63,8 @@ export type HostOptions = {
   heartbeatSources?: readonly import('./modules/heartbeat/sources.ts').HeartbeatSourceAdapter[];
   /** Synthetic Sol transport for the scheduled midnight source task, only used in test mode. */
   heartbeatDailyMemoryTransportForTest?: import('./memory-surfacing/sol-provider.ts').SolTransport;
+  /** Synthetic Sol transport for async conversation rest-intent judgment, only used in test mode. */
+  restJudgeTransportForTest?: import('./memory-surfacing/sol-provider.ts').SolTransport;
 };
 
 export class Host {
@@ -84,6 +86,7 @@ export class Host {
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
+  readonly restCoordinator: import('./runtime/conversation-rest-sol.ts').RestDecisionCoordinator | null;
   private readonly heartbeat: HeartbeatRuntime | null;
   /** R8′（2026-10-23）：媒体索引后台补全——独立定时器/单飞门/批次中止（不经调度器与会话串行链） */
   private mediaBackfillTimer: ReturnType<typeof setInterval> | null = null;
@@ -127,6 +130,7 @@ export class Host {
     server: http.Server,
     deps: Omit<RequestDeps, 'config'>,
     archiveSync: ArchiveSyncService,
+    restCoordinator: import('./runtime/conversation-rest-sol.ts').RestDecisionCoordinator | null = null,
   ) {
     this.config = config;
     this.sourceBindService = deps.sourceBinding!;
@@ -147,6 +151,7 @@ export class Host {
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
+    this.restCoordinator = restCoordinator;
     this.heartbeat = deps.heartbeat ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
     this.mediaServiceRef = deps.media ?? null; // 相册重构 P2：M 落正待同步循环
@@ -234,6 +239,31 @@ export class Host {
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
+    const bgSettings = new BackgroundSettingsService(db, opts.config);
+    // S-06 + v2.1：心跳让位检查与消息提交后排程刷新经可变引用接线（scheduler 在后段构造）
+    let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
+    const { ConversationRestJudge, RestDecisionCoordinator } = await import('./runtime/conversation-rest-sol.ts');
+    const restFixture = process.env.ESTOMAGO_TEST_MODE === '1' ? opts.restJudgeTransportForTest : undefined;
+    const restJudge = new ConversationRestJudge({
+      apiKeyEnv: surfaceCfg.sol.api_key_env,
+      baseUrl: surfaceCfg.sol.base_url,
+      model: surfaceCfg.sol.model,
+      reasoningEffort: surfaceCfg.sol.reasoning_effort,
+      maxOutputTokens: surfaceCfg.sol.max_output_tokens,
+      verbosity: surfaceCfg.sol.verbosity,
+      userDisplayName: surfaceCfg.sol.user_display_name,
+      assistantDisplayName: surfaceCfg.sol.assistant_display_name,
+    }, restFixture);
+    const restCoordinator = new RestDecisionCoordinator({
+      db,
+      activity,
+      judge: restJudge,
+      sleepWindow: () => bgSettings.effective().keepwarm.sleep_window,
+      controlRevision: () => bgSettings.revision(),
+      userDisplayName: surfaceCfg.sol.user_display_name,
+      assistantDisplayName: surfaceCfg.sol.assistant_display_name,
+      onStateChanged: () => schedulerRef?.refreshKeepwarmSchedule(),
+    });
     // 相册重构 P2（GLM_ALBUM_REFACTOR_EXECUTION 20261108）：M 媒体间落正客户端——
     // mariposa base_url + 主凭据引用配置齐备才装配；M 未配置时保存仍走本地（同步状态如实 pending）。
     const mediaStore = opts.config.integrations.mariposa.base_url && opts.config.integrations.mariposa.credential_ref
@@ -266,6 +296,12 @@ export class Host {
       (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({
         surfacing,
         activity,
+        restJudge: restCoordinator,
+        heartbeatContext: {
+          sleepWindow: () => bgSettings.effective().keepwarm.sleep_window,
+          controlRevision: () => bgSettings.revision(),
+        },
+        onScheduleDirty: () => schedulerRef?.refreshKeepwarmSchedule(),
         voiceObservations: {
           ensureForMessage: (messageId, revision, conversationId) => voiceObsService.ensureForMessage(messageId, revision, conversationId, voiceObsService.configured),
           wake: () => voiceObsService.wake(),
@@ -360,10 +396,7 @@ export class Host {
     const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
     // WAKE_KEEPWARM_V1（2026-10-22）：后台设置与预约管理正本——HTTP 管理面、
     // wake_manage 工具、调度器共用同一实例（单一正本，不另写第二套业务）。
-    const bgSettings = new BackgroundSettingsService(db, opts.config);
     const taskService = new BackgroundTaskService(db, bgSettings);
-    // S-06：心跳让位检查经可变引用接线（scheduler 在 supervisor 之后构造）
-    let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
     // JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；base_url 未配=不装配，工具/门控如实降级）
     // JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=null，检索能力如实不可用）
     const mediaIndex = opts.config.media_embedding.base_url
@@ -582,7 +615,7 @@ export class Host {
       });
     });
 
-    const host = new Host(opts.config, opts, server, deps, archiveSync);
+    const host = new Host(opts.config, opts, server, deps, archiveSync, restCoordinator);
     host.wireMediaSourceFetch(mediaSourceFetch); // RR4-W2a：集合类索引来源（构造后接线，避免经路由 deps 传递）
     return host;
   }
@@ -746,6 +779,7 @@ export class Host {
     const linksStopped = this.callReplyLinks?.stop();
     const contentOpsStopped = this.contentOps?.stop(); // P1：停内容写恢复（在途轮收口，不再派新）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
+    await this.restCoordinator?.stop();
     await this.surfacing?.stop(); // 停止领取，取消并等待在途浮现
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();

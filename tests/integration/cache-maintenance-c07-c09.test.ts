@@ -144,6 +144,8 @@ test('C08：十张真实交付后，兜底1发布一次并沿下一普通输入�
     void settings;
     await f.seed('s1');
     for (let number = 1; number <= 10; number++) {
+      // v2.1：每连续 3 次未出现自动心跳暂停一次，需要真实用户出现清零后继续新一串。
+      if (number > 1 && (number - 1) % 3 === 0) await f.seed(`s-${number}`);
       script.cardNumber = number;
       script.keepRound = 0;
       auditNow += 3_000_001;

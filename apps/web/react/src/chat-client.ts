@@ -12,7 +12,11 @@ const isHeartbeatMessage = (message: Json) => Boolean(message.heartbeat
   || (message.heartbeat_card?.run_id && message.heartbeat_card.origin !== 'chat'))
 class LifecycleEnded extends Error {}
 const terminalStates = new Set(['completed','failed','blocked','interrupted','cancelled'])
-const attachmentRejectionCodes = new Set([
+// Host errors guaranteed to occur strictly BEFORE message acceptance (http-leaf / conversations pre-validation).
+// Network errors, 500s, and unclassified errors are excluded so unknown-delivery retries keep their original key & payload.
+const preAcceptanceRejectionCodes = new Set([
+  'payload_too_large', 'invalid_json', 'missing_idempotency', 'bad_content',
+  'blank_content', 'invalid_occurred_at', 'conversation_not_found',
   'too_many_attachments', 'bad_attachment', 'attachment_mix_invalid',
   'asset_not_found', 'asset_not_ready', 'asset_type_unsupported',
 ])
@@ -592,7 +596,7 @@ export class EstomagoClient {
         // These Host errors precede message acceptance. An unclassified or
         // missing receipt keeps the original attachments available for replay.
         pending.confirmedUnsent = error.status === 503 && error.code === 'asset_master_commit_failed'
-          || error.status !== undefined && error.status >= 400 && error.status < 500 && attachmentRejectionCodes.has(error.code)
+          || error.status !== undefined && error.status >= 400 && error.status < 500 && preAcceptanceRejectionCodes.has(error.code)
       }
       this.report(e,'；草稿已保留，可以重试')
     }

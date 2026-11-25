@@ -196,15 +196,6 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     } finally { setBusy(false) }
   }
 
-  // Only an explicit resume from here or her own words ends the rest; nothing else here changes it.
-  async function resume() {
-    if (busy) return
-    setBusy(true); setSettingsError(null)
-    try { await background.backgroundResumeHeartbeat(operationKey('keepwarm-resume')); await loadSettings(); await loadStatus() }
-    catch (error) { setSettingsError(errorMessage(error)) }
-    finally { setBusy(false) }
-  }
-
   return <section className={`${cardClass} space-y-3`} aria-label="心跳状态">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div className="flex items-center gap-2"><HeartPulse size={18} />
@@ -222,11 +213,9 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     </div>
     {settings?.status && (() => {
       const statusText = keepwarmStatusText(settings.status, settings.sleepWindow, dateLabel)
-      if (!statusText && !settings.status.resting) return null
+      if (!statusText) return null
       return <div className="flex flex-wrap items-center gap-2" role="status">
-        {statusText && <span className={mutedClass}>{statusText}</span>}
-        {settings.status.resting && settings.status.morning_wake?.scheduled && <span className={mutedClass}>普通保温休息中</span>}
-        {settings.status.resting && <button type="button" className={actionClass} disabled={busy} onClick={() => void resume()}>恢复心跳</button>}
+        <span className={mutedClass}>{statusText}</span>
       </div>
     })()}
     {settingsError && <p role="alert" className={errorClass}>{settingsError}</p>}
