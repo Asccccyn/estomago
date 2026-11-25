@@ -56,6 +56,8 @@ export type ToolExecContext = {
   /** Persist an exact already-committed owner receipt in an interrupted
    * heartbeat's pending protocol batch, in the owner's existing transaction. */
   recordCommittedToolReceipt?: (receipt: ToolExecResult) => void;
+  /** Host-only live eligibility check evaluated synchronously right before chat publication. */
+  checkChatPublishAllowed?: () => { allowed: true } | { allowed: false; code: string; detail: string };
 };
 
 /** Owner-proven write identity and phase. Never part of model JSON output. */

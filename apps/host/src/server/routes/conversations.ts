@@ -9,7 +9,8 @@ import { shanghaiDayRange } from '../calendar-routes.ts';
 import { conversationSnapshot } from '../snapshot.ts';
 import { snapshotFor } from '../../usage/estimator.ts';
 import { MediaError } from '../../media/assets.ts';
-import type { SubmitMessageRequest, MessagePageDto } from '../../../../../packages/contracts/src/api.ts';
+import { validateAbsoluteIso } from '../../util/time.ts';
+import { isBlankContent, normalizeNewlines, type SubmitMessageRequest, type MessagePageDto } from '../../../../../packages/contracts/src/api.ts';
 import type { RequestDeps } from '../http.ts';
 
 /** 会话组：浮现详情视图（owner 只读）/会话列表/消息分页/单条/编辑/重试/发送/恢复快照。 */
@@ -194,24 +195,29 @@ if (postMsgs) {
     if (a.presentation !== 'image' && a.presentation !== 'sticker' && a.presentation !== 'voice') return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].presentation 必须是 image|sticker|voice' } });
     parsedAttachments.push({ asset_id: a.asset_id, presentation: a.presentation, caption: typeof a.caption === 'string' ? a.caption : null });
   }
+  // D3（她批 2026-10-06）：首版单批准房间——凭空建房防护（先于暂存落正校验，避免无效请求先把附件上传 M）
+  const exists = d.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId);
+  if (!exists) return json(res, 404, { error: { code: 'conversation_not_found', message: '房间不存在（首版仅批准房间）' } });
+  if (isBlankContent(normalizeNewlines(body.content)) && parsedAttachments.length === 0) {
+    return json(res, 422, { error: { code: 'blank_content', message: '正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）' } });
+  }
+  if (body.occurred_at !== null && body.occurred_at !== undefined && body.occurred_at !== '') {
+    const v = validateAbsoluteIso(body.occurred_at);
+    if (!v.ok) {
+      return json(res, 422, { error: { code: 'invalid_occurred_at', message: `INVALID_OCCURRED_AT: 客户端时间必须是带时区的合法 ISO 8601 日历日期（拒绝原因 ${v.reason}）` } });
+    }
+  }
   if (d.media && parsedAttachments.length > 0) {
-    // A staged upload enters the master store here, before any message can refer to it. When
-    // Mariposa cannot take it, nothing is published and the client keeps its draft.
-    try { await d.media.commitStagedAssets(parsedAttachments.map(a => a.asset_id)); }
-catch (err) {
-  if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-  throw err;
-}
-    try { d.media.validateForSend(parsedAttachments); }
-    catch (err) {
+    // Pre-validate every attachment locally before uploading any staged item to Mariposa.
+    try {
+      d.media.validateBeforeCommit(parsedAttachments);
+      await d.media.commitStagedAssets(parsedAttachments.map(a => a.asset_id));
+      d.media.validateForSend(parsedAttachments);
+    } catch (err) {
       if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
       throw err;
     }
   }
-  // D3（她批 2026-10-06）：首版单批准房间——凭空建房防护（房间必须
-  // 已存在；归档 grant 也按 primary 钉死，第二房间同步本就会拒）
-  const exists = d.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId);
-  if (!exists) return json(res, 404, { error: { code: 'conversation_not_found', message: '房间不存在（首版仅批准房间）' } });
   let submitted;
   try {
     // EXEC_V1 §05.7.2：随 revision 保存发送前估计快照（估计刷新不影响 content_hash/修订号）

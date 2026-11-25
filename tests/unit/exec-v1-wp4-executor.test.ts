@@ -208,6 +208,7 @@ function wireExecutor(ctx: ReturnType<typeof compose>, nowRef: { nowMs: number }
 }
 
 test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回合完成能力', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-23T14:00:00+08:00') });
   const payloads: Array<Record<string, unknown>> = [];
   const now = { nowMs: Date.now() };
   const root = tempRoot('direct-background-');
@@ -235,8 +236,8 @@ test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回�
   assert.ok(initialEvidence);
   const names = (payload: Record<string, unknown>) => (payload.tools as Array<{ function: { name: string } }>).map(spec => spec.function.name);
   const baseline = names(payloads[0]!);
-  assert.ok(baseline.includes('memory_hold'));
-  assert.ok(!baseline.includes('tool_invoke') && !baseline.includes('background_complete') && !baseline.includes('heartbeat_draw') && !baseline.includes('context_review_complete'));
+  assert.ok(baseline.includes('memory_hold') && baseline.includes('heartbeat_draw'));
+  assert.ok(!baseline.includes('tool_invoke') && !baseline.includes('background_complete') && !baseline.includes('context_review_complete'));
 
   setPrice(ctx.db);
   ctx.bgSettings.applyUpdate({ expectedRevision: 0, patch: {
@@ -277,6 +278,7 @@ test('新直调窗口：自主、心跳和聊天共用工具前缀及当前回�
 });
 
 test('K-01/C-01/C-12：心跳按原有时序派发，无文字拒抽保留协议并推进维护回执', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-23T14:00:00+08:00') });
   const payloads: Array<Record<string, unknown>> = [];
   const transport: OrTransport = async (p) => {
     payloads.push(structuredClone(p));
@@ -399,7 +401,8 @@ test('CW-08/B-07/C-07：自主唤醒——英文 host 自醒事件+note 全文�
   sched.stop();
 });
 
-test('C-02/K-12：心跳正式发言后完成，保留工具协议且不派发续轮', async () => {
+test('C-02/K-12：心跳正式发言后完成，保留工具协议且不派发续轮', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-23T14:00:00+08:00') });
   const payloads: Array<Record<string, unknown>> = [];
   let bgRound = 0;
   const transport: OrTransport = async (p) => {

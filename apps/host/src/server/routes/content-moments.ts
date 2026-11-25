@@ -4,7 +4,7 @@ import { contentForward, readAllContentPages, resolveContentOperation, type Cont
 import type { ContentWriteResult } from '../../integrations/content/coordinator.ts';
 import { associateMomentEdit } from '../../integrations/content/moment-edit-outbox.ts';
 import type { HeartbeatRuntime } from '../../modules/heartbeat/runtime.ts';
-import type { SourceStatus } from '../../modules/heartbeat/sources.ts';
+import { resolveHeartbeatSpeech, type SourceStatus } from '../../modules/heartbeat/sources.ts';
 import { PRIMARY_CONVERSATION } from '../../messages/constants.ts';
 import { sha256Hex } from '../../util/id.ts';
 import { readJson } from '../http-leaf.ts';
@@ -42,7 +42,7 @@ type ResolvedBlock = {
   outcome?: HeartbeatAction['status'];
 };
 
-type Deps = Pick<RequestDeps, 'contentClient' | 'contentOps' | 'messages' | 'db'> & {
+type Deps = Pick<RequestDeps, 'contentClient' | 'contentOps' | 'messages' | 'db' | 'media'> & {
   heartbeat?: Pick<HeartbeatRuntime, 'sources'> & {
     noteStatus?(id: string, conversationId: string, sourceDeleted?: boolean): ReturnType<HeartbeatRuntime['noteStatus']>;
     reservedNoteUsage?(): ReturnType<HeartbeatRuntime['reservedNoteUsage']>;
@@ -249,22 +249,56 @@ async function displayReference(row: ContentRow, deps: Deps, signal: AbortSignal
     }
   };
   let publishedDecline = false;
-  for (const ref of projection.messages) {
-    flushActions(ref.sequence);
-    const message = deps.messages.getMessageAtRevision(projection.conversationId, ref.messageId, ref.revision);
-    if (message?.speaker === 'system' && message.revision.content === '[心跳唤醒] 本轮未抽卡') publishedDecline = true;
-    blocks.push({
-      id: `message:${ref.messageId}`, layer: message?.speaker === 'assistant' ? 'main' : 'detail',
-      source_label: message?.speaker === 'system' ? '心跳状态' : '本轮聊天', observed_revision: ref.revision,
-      ...(message ? {
-        status: 'available', author: message.speaker === 'assistant' ? 'jiaming' : message.speaker === 'owner' ? ACTOR : null,
-        text: message.revision.content, asset_ids: message.revision.attachments.map(attachment => attachment.asset_id),
-      } : { status: 'revision_unavailable' }),
-      editable: false,
-    });
-    if (projection.actions && cardBlock && message?.heartbeat_card) {
-      blocks.push(cardBlock);
-      cardBlock = undefined;
+  if (projection.speech !== undefined) {
+    const revealRef = projection.messages[0];
+    const revealMessage = revealRef ? deps.messages.getMessageAtRevision(projection.conversationId, revealRef.messageId, revealRef.revision) : null;
+    if (revealRef) {
+      flushActions(revealRef.sequence);
+      blocks.push({
+        id: `message:${revealRef.messageId}`, layer: revealMessage?.speaker === 'assistant' ? 'main' : 'detail',
+        source_label: revealMessage?.speaker === 'system' ? '心跳状态' : '本轮聊天', observed_revision: revealRef.revision,
+        ...(revealMessage ? {
+          status: 'available', author: revealMessage.speaker === 'assistant' ? 'jiaming' : revealMessage.speaker === 'owner' ? ACTOR : null,
+          text: revealMessage.revision.content, asset_ids: revealMessage.revision.attachments.map(attachment => attachment.asset_id),
+        } : { status: 'revision_unavailable' }),
+        editable: false,
+      });
+      if (projection.actions && cardBlock && revealMessage?.heartbeat_card) {
+        blocks.push(cardBlock);
+        cardBlock = undefined;
+      }
+    }
+    const revealSequence = revealRef?.sequence ?? 0;
+    for (const ref of projection.speech) {
+      if (ref.sequence > revealSequence) flushActions(ref.sequence);
+      const reply = revealMessage && resolveHeartbeatSpeech(deps.messages, revealMessage, ref);
+      blocks.push({
+        id: ref.start !== undefined ? `message:${ref.messageId}:r${ref.revision}:${ref.start}-${ref.end}` : `message:${ref.messageId}`,
+        layer: 'main', source_label: '本轮聊天', observed_revision: ref.revision,
+        ...(reply ? {
+          status: 'available', author: 'jiaming', text: reply.text, asset_ids: reply.assetIds,
+        } : { status: 'revision_unavailable' }),
+        editable: false,
+      });
+    }
+  } else {
+    for (const ref of projection.messages) {
+      flushActions(ref.sequence);
+      const message = deps.messages.getMessageAtRevision(projection.conversationId, ref.messageId, ref.revision);
+      if (message?.speaker === 'system' && message.revision.content === '[心跳唤醒] 本轮未抽卡') publishedDecline = true;
+      blocks.push({
+        id: `message:${ref.messageId}`, layer: message?.speaker === 'assistant' ? 'main' : 'detail',
+        source_label: message?.speaker === 'system' ? '心跳状态' : '本轮聊天', observed_revision: ref.revision,
+        ...(message ? {
+          status: 'available', author: message.speaker === 'assistant' ? 'jiaming' : message.speaker === 'owner' ? ACTOR : null,
+          text: message.revision.content, asset_ids: message.revision.attachments.map(attachment => attachment.asset_id),
+        } : { status: 'revision_unavailable' }),
+        editable: false,
+      });
+      if (projection.actions && cardBlock && message?.heartbeat_card) {
+        blocks.push(cardBlock);
+        cardBlock = undefined;
+      }
     }
   }
   if (projection.actions && cardBlock) blocks.push(cardBlock);

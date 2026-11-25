@@ -23,6 +23,15 @@ export type HeartbeatSource = {
   };
 };
 
+export type HeartbeatSpeechSlice = {
+  messageId: string;
+  revision: number;
+  sequence: number;
+  /** Unicode codepoint [start, end) range within message_revisions(messageId, revision). Absent = whole revision. */
+  start?: number;
+  end?: number;
+};
+
 export type HeartbeatProjection = {
   mode: 'draw';
   /** chat = the model drew while replying to her in an ordinary turn; absent = a heartbeat run. */
@@ -33,6 +42,8 @@ export type HeartbeatProjection = {
   state: 'drawn' | 'drawn_no_comment' | 'talked' | 'declined' | 'interrupted';
   card: { number: number; source: HeartbeatSource } | null;
   messages: Array<{ messageId: string; revision: number; sequence: number }>;
+  /** Ordered post-reveal speech segments (including appended revisions on a pre-reveal bubble and interleaved tool messages). */
+  speech?: HeartbeatSpeechSlice[];
   /** Only the original assistant messages published after this reserved note was actually revealed. */
   reservedReplyMessages?: HeartbeatProjection['messages'];
   actions?: HeartbeatAction[];
@@ -122,6 +133,30 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
       || (messages.at(-1)?.sequence ?? 0) >= message.sequence) return null;
     messages.push({ messageId: message.messageId, revision: message.revision, sequence: message.sequence });
   }
+  const readSlices = (rawSlices: unknown): HeartbeatSpeechSlice[] | null => {
+    if (!Array.isArray(rawSlices) || rawSlices.length > 1000) return null;
+    const out: HeartbeatSpeechSlice[] = [];
+    for (const item of rawSlices) {
+      const slice = record(item);
+      if (!slice || !text(slice.messageId) || !integer(slice.revision) || !integer(slice.sequence)) return null;
+      const hasStart = slice.start !== undefined;
+      const hasEnd = slice.end !== undefined;
+      if (hasStart !== hasEnd) return null;
+      if (hasStart) {
+        if (!integer(slice.start, 0) || !integer(slice.end, 1) || (slice.start as number) >= (slice.end as number)) return null;
+        out.push({ messageId: slice.messageId, revision: slice.revision, sequence: slice.sequence, start: slice.start as number, end: slice.end as number });
+      } else {
+        out.push({ messageId: slice.messageId, revision: slice.revision, sequence: slice.sequence });
+      }
+    }
+    return out;
+  };
+  let speech: HeartbeatSpeechSlice[] | undefined;
+  if (projection.speech !== undefined) {
+    const parsed = readSlices(projection.speech);
+    if (projection.origin !== 'chat' || !parsed || (parsed.length > 0 && state !== 'drawn')) return null;
+    speech = parsed;
+  }
   const reservedReplyMessages: HeartbeatProjection['messages'] = [];
   if (projection.reservedReplyMessages !== undefined) {
     if (!Array.isArray(projection.reservedReplyMessages) || source?.kind !== 'reserved_note') return null;
@@ -167,6 +202,7 @@ export function readHeartbeatProjection(value: unknown): HeartbeatProjection | n
     version: projection.version, state,
     card: card && source ? { number: card.number as number, source } : null,
     messages,
+    ...(speech !== undefined ? { speech } : {}),
     ...(projection.reservedReplyMessages !== undefined ? { reservedReplyMessages } : {}),
     ...(projection.actions !== undefined ? { actions } : {}),
     ...(terminal ? { terminal: { status: terminal.status as NonNullable<HeartbeatProjection['terminal']>['status'],

@@ -7,6 +7,7 @@ import { test, type TestContext } from 'node:test';
 import { Readable } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ContentServer } from '../../apps/content/src/service.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import type { ToolExecContext, ToolExecResult } from '../../apps/host/src/capabilities/contracts.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
@@ -40,17 +41,25 @@ const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 // Kept before any fixture replaces the source boundary, for the one case that needs the real star lookup.
 const REAL_RESOLVE = HeartbeatSources.prototype.resolve;
 
-async function fixture(t: Pick<TestContext, 'after' | 'mock'>, lane: Lane, options: { now?: number; wishstar?: boolean } = {}) {
+async function fixture(t: Pick<TestContext, 'after' | 'mock'>, lane: Lane, options: {
+  now?: number; wishstar?: boolean; extraResident?: string[]; realContent?: boolean;
+} = {}) {
   assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
   if (options.now !== undefined) t.mock.timers.enable({ apis: ['Date'], now: options.now });
-  const restoreSources = installHeartbeatFixtureSources();
+  const restoreSources = options.realContent ? null : installHeartbeatFixtureSources();
   const root = tempRoot('chat-draw-');
+  const content = options.realContent ? new ContentServer({ stateRoot: path.join(root, 'content'), port: 0 }) : null;
   // Each model request takes the next step: text, tool calls, or both.
   const steps: Step[] = [];
   const requests: Array<{ heartbeat: boolean; lastUser: string }> = [];
   const tools: Array<{ name: string; args: Record<string, unknown>; result: ToolExecResult; purpose: string }> = [];
+  const apiWire: OrMessage[][] = [];
+  const apiTools: unknown[] = [];
+  const sdkWire: Array<{ id: string; content: unknown }> = [];
+  let sdkTools: unknown;
   let host: Host | undefined;
-  t.after(async () => { await host?.stop(); restoreSources(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await host?.stop(); await content?.stop(); restoreSources?.(); fs.rmSync(root, { recursive: true, force: true }); });
+  await content?.start();
   writeApprovedIdentity(root);
   const observe = (messages: OrMessage[]) => {
     const lastUser = messages.findLast(message => message.role === 'user');
@@ -84,9 +93,11 @@ async function fixture(t: Pick<TestContext, 'after' | 'mock'>, lane: Lane, optio
         await input.options.mcpServers.est.instance.connect(serverTransport);
         await client.connect(clientTransport);
         try {
+          sdkTools ??= (await client.listTools()).tools;
           for (const call of calls) {
             await input.options.hooks.PreToolUse[0].hooks[0]({ hook_event_name: 'PreToolUse', tool_name: 'mcp__est__' + call.name, tool_input: call.args, tool_use_id: call.id });
-            await client.callTool({ name: call.name, arguments: call.args });
+            const result = await client.callTool({ name: call.name, arguments: call.args });
+            sdkWire.push({ id: call.id, content: result.content });
           }
           const decision = await input.options.hooks.PostToolBatch[0].hooks[0]({ hook_event_name: 'PostToolBatch',
             tool_calls: calls.map(call => ({ tool_use_id: call.id, tool_name: 'mcp__est__' + call.name, tool_input: call.args })) });
@@ -101,6 +112,8 @@ async function fixture(t: Pick<TestContext, 'after' | 'mock'>, lane: Lane, optio
     });
   }) as SdkQueryFactory) : new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 },
     async payload => {
+      apiWire.push(payload.messages as OrMessage[]);
+      apiTools.push(payload.tools);
       const step = observe(payload.messages as OrMessage[]);
       const calls = (step.calls ?? []).map(call => wireCall(lane, call));
       const delta = { ...(step.text ? { content: step.text } : {}), ...(calls.length ? { tool_calls: calls.map((call, index) => ({ index, id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.args) } })) } : {}) };
@@ -114,11 +127,18 @@ async function fixture(t: Pick<TestContext, 'after' | 'mock'>, lane: Lane, optio
   const config = buildConfig({
     ...ready, runtime: { ...ready.runtime as object, provider: 'mock', tool_schema_mode: lane === 'api-deferred' ? 'deferred' : 'direct',
       ...(lane === 'sdk' ? { subscription_proxy_url: 'http://127.0.0.1:1' } : {}) },
-    openrouter: { model }, background: { keepwarm: { sleep_window: { enabled: true } } },
+    openrouter: { model, ...(content ? { vision_supported_models: [model, 'fixture-model'] } : {}) },
+    background: { keepwarm: { sleep_window: { enabled: true } } },
+    ...(content ? { content: { enabled: true, port: content.port } } : {}),
     ...(options.wishstar ? { wishstar: { enabled: true } } : {}),
   });
   host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: runner });
-  if (lane !== 'api-deferred') makeFixtureToolsResident(host.db, ['heartbeat_draw', 'background_complete', ...(options.wishstar ? ['wishstar_reply_star'] : [])]);
+  const extra = [...(options.extraResident ?? []), ...(options.wishstar ? ['wishstar_reply_star'] : [])];
+  if (lane !== 'api-deferred' && extra.length > 0) {
+    // Preserve default resident tools and only add non-resident test helpers when explicitly requested.
+    const { residentToolNames } = await import('../../apps/host/src/runtime/tool-resident-guides.ts');
+    makeFixtureToolsResident(host.db, [...residentToolNames, ...extra]);
+  }
   const executor = (host.supervisor as any).d.tools;
   const execute = executor.execute.bind(executor);
   executor.execute = async (name: string, args: Record<string, unknown>, ctx: ToolExecContext) => {
@@ -146,7 +166,15 @@ async function fixture(t: Pick<TestContext, 'after' | 'mock'>, lane: Lane, optio
     return row ? readHeartbeatProjection(JSON.parse(row.payload_ref)) : null;
   };
   const replies = (turnId: string) => (host!.db.prepare("SELECT id FROM messages WHERE turn_id=? AND speaker='assistant' ORDER BY sequence").all(turnId) as Array<{ id: string }>).map(row => row.id);
-  return { host, config, cards, activity, chat, tools, requests, steps, projectionOf, replies };
+  const restartHost = async () => {
+    await host!.stop();
+    host = undefined;
+    host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: runner });
+    await host.start();
+    return host;
+  };
+  return { host, config, root, cards, activity, chat, tools, requests, steps, projectionOf, replies,
+    apiWire, apiTools, sdkWire, sdkTools: () => sdkTools, restartHost };
 }
 
 for (const lane of ['api', 'api-deferred', 'sdk'] as const) {
@@ -163,6 +191,16 @@ for (const lane of ['api', 'api-deferred', 'sdk'] as const) {
     const first = await ctx.chat('我们抽一张看看', [
       { calls: define('look-1') }, { calls: [...draw('draw-first', 7), ...draw('draw-retry', 7), ...draw('draw-again', 3)] }, { text: '抽到的是七号牌，上面写着合成心跳卡内容：fixture-card-7。' },
     ]);
+    if (lane === 'api-deferred') {
+      assert.match(JSON.stringify(ctx.apiWire[0]), /平时聊天或心跳唤醒时，从今天的十张牌里抽一张/);
+      assert.match(JSON.stringify(ctx.apiTools[0]), /tool_invoke/);
+    } else {
+      const entries = lane === 'sdk' ? ctx.sdkTools() : ctx.apiTools[0];
+      const native = (entries as Array<{ name?: string; inputSchema?: unknown; function?: { name: string; parameters?: unknown } }>)
+        .find(tool => (tool.name ?? tool.function?.name) === 'heartbeat_draw');
+      assert.ok(native, '默认新窗直接提供原生抽牌工具');
+      assert.match(JSON.stringify(native.inputSchema ?? native.function?.parameters), /card_number/);
+    }
     assert.equal(ctx.tools.find(entry => entry.name === 'tool_define' && JSON.stringify(entry.args).includes('heartbeat_draw'))?.purpose, 'chat');
     const look = ctx.tools.find(entry => entry.name === 'tool_define')!.result.output as { deck_state: string; available_card_numbers: number[] };
     assert.deepEqual([look.deck_state, look.available_card_numbers], ['not_built', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]);
@@ -331,28 +369,40 @@ test('聊天里抽完第十张：只被告知今天已抽完，不会在聊天�
   assert.equal(host.db.prepare("SELECT count(*) n FROM outbox WHERE operation_key=?").get(`heartbeat-moment:${heartbeat.id}`)?.n, 0, '回 1 保温不进朋友圈');
 });
 
-test('揭牌前已经发出的那句话不算对牌的回应；没有回应时只留卡面；中断留下的回合在恢复时补记一次', { timeout: 20000 }, async t => {
-  const ctx = await fixture(t, 'api', { now: Date.parse('2026-11-24T11:00:00+08:00') });
+test('揭牌前说的话留在聊天，揭牌后追加进同一气泡的话按片段进入朋友圈；没有回应时只留卡面；中断留下的回合在恢复时补记一次', { timeout: 20000 }, async t => {
+  const ctx = await fixture(t, 'api', { now: Date.parse('2026-11-24T11:00:00+08:00'), extraResident: ['background_complete', 'chat_send_text'] });
   const { host, cards } = ctx;
   await ctx.chat('先聊两句', [{ text: '好呀。' }]);
-  // 模型在要牌的同一句里先说了别的，抽完又接着回应，两段落在同一条气泡：这条气泡不是单纯对牌的回应。
+  // 模型在要牌的同一句里先说了别的，抽完又接着回应，两段落在同一条气泡：聊天保持单气泡，朋友圈只取揭牌后的片段。
   const mixed = await ctx.chat('顺手抽一张', [{ text: '我先把刚才那个 bug 修完。', calls: draw('draw-mixed', 6) }, { text: '修好了，顺便这张是六号牌。' }]);
   assert.equal(cards.getDeliveredDraw(mixed)?.cardNumber, 6);
   const said = (host.db.prepare("SELECT m.id, r.content FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE turn_id=? AND speaker='assistant' ORDER BY sequence").all(mixed) as Array<{ id: string; content: string }>);
   assert.equal(said.length, 1, '聊天本身照常发出，只是一条气泡');
   assert.ok(said[0]!.content.startsWith('我先把刚才那个 bug 修完。') && said[0]!.content.endsWith('修好了，顺便这张是六号牌。'), said[0]!.content);
   const projection = ctx.projectionOf(mixed);
-  assert.equal(projection?.state, 'drawn_no_comment', '关联不清楚时只留卡面');
+  assert.equal(projection?.state, 'drawn', '揭牌后的追加片段计入本轮聊天');
   assert.equal(projection?.card?.number, 6);
   assert.deepEqual(projection?.messages.map(ref => ref.messageId), [
     (host.db.prepare("SELECT id FROM messages WHERE client_message_id=?").get(`heartbeat:${mixed}:card`) as { id: string }).id,
-  ], '朋友圈不带这条夹着别的话题的气泡');
+  ], '旧消费者降级字段 messages 不带含揭牌前文字的整条气泡');
+  assert.equal(projection?.speech?.length, 1);
+  const slice = projection!.speech![0]!;
+  assert.equal(Array.from(said[0]!.content).slice(slice.start, slice.end).join(''), '修好了，顺便这张是六号牌。');
   // 抽牌之后另起的一句才是对牌的回应。
   const clean = await ctx.chat('也抽一张', [{ calls: draw('draw-clean', 4) }, { text: '四号牌给你看。' }]);
   assert.equal(ctx.projectionOf(clean)?.state, 'drawn');
   assert.deepEqual(ctx.projectionOf(clean)?.messages.map(ref => ref.messageId), [
     (host.db.prepare("SELECT id FROM messages WHERE client_message_id=?").get(`heartbeat:${clean}:card`) as { id: string }).id, ctx.replies(clean)[0]!,
   ]);
+  const identical = '同一句话。👋';
+  const repeated = await ctx.chat('再问一次', [
+    { text: identical, calls: draw('draw-repeat', 8) },
+    { calls: ['repeat-a', 'repeat-b'].map(id => ({ id, name: 'chat_send_text', args: { text: identical, idempotency_key: id } })) },
+    { calls: [{ id: 'repeat-done', name: 'background_complete', args: { outcome: 'noop' } }] },
+  ]);
+  const repeatedRefs = ctx.projectionOf(repeated)?.speech ?? [];
+  assert.deepEqual(repeatedRefs.map(ref => host.messages.getMessage(ref.messageId)?.revision.content), [identical, identical]);
+  assert.equal(new Set(repeatedRefs.map(ref => ref.messageId)).size, 2, '相同的两个正式发言保留，揭牌前的同字原句不入');
   // 抽完什么都没说：只留卡面，不编造回复。
   const quiet = await ctx.chat('再来一张', [{ calls: draw('draw-quiet', 3) }, { calls: [{ id: 'quiet-done', name: 'background_complete', args: { outcome: 'noop' } }] }]);
   assert.equal(cards.getDeliveredDraw(quiet)?.cardNumber, 3);
@@ -368,8 +418,97 @@ test('揭牌前已经发出的那句话不算对牌的回应；没有回应时�
   const rows = host.db.prepare("SELECT payload_ref FROM outbox WHERE operation_key=?").all(`heartbeat-moment:${plain}`) as Array<{ payload_ref: string }>;
   assert.equal(rows.length, 1);
   assert.equal(readHeartbeatProjection(JSON.parse(rows[0]!.payload_ref))?.state, 'drawn');
-  assert.deepEqual(cards.getDeck('primary', '2026-11-24')!.deliveredNumbers, [3, 4, 6, 9], '恢复不重新抽牌');
+  assert.deepEqual(cards.getDeck('primary', '2026-11-24')!.deliveredNumbers, [3, 4, 6, 8, 9], '恢复不重新抽牌');
 });
+
+for (const lane of ['api', 'sdk'] as const) {
+  test(`预留留言的图片真实交付，混合气泡与工具消息按 A/B/C 顺序入朋友圈和首次回应复抽（${lane}）`, { timeout: 20000 }, async t => {
+    const day = '2026-11-24';
+    const ctx = await fixture(t, lane, { now: Date.parse(day + 'T13:00:00+08:00'), realContent: true, extraResident: ['chat_send_text'] });
+    const before = '我先把杯子放好。👋';
+    const parts = ['我看到牌了。', '还想到一件事。', '最后这句也是看完牌才说的。🙌\n\n再说一句，晚上见。'];
+    const prompt = '带图的预留合成留言。';
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jBz0AAAAASUVORK5CYII=', 'base64');
+    const request = (host: Host, route: string, method = 'GET', body?: string | Uint8Array, contentType?: string, key?: string) => {
+      const base = `http://127.0.0.1:${host.port}`;
+      const token = fs.readFileSync(path.join(ctx.root, 'config/auth.token'), 'utf8').trim();
+      const headers: Record<string, string> = { Origin: base, Authorization: `Bearer ${token}` };
+      if (contentType) headers['Content-Type'] = contentType;
+      if (key) headers['Idempotency-Key'] = key;
+      return fetch(base + '/api/v1' + route, { method, headers, ...(body === undefined ? {} : { body }) });
+    };
+    const upload = await request(ctx.host, '/assets?purpose=chat_image', 'POST', new Uint8Array(png), 'image/png', 'reserved-photo-upload');
+    assert.equal(upload.status, 201);
+    const { asset_id: assetId } = await upload.json() as { asset_id: string };
+    let noteId: string | undefined;
+    for (let index = 0; index < 10; index++) {
+      const response = await request(ctx.host, '/content/future-notes', 'POST',
+        JSON.stringify({ body: index === 0 ? prompt : `其他合成留言 ${index}`, ...(index === 0 ? { asset_ids: [assetId] } : {}) }),
+        'application/json', `reserved-note-${index}`);
+      assert.equal(response.status, 201);
+      const row = await response.json() as { id: string };
+      if (index === 0) noteId = row.id;
+    }
+    assert.equal(ctx.host.db.prepare('SELECT count(*) AS n FROM message_attachments WHERE asset_id=?').get(assetId)?.n, 0);
+    await ctx.chat('先问一个无效号码以固定今天牌组', [{ calls: draw('invalid-number', 0) }, { text: '请选择今天的一个有效号码。' }]);
+    const number = ctx.cards.getDeck('primary', day)?.availableNumbers.find(n =>
+      ctx.host.db.prepare(`SELECT 1 FROM heartbeat_cards WHERE card_number=? AND json_extract(source_ref_json,'$.id')=?`).get(n, noteId!));
+    assert.ok(number, '图片只通过真实 Content 留言参与牌组');
+    const speechTool = (id: string, text: string) => ({ id, name: 'chat_send_text', args: { text, idempotency_key: id } });
+    const turn = await ctx.chat('现在抽这张', [
+      { text: before, calls: draw('reserved-photo-draw', number) },
+      { calls: [speechTool('a', parts[0]!)] },
+      { calls: [speechTool('b', parts[1]!), speechTool('b-retry', parts[1]!)].map(call => ({ ...call, args: { ...call.args, idempotency_key: 'b' } })) },
+      { text: parts[2] },
+    ]);
+    const delivered = ctx.cards.getDeliveredDraw(turn);
+    assert.equal(delivered?.source.id, noteId);
+    const wireResult = (id: string) => lane === 'api'
+      ? ctx.apiWire.flat().find(packet => packet.tool_call_id === id)?.content
+      : ctx.sdkWire.find(call => call.id === id)?.content;
+    const wire = JSON.stringify(wireResult('reserved-photo-draw'));
+    assert.ok(wire.includes(prompt), wire);
+    assert.ok(wire.includes(png.toString('base64')), '续请求带真实图片字节');
+    assert.equal(ctx.host.heartbeat!.readImage(assetId, 'another-room', turn), null);
+    assert.ok(ctx.host.heartbeat!.readImage(assetId, 'primary'), '已交付历史可以在无活动轮时重新物化');
+    const published = ctx.replies(turn).map(id => ctx.host.messages.getMessage(id)!.revision.content);
+    assert.deepEqual(published, [before + '\n\n' + parts[2], parts[0], parts[1]], '自然正文保留单气泡，工具重试没有额外气泡');
+    const projection = ctx.projectionOf(turn)!;
+    assert.equal(projection.state, 'drawn');
+    assert.equal(projection.speech?.length, 3);
+    assert.equal(projection.messages.length, 3, '旧读者只取得卡面和 A/B，不会展开混合气泡');
+
+    await ctx.host.heartbeat!.recoverProjections(20);
+    const verifyFeed = async (host: Host) => {
+      const response = await request(host, '/content/posts?include_references=1');
+      assert.equal(response.status, 200);
+      const feed = await response.json() as { items: Array<{ kind: string; blocks: Array<{ layer: string; source_label: string; text: string }> }> };
+      const reference = feed.items.find(row => row.kind === 'reference');
+      assert.ok(reference, '真实 Content 收录并回读 Host 投影');
+      assert.deepEqual(reference.blocks.filter(block => block.layer === 'main').map(block => block.text), [prompt, ...parts]);
+      assert.equal(reference.blocks.filter(block => block.source_label === '本轮聊天').length, 3);
+    };
+    await verifyFeed(ctx.host);
+    ctx.host.db.prepare('DELETE FROM outbox WHERE operation_key=?').run(`heartbeat-moment:${turn}`);
+    const reloaded = await ctx.restartHost();
+    await reloaded.heartbeat!.recoverProjections(20);
+    assert.deepEqual(ctx.projectionOf(turn), projection, '真实 Host 重启按已发布修订恢复同一投影');
+    await verifyFeed(reloaded);
+
+    t.mock.timers.setTime(Date.parse('2026-11-25T13:00:00+08:00'));
+    await ctx.chat('固定第二天牌组', [{ calls: draw('next-invalid-number', 0) }, { text: '请换个有效号码。' }]);
+    const replayCard = reloaded.db.prepare(`SELECT card_number AS number FROM heartbeat_cards
+      WHERE json_extract(source_ref_json,'$.replay')='first_reserved_response'`).get() as { number: number } | undefined;
+    assert.ok(replayCard, '首次回应允许随原留言再次入池');
+    await ctx.chat('看看昨天这封信和回应', [{ calls: draw('reserved-replay-draw', replayCard.number) }, { text: '读到了。' }]);
+    const replay = wireResult('reserved-replay-draw');
+    assert.ok(Array.isArray(replay));
+    const reply = (replay as Array<{ type: string; text?: string }>).find(block => block.type === 'text')?.text;
+    assert.ok(reply);
+    const result = JSON.parse(reply) as { heartbeat_card: { text: string } };
+    assert.equal(result.heartbeat_card.text, ['先前留下的话', prompt, ...parts.map(part => 'char：' + part)].join('\n\n'));
+  });
+}
 
 test('旧窗口的冻结定义早于聊天抽牌：定义原文不改写，读取时补一句说明并带出剩余号码；旧窗口里聊天和心跳都照常抽牌', { timeout: 20000 }, async t => {
   const ctx = await fixture(t, 'api', { now: Date.parse('2026-11-24T13:00:00+08:00') });

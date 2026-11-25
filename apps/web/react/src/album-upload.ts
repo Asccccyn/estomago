@@ -54,16 +54,44 @@ function failure(stage: string, response: Response, error?: AssetReceipt['error'
   return new Error(`${stage}失败（${error?.code ?? `HTTP ${response.status}`}）${error?.message ? ` ${error.message}` : ''}`)
 }
 
-/** A request that never answers must not leave the panel on "uploading" forever. */
-async function send(request: typeof fetch, url: string, init: RequestInit, stage: string, timeoutMs: number): Promise<Response> {
+/** A request whose headers OR body never finish must not leave the panel on "uploading" forever. */
+async function sendJson<T>(
+  request: typeof fetch,
+  url: string,
+  init: RequestInit,
+  stage: string,
+  timeoutMs: number,
+): Promise<{ response: Response; body: T; parseFailed: boolean }> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
+  let response: Response
+  let raw: string
   try {
-    return await request(url, { ...init, signal: controller.signal })
-  } catch (error) {
-    if (controller.signal.aborted) throw new Error(`${stage}超时，网络可能较慢。重试会沿用本次操作，同一文件不会重复保存。`)
-    throw error
-  } finally { clearTimeout(timer) }
+    response = await request(url, { ...init, signal: controller.signal })
+    raw = await new Promise<string>((resolve, reject) => {
+      const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'))
+      if (controller.signal.aborted) { onAbort(); return }
+      controller.signal.addEventListener('abort', onAbort, { once: true })
+      response.text().then(
+        text => { controller.signal.removeEventListener('abort', onAbort); resolve(text) },
+        err => { controller.signal.removeEventListener('abort', onAbort); reject(err) },
+      )
+    })
+  } catch {
+    if (controller.signal.aborted) {
+      throw new Error(`${stage}超时，网络可能较慢，结果待确认。重试会沿用本次操作，同一文件不会重复保存。`)
+    }
+    throw new Error(`${stage}连接中断，结果待确认。重试会沿用本次操作。`)
+  } finally {
+    clearTimeout(timer)
+  }
+  try {
+    const parsed = raw.length > 0 ? JSON.parse(raw) : null
+    if (!parsed || typeof parsed !== 'object') return { response, body: {} as T, parseFailed: true }
+    return { response, body: parsed as T, parseFailed: false }
+  } catch {
+    return { response, body: {} as T, parseFailed: true }
+  }
 }
 
 /** 每一步把可恢复的记录交回面板保存。一旦收到资产身份，后续重试依据同一资产与关系操作键，不再提交文件字节。 */
@@ -76,28 +104,31 @@ export async function uploadAlbumEntry(
   let assetId = attempt.assetId
   let asset: AssetReceipt
   if (assetId !== undefined) {
-    const response = await send(request, `/api/v1/assets/${encodeURIComponent(assetId)}`, {}, `读取资产 ${assetId}`, timeoutMs)
-    asset = (await response.json().catch(() => ({}))) as AssetReceipt
+    const { response, body, parseFailed } = await sendJson<AssetReceipt>(
+      request, `/api/v1/assets/${encodeURIComponent(assetId)}`, {}, `读取资产 ${assetId}`, timeoutMs,
+    )
+    asset = body
     if (!response.ok) throw failure(`读取资产 ${assetId}`, response, asset.error)
+    if (parseFailed) throw new Error(`读取资产 ${assetId} 回执不完整，结果待确认。重试会沿用本次操作。`)
   } else {
     if (!attempt.file) throw new Error('请重选原文件以核对本次上传。')
     const purpose = attempt.album === 'creations' ? 'creation_work' : attempt.album === 'stickers' ? 'chat_sticker' : 'chat_image'
-    const response = await send(request, `/api/v1/assets?purpose=${purpose}`, {
+    const { response, body, parseFailed } = await sendJson<AssetReceipt>(request, `/api/v1/assets?purpose=${purpose}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream', 'Idempotency-Key': attempt.key },
       body: attempt.file,
     }, '上传', timeoutMs)
-    asset = (await response.json().catch(() => ({}))) as AssetReceipt
+    asset = body
     // After a lost receipt the same key is retried with a re-selected file. The server
     // replays the original asset for the same bytes and refuses different bytes, which
     // leaves the record awaiting the original file instead of the rejected one.
-    if (response.status === 409 && asset.error?.code === 'idempotency_conflict') {
+    if (response.status === 409 && !parseFailed && asset.error?.code === 'idempotency_conflict') {
       onRecord({ key: attempt.key, album: attempt.album, ...(attempt.title === undefined ? {} : { title: attempt.title }) })
       throw new Error('选中的文件内容与原文件不同。请重选原文件，或结束此次操作。')
     }
     if (!response.ok) throw failure('上传', response, asset.error)
     assetId = asset.asset_id
-    if (!assetId) throw new Error('上传回执不完整。使用本次操作重试可核对原资产。')
+    if (!assetId || parseFailed) throw new Error('上传回执不完整。使用本次操作重试可核对原资产。')
     onRecord({ key: attempt.key, album: attempt.album, assetId, ...(attempt.title === undefined ? {} : { title: attempt.title }) })
   }
 
@@ -115,14 +146,19 @@ export async function uploadAlbumEntry(
   }
   const workKind = asset.mime_type === 'image/svg+xml' ? 'svg' : asset.mime_type === 'text/html' ? 'html' : undefined
   if (attempt.album === 'creations' && !workKind) throw new Error(`资产 ${assetId} 不是支持导入的 HTML/SVG 代码作品。图片请使用相册。`)
-  const response = await send(request, attempt.album === 'creations' ? '/api/v1/content/creations' : `/api/v1/content/albums/${attempt.album}/entries`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${attempt.key}:entry` },
-    body: JSON.stringify(attempt.album === 'creations' ? {
-      work_asset_id: assetId, work_kind: workKind, ...(attempt.title === undefined ? {} : { title: attempt.title }),
-    } : { asset_id: assetId }),
-  }, `归类（资产 ${assetId}）`, timeoutMs)
-  const entry = (await response.json().catch(() => ({}))) as EntryReceipt
+  const { response, body: entry, parseFailed } = await sendJson<EntryReceipt>(
+    request,
+    attempt.album === 'creations' ? '/api/v1/content/creations' : `/api/v1/content/albums/${attempt.album}/entries`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${attempt.key}:entry` },
+      body: JSON.stringify(attempt.album === 'creations' ? {
+        work_asset_id: assetId, work_kind: workKind, ...(attempt.title === undefined ? {} : { title: attempt.title }),
+      } : { asset_id: assetId }),
+    },
+    `归类（资产 ${assetId}）`,
+    timeoutMs,
+  )
   if (!response.ok) throw failure(`归类（资产 ${assetId}）`, response, entry.error)
-  if (!entry.id) throw new Error(`归类回执不完整（资产 ${assetId}）。使用本次操作重试可核对原条目。`)
+  if (!entry.id || parseFailed) throw new Error(`归类回执不完整（资产 ${assetId}）。使用本次操作重试可核对原条目。`)
 }

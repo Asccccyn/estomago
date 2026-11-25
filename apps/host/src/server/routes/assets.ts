@@ -182,6 +182,9 @@ if (assetDelete) {
   const id = decodeURIComponent(assetDelete[1]!);
   try {
     const asset = d.media.getAsset(id); // 不存在=404
+    if (url.searchParams.get('staged') === '1' && asset.m_sync_state !== 'staged') {
+      return json(res, 409, { error: { code: 'asset_not_staged', message: '这份上传已离开暂存状态，未移除资产。' } });
+    }
     if (asset.m_sync_state === 'staged') {
      // A staged upload never reached the master store, so abandoning it removes row and bytes.
      d.media.discardStagedAssets([id]);

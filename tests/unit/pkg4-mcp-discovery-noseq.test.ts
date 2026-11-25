@@ -41,7 +41,7 @@ test('D01：新窗按用户确认的十五项给简明常驻用法和唯一索�
   const noConfig = { prepare: () => ({ get: () => undefined }) } as never;
   const groups = resolveToolGroups(noConfig, catalog, declared);
   const cTools = catalog.filter((spec) => groups[spec.function.name] === 'C').map((spec) => spec.function.name);
-  assert.equal(cTools.length, 15);
+  assert.equal(cTools.length, 16);
   assert.ok(cTools.includes('memory_hold') && !cTools.includes('conversation_read'));
   const text = renderToolContext(catalog, groups)!;
   for (const name of cTools) assert.ok(text.includes(`- ${name}\n`));

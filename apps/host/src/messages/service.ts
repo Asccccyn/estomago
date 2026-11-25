@@ -13,6 +13,8 @@ import { assertMessageMutable } from './mutation.ts';
 import { effectiveRevisionText } from './effective-text.ts';
 import type { EventService, StreamEventRow } from '../events/service.ts';
 
+export const HEARTBEAT_CHAT_REVEAL_SOURCE = 'heartbeat_chat_reveal';
+
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
 export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: string; repaired: boolean };
 
@@ -386,7 +388,7 @@ export class MessageService {
   }
 
   /** Heartbeat display and trajectory association commit in the caller's existing writer transaction. */
-  publishHeartbeatInTx(opts: { conversationId: string; turnId: string; runId: string; part: 'invite' | 'card' | 'decline' | 'ack' | `reply:${number}`; content: string }): MessageDto {
+  publishHeartbeatInTx(opts: { conversationId: string; turnId: string; runId: string; part: 'invite' | 'card' | 'decline' | 'ack' | `reply:${number}`; content: string; chatRevealBoundary?: true }): MessageDto {
     const clientId = `heartbeat:${opts.runId}:${opts.part}`;
     const duplicate = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
       .get(opts.conversationId, clientId) as { id: string } | undefined;
@@ -397,7 +399,8 @@ export class MessageService {
     const message = this.insertPublicationInTx({
       ...opts, now, clientMessageId: clientId,
       speaker: assistant ? 'assistant' : 'system', kind: assistant ? 'text' : 'system',
-      source: isReply ? 'assistant_publish' : assistant ? 'heartbeat_ack' : 'heartbeat_host',
+      source: isReply ? 'assistant_publish' : assistant ? 'heartbeat_ack'
+        : opts.part === 'card' && opts.chatRevealBoundary ? HEARTBEAT_CHAT_REVEAL_SOURCE : 'heartbeat_host',
     });
     if (isReply) this.activity?.noteRealPublication(opts.conversationId, message.id, 1, now);
     return message;
@@ -424,7 +427,9 @@ export class MessageService {
     `);
     attachments.forEach((attachment, index) =>
       insertAttachment.run(id, 1, index, attachment.asset_id, attachment.presentation, attachment.caption ?? null, opts.now));
-    if (opts.source !== 'heartbeat_host') this.insertOutbox(`archive:${id}:1`, { message_id: id }, opts.now);
+    if (opts.source !== 'heartbeat_host' && opts.source !== HEARTBEAT_CHAT_REVEAL_SOURCE) {
+      this.insertOutbox(`archive:${id}:1`, { message_id: id }, opts.now);
+    }
     return this.getMessage(id)!;
   }
 

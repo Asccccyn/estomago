@@ -1,4 +1,5 @@
-import { isHeartbeatExtensionKind, readHeartbeatProjection, readHeartbeatSource, type HeartbeatExtensionKind, type HeartbeatProjection, type HeartbeatSource } from '../../../../../packages/contracts/src/heartbeat.ts';
+import { isHeartbeatExtensionKind, readHeartbeatProjection, readHeartbeatSource, type HeartbeatExtensionKind, type HeartbeatProjection, type HeartbeatSource, type HeartbeatSpeechSlice } from '../../../../../packages/contracts/src/heartbeat.ts';
+import type { MessageDto } from '../../../../../packages/contracts/src/api.ts';
 import { heartbeatSourceKeys } from './service.ts';
 import type { MariposaClient } from '../../integrations/mariposa/client.ts';
 import type { WishstarClient } from '../../integrations/wishstar/client.ts';
@@ -10,6 +11,27 @@ import type { ArchiveService } from '../archives/service.ts';
 import type { OidoSourceRepository } from '../oido/source-repository.ts';
 
 type SourceActor = 'jiaming' | 'qiaosheng';
+type PublishedSpeech = { text: string; assetIds: string[] };
+
+/** Moments and subsequent card draws resolve the same fixed publications. */
+export function resolveHeartbeatSpeech(messages: Pick<MessageService, 'getMessageAtRevision'>, reveal: MessageDto,
+  ref: HeartbeatSpeechSlice): PublishedSpeech | null {
+  const message = messages.getMessageAtRevision(reveal.conversation_id, ref.messageId, ref.revision);
+  if (!reveal.heartbeat_card || !reveal.turn_id || !message || message.speaker !== 'assistant'
+    || message.turn_id !== reveal.turn_id || message.sequence !== ref.sequence) return null;
+  // A bubble published before reveal can contribute an explicit appended
+  // section only. Its original text and attachments stay in the chat.
+  if (ref.sequence <= reveal.sequence && !(ref.start !== undefined && ref.start > 0)) return null;
+  if (ref.start === undefined && ref.end === undefined) {
+    return { text: message.revision.content, assetIds: message.revision.attachments.map(attachment => attachment.asset_id) };
+  }
+  const chars = Array.from(message.revision.content);
+  const start = ref.start ?? 0;
+  const end = ref.end ?? chars.length;
+  if (start < 0 || end > chars.length || start >= end) return null;
+  return { text: chars.slice(start, end).join(''), assetIds: start === 0 ? message.revision.attachments.map(attachment => attachment.asset_id) : [] };
+}
+
 export type SourceStatus = 'deleted' | 'forbidden' | 'revision_unavailable' | 'unavailable';
 export type CardPayload = {
   status: 'available'; text: string; assetIds: string[]; imageIds: string[]; voiceTranscriptRevision?: string;
@@ -226,8 +248,8 @@ export class HeartbeatSources {
         }
         const letter = await this.resolve(replay.original, conversationId, signal, actor);
         if (letter.status !== 'available') return letter;
-        return this.payload(['先前留下的话', letter.text, ...replay.replies.map(message => 'char：' + message.revision.content)].join('\n\n'),
-          [...letter.assetIds, ...replay.replies.flatMap(message => message.revision.attachments.map(attachment => attachment.asset_id))]);
+        return this.payload(['先前留下的话', letter.text, ...replay.replies.map(reply => 'char：' + reply.text)].join('\n\n'),
+          [...letter.assetIds, ...replay.replies.flatMap(reply => reply.assetIds)]);
       }
       if (item.id !== source.id || item.revision !== source.revision) return { status: 'revision_unavailable' };
       if (source.kind === 'archive') {
@@ -290,7 +312,7 @@ export class HeartbeatSources {
   }
 
   private firstReservedReplay(projection: HeartbeatProjection): { original: HeartbeatSource; revision: string; legacyExact: boolean;
-    replies: NonNullable<ReturnType<MessageService['getMessageAtRevision']>>[] } | null {
+    replies: PublishedSpeech[] } | null {
     const original = projection.card?.source;
     if (projection.state !== 'drawn' || original?.kind !== 'reserved_note') return null;
     // Older projections had no explicit response references. Only retain old
@@ -301,6 +323,16 @@ export class HeartbeatSources {
     const reveals = rows.filter(row => row.message?.heartbeat_card && row.message.sequence === row.ref.sequence);
     const reveal = reveals.length === 1 ? reveals[0]!.message : null;
     if (!reveal?.turn_id) return null;
+    if (projection.speech !== undefined) {
+      if (!projection.speech.length) return null;
+      const replies: PublishedSpeech[] = [];
+      for (const ref of projection.speech) {
+        const reply = resolveHeartbeatSpeech(this.messages, reveal, ref);
+        if (!reply) return null;
+        replies.push(reply);
+      }
+      return { original, revision: `reply:${sha256Hex(JSON.stringify([original, projection.speech]))}`, replies, legacyExact: false };
+    }
     // No fixed old response list exists. If a post-reveal reference is no
     // longer readable, we cannot tell whether a missing assistant belonged to
     // the original response; do not silently shorten a frozen old payload.
@@ -309,12 +341,15 @@ export class HeartbeatSources {
     const fixed = projection.reservedReplyMessages ?? rows.filter(row => row.message?.speaker === 'assistant'
       && row.message.turn_id === reveal.turn_id && row.ref.sequence > reveal.sequence).map(row => row.ref);
     if (!fixed.length) return null;
-    const replies: NonNullable<ReturnType<MessageService['getMessageAtRevision']>>[] = [];
+    const replies: PublishedSpeech[] = [];
     for (const ref of fixed) {
       const message = rows.find(row => row.ref.messageId === ref.messageId && row.ref.revision === ref.revision)?.message;
       if (!message || message.speaker !== 'assistant' || message.turn_id !== reveal.turn_id
         || message.sequence !== ref.sequence || ref.sequence <= reveal.sequence) return null;
-      replies.push(message);
+      replies.push({
+        text: message.revision.content,
+        assetIds: message.revision.attachments.map(attachment => attachment.asset_id),
+      });
     }
     // The reading revision belongs to the frozen source and original response
     // references, not the mutable article version (which can advance only for

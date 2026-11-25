@@ -312,7 +312,9 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
     // —— 相册重构 P4：对话存档人类入口（模型走 conversation_archive 工具，同服务异入口）
     if (route === 'POST /api/v1/archives' || route === 'GET /api/v1/archives'
-      || /^GET \/api\/v1\/archives\/[^/]+$/.test(route) || /^DELETE \/api\/v1\/archives\/[^/]+$/.test(route)) {
+      || /^GET \/api\/v1\/archives\/[^/]+$/.test(route)
+      || /^GET \/api\/v1\/archives\/[^/]+\/messages$/.test(route)
+      || /^DELETE \/api\/v1\/archives\/[^/]+$/.test(route)) {
       return await handleArchivesRoutes(req, res, d, route, url);
     }
 

@@ -685,6 +685,10 @@ export class ConversationToolsService {
   chatSendText(args: { text: string; idempotency_key: string }, ctx: ToolExecContext): ToolExecResult {
     if (!this.messages) return { ok: false, output: { error_code: 'INTEGRATION_UNCONFIGURED' } };
     if (ctx.purpose !== 'proactive_turn' && ctx.purpose !== 'chat' && ctx.purpose !== 'cache_keepalive') return { ok: false, output: { error_code: 'TOOL_PURPOSE_INVALID' } };
+    const liveGate = ctx.checkChatPublishAllowed?.();
+    if (liveGate && !liveGate.allowed) {
+      return { ok: false, output: { error_code: liveGate.code, published: false, detail: liveGate.detail } };
+    }
     const clientMessageId = `tool-text:${ctx.turnId ?? 'noturn'}:${args.idempotency_key}`;
     const msg = this.messages.publishAssistantMessage({ conversationId: ctx.roomId, turnId: ctx.turnId ?? 'tool', content: args.text, clientMessageId, events: this.events });
     void this.archiveSync?.drainOnce().catch(() => { /* 归档走 drain 重试 */ });
@@ -698,6 +702,10 @@ export class ConversationToolsService {
       this.media.validateForSend([{ asset_id: args.asset_id, presentation: args.presentation }]);
     } catch (err) {
       return { ok: false, output: { error_code: (err as { code?: string }).code ?? 'ASSET_NOT_FOUND' } };
+    }
+    const liveGate = ctx.checkChatPublishAllowed?.();
+    if (liveGate && !liveGate.allowed) {
+      return { ok: false, output: { error_code: liveGate.code, saved: true, published: false, asset_id: args.asset_id, detail: liveGate.detail } };
     }
     const kind = args.presentation === 'voice' ? 'voice' : args.presentation === 'sticker' ? 'sticker' : 'text';
     const clientMessageId = `tool-send:${ctx.turnId ?? 'noturn'}:${args.asset_id}:${args.presentation}:${sha256Hex(args.content ?? '')}`;

@@ -8,11 +8,11 @@ import { definitionId, freezeWindowTools, storedToolset } from '../../apps/host/
 const expectedResident = [
   'memory_hold', 'memory_update', 'memory_recall', 'memory_read_full',
   'image_generate', 'media_view', 'chat_send_voice', 'call_control', 'wake_manage', 'wishstar_write_star', 'wishstar_request_star',
-  'content_album_entry_write', 'content_albums_read', 'content_post_create', 'conversation_archive',
+  'content_album_entry_write', 'content_albums_read', 'content_post_create', 'conversation_archive', 'heartbeat_draw',
 ];
 const expectedTask = ['context_review_complete'];
 
-test('新窗冻结十五份简明用法与一条工具地图提醒，旧窗和显式选择保留各自合同', t => {
+test('新窗冻结十六份简明用法与一条工具地图提醒，旧窗和显式选择保留各自合同', t => {
   const { db, root } = makeDb(tempRoot('resident-catalog-policy-'), { seed: false });
   t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
   const { registry } = assembleTestTools({ db, media: {} as never, messages: {} as never });
@@ -37,9 +37,9 @@ test('新窗冻结十五份简明用法与一条工具地图提醒，旧窗和�
   const initial = frozen.initialText!;
   assert.deepEqual([...initial.matchAll(/^- ([a-z_]+)$/gm)].map(match => match[1]), expectedResident);
   assert.deepEqual(Object.keys(frozen.groups).filter(name => frozen.groups[name] === 'T'), expectedTask);
-  assert.equal(frozen.groups.heartbeat_draw, 'D');
+  assert.equal(frozen.groups.heartbeat_draw, 'C');
   assert.equal(frozen.groups.wishstar_reply_star, 'D');
-  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 41);
+  assert.equal(Object.values(frozen.groups).filter(group => group === 'D').length, 40);
   assert.ok(initial.startsWith('你想记下一件事'));
   assert.equal([...initial.matchAll(/用 tool_catalog 的 query/g)].length, 1);
   assert.match(initial, /发现记错了也可以改/);

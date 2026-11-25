@@ -55,6 +55,7 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
   const [err, setErr] = useState<string | null>(null)
   const [openArchive, setOpenArchive] = useState<string | null>(null)
   const [originals, setOriginals] = useState<ArchiveOriginal[] | null>(null)
+  const archiveRequest = useRef<{ id: string; controller: AbortController } | null>(null)
   const [photoAlbum, setPhotoAlbum] = useState<PhotoAlbum>('important_photos')
   const [upload, setUpload] = useState<AlbumUpload | null>(pendingAlbumUpload)
   const [uploading, setUploading] = useState(false)
@@ -106,6 +107,7 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
       requests.current.delete(collection)
     }
   }, [collection, load])
+  useEffect(() => () => archiveRequest.current?.controller.abort(), [])
 
   const cursor = current?.page?.cursor
   const more = !busy && current?.page?.hasMore && cursor
@@ -160,20 +162,34 @@ export default function AlbumPanel({ onClose, initialTab = 'creations' }: { onCl
         headers: { 'If-Match': `"${a.revision}"`, 'Idempotency-Key': `ui-arc-del:${a.id}:${Date.now()}` },
       })
       if (status !== 200) throw new Error(body?.error?.message ?? ('删除失败 ' + status))
-      setOpenArchive(null); setOriginals(null)
+      if (archiveRequest.current?.id === a.id) {
+        archiveRequest.current.controller.abort()
+        archiveRequest.current = null
+      }
+      setOpenArchive(current => current === a.id ? null : current)
       await load('archives')
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)) } finally { setMutating(false) }
   }
 
   /** R6 存档打开链：展开存档钉住版本的原文明文（只读端点，E 库按修订取正文）。 */
   const toggleArchive = async (a: ArchiveItem) => {
+    archiveRequest.current?.controller.abort()
+    archiveRequest.current = null
     if (openArchive === a.id) { setOpenArchive(null); setOriginals(null); return }
     setOpenArchive(a.id); setOriginals(null)
+    const controller = new AbortController()
+    archiveRequest.current = { id: a.id, controller }
     try {
-      const { status, body } = await jfetch<{ items?: ArchiveOriginal[]; error?: { message?: string } }>(`/api/v1/archives/${encodeURIComponent(a.id)}/messages`)
+      const { status, body } = await jfetch<{ items?: ArchiveOriginal[]; error?: { message?: string } }>(
+        `/api/v1/archives/${encodeURIComponent(a.id)}/messages`, { signal: controller.signal })
+      if (controller.signal.aborted) return
       if (status !== 200) throw new Error(body?.error?.message ?? ('原文读取失败 ' + status))
       setOriginals(body.items ?? [])
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setOpenArchive(null) }
+    } catch (e) {
+      if (!controller.signal.aborted) { setErr(e instanceof Error ? e.message : String(e)); setOpenArchive(null) }
+    } finally {
+      if (archiveRequest.current?.controller === controller) archiveRequest.current = null
+    }
   }
 
   const updateUpload = (next: AlbumUpload | null) => {

@@ -134,7 +134,8 @@ test('RB05：自由活动正式 HTTP 入口可达——真实建窗/幂等/同�
 });
 
 test('C08：十张真实交付后，兜底1发布一次并沿下一普通输入接续，L 不推进', async () => {
-  auditNow = Date.parse('2026-11-20T01:00:00+08:00');
+  // Exercise ten ordinary maintenance cycles and the exhausted reply outside the morning opportunity.
+  auditNow = Date.parse('2026-11-20T12:00:00+08:00');
   const script: Script = { mode: 'draw' };
   const f = await boot(script);
   try {
@@ -147,8 +148,10 @@ test('C08：十张真实交付后，兜底1发布一次并沿下一普通输入�
       script.keepRound = 0;
       auditNow += 3_000_001;
       await f.host.scheduler!.tick(); await f.host.supervisor.waitIdle();
-      const run = f.host.db.prepare("SELECT state,result_code FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as J;
-      assert.deepEqual({ ...run }, { state: 'completed', result_code: 'complete:done' });
+      const run = f.host.db.prepare("SELECT state,result_code,occurrence_key FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as J;
+      assert.equal(run.state, 'completed');
+      assert.equal(run.result_code, 'complete:done');
+      assert.match(run.occurrence_key, /^keepwarm:/);
     }
     const status = await f.request('/background/heartbeat');
     assert.deepEqual(status.delivered_numbers, Array.from({ length: 10 }, (_, index) => index + 1));
@@ -178,6 +181,7 @@ test('C08：十张真实交付后，兜底1发布一次并沿下一普通输入�
 });
 
 test('C09：无文字拒抽保留维护回执，下一自然机会仍可调度', async () => {
+  auditNow = Date.parse('2026-11-20T12:00:00+08:00');
   const f = await boot({ mode: 'decline' });
   try {
     await f.request('/background/settings', 'PUT', { keepwarm: { enabled: true, daily_cost_cap_usd: 10 } }, 'enable-kw');

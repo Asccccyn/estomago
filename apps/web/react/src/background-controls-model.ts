@@ -27,6 +27,14 @@ export type KeepwarmStatus = {
   sleep_window_active?: boolean
   next_keepwarm_at?: string
   next_keepwarm_basis?: string
+  morning_postponed_by_at?: string | null
+  morning_wake?: {
+    scheduled: boolean
+    target_at?: string
+    basis?: 'morning_baseline' | 'morning_postponed'
+    postponed_by_at?: string | null
+    reason?: string
+  }
   resting?: boolean
   rest_decided_at?: string | null
 }
@@ -45,7 +53,19 @@ export function keepwarmStatusText(
     case 'KEEPWARM_SLEEP_WINDOW': return status.sleep_window_active ? `睡眠时段暂停${window}` : `下次到点落在睡眠时段，届时暂停${window}`
     default: break
   }
-  return status?.scheduled && status.next_keepwarm_at
-    ? `下次 ${formatTime(status.next_keepwarm_at)}（${status.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）`
-    : '暂无排程（还没有真实聊天）'
+  if (status?.scheduled && status.next_keepwarm_at) {
+    const nextIsMorning = status.next_keepwarm_basis === 'morning_baseline' || status.next_keepwarm_basis === 'morning_postponed'
+    const morning = status.morning_wake
+    const morningAt = morning?.scheduled ? morning.target_at : nextIsMorning ? status.next_keepwarm_at : undefined
+    const ordinary = nextIsMorning ? '' : `下次 ${formatTime(status.next_keepwarm_at)}（${status.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）`
+    if (morningAt) {
+      const postponedBy = morning?.postponed_by_at ?? status.morning_postponed_by_at
+      const postponed = (morning?.basis ?? status.next_keepwarm_basis) === 'morning_postponed'
+      const reason = postponed ? (postponedBy ? `按 ${formatTime(postponedBy)} 聊天顺延` : '按晨间聊天顺延') : '每日 08:00'
+      const morningText = `晨间唤醒预计 ${formatTime(morningAt)}（${reason}）`
+      return ordinary ? `${ordinary} · ${morningText}` : morningText
+    }
+    return ordinary
+  }
+  return '暂无排程（还没有真实聊天）'
 }

@@ -67,10 +67,22 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
   };
   const usage = { prompt_tokens: 2000, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 500 }, cost: 0.001 };
   let heart = false, operation = 'draw-1', target: number | null = null, wireNumber = 0, reveals = 0, memoryReveals = 0, livingReveals = 0;
+  let lookup: 'tool_define' | 'tool_catalog' | null = null;
+  let modelNumbers: number[] | undefined;
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax: 0 }, async payload => {
     const messages = payload.messages as Array<{ role: string; tool_call_id?: string; content: unknown }>;
     let delta: Record<string, unknown> = { content: '合成正常聊天' }, finish = 'stop';
-    if (heart) {
+    if (lookup) {
+      const id = `numbers-${lookup}`;
+      const result = messages.find(message => message.role === 'tool' && message.tool_call_id === id);
+      if (!result) {
+        delta = { tool_calls: [{ index: 0, id, type: 'function', function: { name: lookup,
+          arguments: JSON.stringify(lookup === 'tool_define' ? { name: 'heartbeat_draw' } : { query: 'heartbeat_draw' }) } }] };
+        finish = 'tool_calls';
+      } else {
+        modelNumbers = JSON.parse(String(result.content)).available_card_numbers;
+      }
+    } else if (heart) {
       const result = messages.find(message => message.role === 'tool' && message.tool_call_id === operation);
       if (!result) {
         const number = target ?? Number(host!.db.prepare("SELECT card_number AS n FROM heartbeat_cards WHERE source_kind='ext:fixture' ORDER BY card_number LIMIT 1").get()?.n);
@@ -236,7 +248,17 @@ test('real Host registration shares one deck/ledger with enabled seventh source,
   const setLiving = async (enabled:boolean,key:string) => req('/background/settings','PUT',{keepwarm:{include_living_room:enabled}},key,(await req('/background/settings')).revision);
   await setLiving(false,'living-off');
   const beforeDisabledCandidate = livingReads;
-  assert.ok(!(await req('/background/heartbeat')).available_numbers.includes(nextLiving!.number));
+  const pageNumbers = (await req('/background/heartbeat')).available_numbers as number[];
+  assert.ok(!pageNumbers.includes(nextLiving!.number));
+  for (const name of ['tool_define', 'tool_catalog'] as const) {
+    lookup = name;
+    modelNumbers = undefined;
+    const input = host.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '查看剩余号码', clientMessageId: name + '-living-off' });
+    host.supervisor.enqueue(input.turnId);
+    await host.supervisor.waitIdle();
+    lookup = null;
+    assert.deepEqual(modelNumbers, pageNumbers, `${name} 在真实模型续请求里读取和页面相同的号码`);
+  }
   assert.equal(livingReads,beforeDisabledCandidate);
   assert.deepEqual(await livingHistory(),historyBefore);
   const blockAfterOff = await livingBlock();

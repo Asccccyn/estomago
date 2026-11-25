@@ -309,6 +309,11 @@ export class MediaService {
       staged.push(assetId);
     }
     for (const assetId of staged) {
+      const a = this.getAsset(assetId);
+      try { this.readLocalBytes(a.content_sha256); }
+      catch { throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, `暂存资产文件缺失 ${assetId}`); }
+    }
+    for (const assetId of staged) {
       if (!this.mStore) {
         this.db.prepare("UPDATE media_assets SET m_sync_state = 'pending' WHERE id = ? AND m_sync_state = 'staged'").run(assetId);
       } else if (!(await this.attemptMSync(assetId, undefined, { staged: true }))) {
@@ -652,6 +657,49 @@ export class MediaService {
     const rev = this.db.prepare('SELECT content FROM message_revisions WHERE message_id = ? AND revision = ?').get(messageId, revision) as { content: string } | undefined;
     if (!rev) throw new MediaError('ASSET_NOT_FOUND', 404, `修订不存在 ${messageId}@${revision}`);
     return { content: rev.content, attachments: this.listMessageAttachments(messageId, revision) };
+  }
+
+  /** 落正前全量本地预检：确保全部被引用资产存在、available 且暂存字节可读，避免后面的项本地失败时前面的暂存项已先上传 M。 */
+  validateAssetsAvailable(assetIds: readonly string[]): void {
+    for (const assetId of new Set(assetIds)) {
+      const a = this.getAsset(assetId);
+      if (a.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产 ${assetId} 状态 ${a.state}`);
+      if (a.m_sync_state === 'staged') {
+        try { this.readLocalBytes(a.content_sha256); }
+        catch { throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, `暂存资产文件缺失 ${assetId}`); }
+        if (a.mime_type === 'image/svg+xml') {
+          const view = this.staticSvgView(a.id);
+          if (view?.m_sync_state === 'staged') {
+            const viewAsset = this.getAsset(view.id);
+            try { this.readLocalBytes(viewAsset.content_sha256); }
+            catch { throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, `暂存 SVG 视图缺失 ${assetId}`); }
+          }
+        }
+      }
+    }
+  }
+
+  /** 发送附件落正前本地预检：存在/available/暂存字节可读/presentation 类型与混排合法。 */
+  validateBeforeCommit(items: Array<{ asset_id: string; presentation: string }>): void {
+    if (items.some((a) => a.presentation === 'voice') && items.length > 1) {
+      throw new MediaError('ATTACHMENT_MIX_INVALID', 422, '语音消息不能与其他附件混合');
+    }
+    this.validateAssetsAvailable(items.map((it) => it.asset_id));
+    for (const it of items) {
+      const a = this.getAsset(it.asset_id);
+      if (it.presentation === 'work') {
+        if (a.mime_type !== 'image/svg+xml' && a.mime_type !== 'text/html') {
+          throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=work 只接受 SVG/HTML 作品（收到 ${a.mime_type}；普通图片用 presentation=image）`);
+        }
+        continue;
+      }
+      const wanted = it.presentation === 'voice' ? PURPOSE_MIMES.chat_voice : PURPOSE_MIMES.chat_image;
+      const svgReadyOrStaged = it.presentation !== 'voice' && a.mime_type === 'image/svg+xml'
+        && (this.canProvideImage(a) || this.staticSvgView(a.id) !== null);
+      if (!wanted.includes(a.mime_type) && !svgReadyOrStaged) {
+        throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
+      }
+    }
   }
 
   /** 校验发送附件：存在/available/格式匹配 presentation（§5.2 先全量校验再入事务）。 */

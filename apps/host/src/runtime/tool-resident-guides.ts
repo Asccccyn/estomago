@@ -28,6 +28,7 @@ operation 用 list 查看自己的预约，默认 20 条，可填 limit 1 到 10
   ['content_post_create', `以你的身份发一条私密朋友圈。填 text 和 idempotency_key。只发图时也给 text，填空字符串，同时用 asset_ids 给至少一张已有图片。附件最多 8 张，text 最多 40000 字，可填最多 200 字的 title。
 presentation 默认为 post 普通动态。想用信的排版就填 letter。同一次发帖重试沿用原键，结果未知时先按回执核对。`],
   ['conversation_archive', '把想留住的聊天存为争吵或甜蜜存档。填 kind，再选用 message_ids、latest_completed_turn 或一对逐字引语 anchor_start 和 anchor_end 指定范围。'],
+  ['heartbeat_draw', '平时聊天或心跳唤醒时，从今天的十张牌里抽一张。填可抽的 card_number，每个逻辑回合最多成功抽一张。想看今天还剩哪些可抽号码，先用 tool_define 读取 heartbeat_draw。'],
 ]);
 
 export const residentToolNames: readonly string[] = [...GUIDES.keys()];

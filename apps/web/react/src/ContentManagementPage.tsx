@@ -180,7 +180,7 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
     const controller = new AbortController()
     void loadSettings(controller.signal)
     return () => controller.abort()
-  }, [loadSettings])
+  }, [loadSettings, refreshVersion])
 
   async function toggle(source: 'enabled' | 'include_living_room' = 'enabled') {
     if (!settings || busy) return
@@ -220,10 +220,15 @@ function HeartbeatStatus({ refreshVersion }: { refreshVersion: number }) {
         onClick={() => void toggle('include_living_room')} disabled={!settings || busy}>{settings?.livingRoom ? '已加入' : '未加入'}</button>
       <span className={mutedClass}>今日已固定的牌不会换号补牌。</span>
     </div>
-    {settings?.status?.resting && <div className="flex flex-wrap items-center gap-2" role="status">
-      <span className={mutedClass}>{keepwarmStatusText(settings.status, settings.sleepWindow, dateLabel)}</span>
-      <button type="button" className={actionClass} disabled={busy} onClick={() => void resume()}>恢复心跳</button>
-    </div>}
+    {settings?.status && (() => {
+      const statusText = keepwarmStatusText(settings.status, settings.sleepWindow, dateLabel)
+      if (!statusText && !settings.status.resting) return null
+      return <div className="flex flex-wrap items-center gap-2" role="status">
+        {statusText && <span className={mutedClass}>{statusText}</span>}
+        {settings.status.resting && settings.status.morning_wake?.scheduled && <span className={mutedClass}>普通保温休息中</span>}
+        {settings.status.resting && <button type="button" className={actionClass} disabled={busy} onClick={() => void resume()}>恢复心跳</button>}
+      </div>
+    })()}
     {settingsError && <p role="alert" className={errorClass}>{settingsError}</p>}
     {statusError && <p role="status" className={mutedClass}>今日牌组暂不可读取。{statusError}</p>}
     {status && <>
@@ -260,6 +265,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
   const [statusRefresh, setStatusRefresh] = useState(0)
   const readGeneration = useRef(0)
   const pendingWrite = useRef<{ fingerprint: string; key: string } | null>(null)
+  const sessionStagedIds = useRef<Set<string>>(new Set())
 
   const load = useCallback(async (pageCursor?: string) => {
     const generation = ++readGeneration.current
@@ -330,6 +336,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
         throw new Error('原文件仍在等待正本确认。请稍后继续加入附件。')
       }
       const confirmedId = id
+      if (asset.m_sync_state === 'staged') sessionStagedIds.current.add(confirmedId)
       setEditor(current => current && ({
         ...current, draft: { ...current.draft, assetIds: [...new Set([...current.draft.assetIds, confirmedId])] },
       }))
@@ -338,7 +345,12 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
     finally { setBusy(false) }
   }
 
-  function closeEditor() {
+  function closeEditor(discardSessionStaged = false) {
+    if (discardSessionStaged) {
+      if (pendingUpload?.assetId) void discardStagedUpload(pendingUpload.assetId)
+      for (const stagedId of sessionStagedIds.current) void discardStagedUpload(stagedId)
+    }
+    sessionStagedIds.current.clear()
     setEditor(null)
     setError(null)
     pendingWrite.current = null
@@ -397,7 +409,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
       }
       pendingWrite.current ??= { fingerprint, key: operationKey('save-content') }
       const saved = await writeContent<ContentEntry>(url, target ? 'PUT' : 'POST', pendingWrite.current.key, target?.revision, body)
-      closeEditor()
+      closeEditor(false)
       setResult(notes ? `已保存。 ${noteState(saved)}。` : '已保存。')
       setStatusRefresh(version => version + 1)
       await load()
@@ -475,7 +487,10 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
           {!editor.target?.referenceTitle && <><label className="block text-sm">正文
             <textarea value={editor.draft.body} rows={5} maxLength={!notes && !editor.target?.block ? 40000 : undefined} onChange={event => setDraft({ body: event.currentTarget.value })} className={fieldClass} disabled={busy} />
           </label>
-          <Attachments ids={editor.draft.assetIds} remove={busy ? undefined : id => setDraft({ assetIds: editor.draft.assetIds.filter(value => value !== id) })} />
+          <Attachments ids={editor.draft.assetIds} remove={busy ? undefined : id => {
+            setDraft({ assetIds: editor.draft.assetIds.filter(value => value !== id) })
+            if (sessionStagedIds.current.delete(id)) void discardStagedUpload(id)
+          }} />
           <label className="block text-sm">添加图片或语音
             <input type="file" accept="image/png,image/jpeg,image/webp,image/gif,audio/*" className="mt-1 block max-w-full"
               disabled={busy || Boolean(pendingUpload)} onChange={event => {
@@ -490,7 +505,7 @@ export default function ContentManagementPage({ mode }: { mode: Mode }) {
           </div>}
           <div className="flex gap-2">
             <button type="submit" className={primaryClass} disabled={busy || Boolean(pendingUpload) || (!editor.target?.referenceTitle && !editor.draft.body.trim() && editor.draft.assetIds.length === 0)}>{busy ? '处理中…' : '保存'}</button>
-            <button type="button" disabled={busy} className={actionClass} onClick={closeEditor}>取消</button>
+            <button type="button" disabled={busy} className={actionClass} onClick={() => closeEditor(true)}>取消</button>
           </div>
         </form>}
         {loading && <p role="status" className={mutedClass}>读取中…</p>}

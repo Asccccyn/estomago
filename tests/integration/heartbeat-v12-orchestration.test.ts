@@ -964,7 +964,7 @@ test('R13: a second choice in the same live turn returns first-card metadata wit
 });
 
 for (const hour of ['09:00', '21:00'] as const) {
-  test(`T-A04/T-A05/T-A07: ${hour} 明确晚安后心跳暂停到她明确回来；期间普通聊天照常，模型说话、补话、过午夜都不解除`, async t => {
+  test(`T-A04/T-A05/T-A07: ${hour} 明确晚安后暂停普通保温；次日一次晨间唤醒也不解除休息`, async t => {
     t.mock.timers.enable({ apis: ['Date'], now: Date.parse(`2026-11-24T${hour}+08:00`) });
     const ctx = await fixture(t);
     const activity = new ConversationActivityService(ctx.host.db);
@@ -998,18 +998,32 @@ for (const hour of ['09:00', '21:00'] as const) {
     assert.equal(ctx.wire.length, requests + 4, '只有普通聊天的请求，没有心跳请求');
     assert.equal(activity.resting('primary'), true);
     assert.equal(activity.restState('primary').decided_at, state.decided_at, '重复晚安不改动首次决定');
-    // 过午夜、到 08:00、日期变化都不自动恢复。
-    t.mock.timers.setTime(Date.parse('2026-11-25T08:00:00+08:00'));
-    await wake();
+    // 隔日仅在到达 08:00 时有晨间机会；整个过程继续休息。
+    t.mock.timers.setTime(Date.parse('2026-11-25T07:59:59+08:00'));
+    await ctx.scheduler.tick();
     assert.equal(ctx.wire.length, requests + 4);
+    t.mock.timers.setTime(Date.parse('2026-11-25T08:00:00+08:00'));
+    ctx.replies.push(asMessage('晨间合成回复'));
+    await ctx.scheduler.tick();
+    assert.equal(ctx.wire.length, requests + 5);
+    assert.equal(heartbeats(), runs + 1);
+    const morningInput = text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user'));
+    assert.match(morningInput, /2026-11-25 08:00/);
+    assert.match(morningInput, /晨间活动机会/);
+    t.mock.timers.setTime(Date.parse('2026-11-25T08:50:00+08:00'));
+    await ctx.scheduler.tick();
+    assert.equal(ctx.wire.length, requests + 5, '晨间发言没有滚出另一轮普通保温');
     assert.equal(activity.resting('primary'), true);
+    assert.equal(activity.restState('primary').decided_at, state.decided_at);
     // 明确回来：按既有真实活动重算，只发生一次正常心跳，不补休息期间的机会。
     await ctx.chat('早安，我醒了');
     assert.equal(activity.resting('primary'), false);
     await wake();
-    assert.equal(ctx.wire.length, requests + 6, '一条普通聊天请求加一次心跳请求');
-    assert.equal(heartbeats(), runs + 1);
-    assert.match(text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user')), /^\[心跳唤醒\] 2026-11-25 08:0\d \w{3} UTC\+8\n/);
+    assert.equal(ctx.wire.length, requests + 7, '一条普通聊天请求加一次心跳请求');
+    assert.equal(heartbeats(), runs + 2);
+    const regularInput = text(ctx.wire.at(-1)!.messages.findLast(message => message.role === 'user'));
+    assert.match(regularInput, /^\[心跳唤醒\] 2026-11-25 08:50 \w{3} UTC\+8\n/);
+    assert.doesNotMatch(regularInput, /晨间活动机会/);
   });
 }
 

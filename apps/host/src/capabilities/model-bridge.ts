@@ -34,6 +34,8 @@ export class ModelToolBridge {
   private capabilityRegistry: CapabilityRegistry | null = null;
   /** P02.6：装配根注入已迁能力注册表（显式创建，非自动发现）。 */
   setCapabilityRegistry(r: CapabilityRegistry | null): void { this.capabilityRegistry = r; }
+  private heartbeatCards: Pick<HeartbeatCards, 'deckStatus'> | null = null;
+  setHeartbeatCards(cards: Pick<HeartbeatCards, 'deckStatus'> | null): void { this.heartbeatCards = cards; }
   /** 架构检查/测试注入面：只读当前注册表快照（不授予执行权）。 */
   getCapabilityRegistry(): CapabilityRegistry | null { return this.capabilityRegistry; }
 
@@ -158,6 +160,8 @@ export class ModelToolBridge {
         return spec ? [spec] : [];
       });
       const query = typeof args.query === 'string' ? args.query.trim() : '';
+      const drawLookup = query === HEARTBEAT_DRAW_TOOL
+        ? listing.find(tool => tool.function.name === HEARTBEAT_DRAW_TOOL) : undefined;
       if (set.summaries) {
         let names = listing.map(tool => tool.function.name);
         if (query) {
@@ -166,7 +170,8 @@ export class ModelToolBridge {
           names = [...result.results.map(tool => tool.name), ...(result.more_matches ?? [])];
         }
         const summaries = set.summaries;
-        return { ok: true, output: { tools: names.map(name => ({ name, description: summaries[name] })) } };
+        const result = { ok: true, output: { tools: names.map(name => ({ name, description: summaries[name] })) } };
+        return drawLookup ? this.withDeckNumbers(result, ctx, drawLookup) : result;
       }
       if (query) {
         const result = searchToolCatalog(listing, query, set.groups);
@@ -179,7 +184,8 @@ export class ModelToolBridge {
             ({name, description: toolCatalogIntent(name) ?? name})), more_matches: result.more_matches,
             hint: '用 tool_define 选择需要的工具名。' } };
         }
-        return { ok: true, output: result };
+        const reply = { ok: true, output: result };
+        return drawLookup ? this.withDeckNumbers(reply, ctx, drawLookup) : reply;
       }
       return { ok: true, output: { tools: listing.map(({ function: definition }) => ({
         name: definition.name,
@@ -265,7 +271,7 @@ export class ModelToolBridge {
    *  every number is open; the first draw fixes the deck. */
   private withDeckNumbers(result: ToolExecResult, ctx: ToolExecContext, spec: HostToolSpec): ToolExecResult {
     if (spec.function.name !== HEARTBEAT_DRAW_TOOL || !result.ok || !(canDrawHeartbeat(this.db, ctx) || canStartChatDraw(this.db, ctx))) return result;
-    const deck = new HeartbeatCards(this.db).deckStatus(ctx.roomId, heartbeatBusinessDate());
+    const deck = (this.heartbeatCards ?? new HeartbeatCards(this.db)).deckStatus(ctx.roomId, heartbeatBusinessDate());
     // Only for windows whose frozen definition predates drawing while chatting.
     // This note leaves with the last such window.
     const frozenBeforeChatDraws = !spec.function.description.includes('平时聊天');

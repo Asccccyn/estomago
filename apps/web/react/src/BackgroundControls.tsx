@@ -201,7 +201,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
               </label>
               {kw.resting === true && (
                 <div className="flex items-center justify-between rounded-2xl bg-[#f3f1ea] px-3 py-2 text-[12.5px]" role="status">
-                  <span>心跳正在休息，不唤醒char</span>
+                  <span>普通保温休息中</span>
                   <button className="text-[#a4552f]" disabled={busy} onClick={() => void resumeKeepwarm()}>恢复心跳</button>
                 </div>
               )}
@@ -226,7 +226,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
             {settings.current_window?.wake_manage_available === true && <p className="mt-2 text-[12px] text-[#8a8780]">当前聊天窗口可使用自主预约工具。</p>}
             {openRun && (
               <div className="mt-3 flex items-center justify-between rounded-2xl bg-[#f3f1ea] px-3 py-2 text-[12.5px]">
-                <span>当前运行：{openRun.kind === 'heartbeat_memory' ? '午夜记忆日选' : openRun.kind === 'keepwarm' ? '心跳保温' : '自主唤醒'} · {String(openRun.state)}</span>
+                <span>当前运行：{openRun.keepwarm_source === 'morning_wake' ? '晨间唤醒' : openRun.kind === 'heartbeat_memory' ? '午夜记忆日选' : openRun.kind === 'keepwarm' ? '心跳保温' : '自主唤醒'} · {String(openRun.state)}</span>
                 <button className="text-[#a4552f]" disabled={busy} onClick={() => void stopRun(openRun.id)}>停止</button>
               </div>
             )}
@@ -270,7 +270,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
               <div className="space-y-1">
                 {(runs ?? []).map((r) => (
                   <p key={String(r.id)} className="flex items-center justify-between text-[12px] text-[#8a8780]">
-                    <span>{r.trigger_origin === 'heartbeat_memory' ? '午夜记忆日选' : r.trigger_origin === 'self_wake' ? (r.created_by === 'jiaming' ? '自主唤醒' : '历史代设唤醒') : r.trigger_origin === 'keepwarm' ? '心跳' : r.trigger_origin === 'free_activity' ? '自由活动' : '提醒'} · {String(r.state)}{r.retention === 'ephemeral_ack' ? '（纯维护回执）' : ''}</span>
+                    <span>{r.keepwarm_source === 'morning_wake' ? '晨间唤醒' : r.trigger_origin === 'heartbeat_memory' ? '午夜记忆日选' : r.trigger_origin === 'self_wake' ? (r.created_by === 'jiaming' ? '自主唤醒' : '历史代设唤醒') : r.trigger_origin === 'keepwarm' ? '心跳' : r.trigger_origin === 'free_activity' ? '自由活动' : '提醒'} · {String(r.state)}{r.retention === 'ephemeral_ack' ? '（纯维护回执）' : ''}</span>
                     <span>{fmtTime(r.first_dispatch_started_at ?? r.created_at)}{r.known_cost_micro_usd ? ` · $${(r.known_cost_micro_usd / 1e6).toFixed(4)}` : ''}{Number(r.unknown_cost_count) > 0 ? ` · ${r.unknown_cost_count} 笔待核实` : ''}</span>
                   </p>
                 ))}

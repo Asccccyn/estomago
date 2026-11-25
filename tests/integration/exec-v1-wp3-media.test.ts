@@ -252,55 +252,85 @@ test('MEDIA-M02（包1 2026-11-15）：work=SVG/HTML 作品引用可发送——
   db.close();
 });
 
-test('HTTP：聊天附件暂存——选中不进 M，发送时先落正再发布，放弃即删', async () => {
+test('C3 HTTP：聊天附件放弃不进 M，部分落正保留原操作重试，共享正本保持有效', async () => {
   const media = host.heartbeat.media;
-  const uploads: string[] = [];
-  let fail = true;
+  const attempts: string[] = [];
+  const masterObjects = new Set<string>();
+  const pngHash = sha256Hex(PNG);
+  const jpegHash = sha256Hex(JPEG);
+  let unavailableHash: string | null = jpegHash;
   const store = {
     uploadBytes: async (bytes: Uint8Array) => {
-      if (fail) throw new MariposaMediaStoreError('UNAVAILABLE', 'M 合成不可达');
       const content_hash = sha256Hex(Buffer.from(bytes));
-      uploads.push(content_hash);
-      return { content_hash };
+      attempts.push(content_hash);
+      if (unavailableHash === content_hash) throw new MariposaMediaStoreError('UNAVAILABLE', 'M 合成不可达');
+      const deduplicated = masterObjects.has(content_hash);
+      masterObjects.add(content_hash);
+      return { content_hash, deduplicated };
     },
   } as unknown as MariposaMediaStore;
   const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
   storeSlot.mStore = store;
   const pick = (key: string, bytes: Buffer) => fetch(`${base}/api/v1/assets?purpose=chat_image&staged=1`, { method: 'POST',
     headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': key, Origin: base }), body: new Uint8Array(bytes) });
-  const send = (assetId: string) => fetch(`${base}/api/v1/conversations/primary/messages`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base }),
-    body: JSON.stringify({ content: '看这张图', client_message_id: 'staged-send-1', attachments: [{ asset_id: assetId, presentation: 'image' }] }) });
+  const send = (clientMessageId: string, ...assetIds: string[]) => fetch(`${base}/api/v1/conversations/primary/messages`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base }),
+    body: JSON.stringify({ content: '看这两张图', client_message_id: clientMessageId, attachments: assetIds.map(asset_id => ({ asset_id, presentation: 'image' })) }) });
+  const selected = async (key: string, bytes: Buffer) => {
+    const response = await pick(key, bytes);
+    assert.equal(response.status, 201);
+    const receipt = await response.json() as { asset_id: string; m_sync_state: string };
+    assert.equal(receipt.m_sync_state, 'staged');
+    return receipt.asset_id;
+  };
+  const messageCount = (key: string) => host.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_message_id = ?').get(key)?.n;
   try {
-    // 1. 选中即上传：只存本地，M 什么都没收到；浏览器同键重试也不送。
-    const first = await pick('staged-pick-1', PNG);
-    assert.equal(first.status, 201);
-    const staged = (await first.json()) as { asset_id: string; m_sync_state: string };
-    assert.equal(staged.m_sync_state, 'staged');
-    await (await pick('staged-pick-1', PNG)).json();
-    assert.deepEqual(uploads, []);
-    assert.equal(media.getAsset(staged.asset_id).m_sync_state, 'staged');
-    // 2. M 拿不下：发送被拒，消息没有发布，附件仍是暂存。
-    const refused = await send(staged.asset_id);
+    const first = await selected('staged-pick-1', PNG);
+    assert.equal(await selected('staged-pick-1', PNG), first, '选中文件同键重试仍为原暂存资产');
+    const second = await selected('staged-pick-2', JPEG);
+    assert.deepEqual(attempts, []);
+    // 记录 #10 尚存的边界：第一张在 M 落正，第二张失败，E 没有正式消息。
+    const refused = await send('staged-send-1', first, second);
     assert.equal(refused.status, 503);
     assert.equal(((await refused.json()) as { error: { code: string } }).error.code, 'asset_master_commit_failed');
-    assert.equal((host.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_message_id = ?').get('staged-send-1') as { n: number }).n, 0);
-    // 3. M 恢复：同一次发送先落正再发布。
-    fail = false;
-    const sent = await send(staged.asset_id);
+    assert.equal(messageCount('staged-send-1'), 0);
+    assert.equal(media.getAsset(first).m_sync_state, 'synced');
+    assert.equal(media.getAsset(second).m_sync_state, 'staged');
+    assert.deepEqual([...masterObjects], [pngHash]);
+    assert.equal(media.isAssetReferenced(first).referenced, false);
+    const discardLanded = await fetch(`${base}/api/v1/assets/${first}?staged=1`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    assert.equal(discardLanded.status, 409, '编辑器的草稿清理保留已落正但可重试的资产身份');
+    assert.equal(media.getAsset(first).state, 'available');
+    unavailableHash = null;
+    const sent = await send('staged-send-1', first, second);
     assert.ok(sent.status === 200 || sent.status === 201, `send=${sent.status}`);
-    assert.deepEqual(uploads, [sha256Hex(PNG)]);
-    assert.equal(media.getAsset(staged.asset_id).m_sync_state, 'synced');
-    assert.equal((host.db.prepare('SELECT COUNT(*) AS n FROM message_attachments WHERE asset_id = ?').get(staged.asset_id) as { n: number }).n, 1);
-    // 4. 已发送的附件不再是草稿，删除被拒。
-    const kept = await fetch(`${base}/api/v1/assets/${staged.asset_id}`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    const replay = await send('staged-send-1', first, second);
+    assert.equal(replay.status, 200);
+    assert.deepEqual(attempts, [pngHash, jpegHash, jpegHash], '只重新上传未落正项');
+    assert.equal(messageCount('staged-send-1'), 1);
+    assert.equal(media.getAsset(second).m_sync_state, 'synced');
+    for (const id of [first, second]) assert.equal(media.isAssetReferenced(id).by_message_revisions, 1);
+    const kept = await fetch(`${base}/api/v1/assets/${first}`, { method: 'DELETE', headers: auth({ Origin: base }) });
     assert.equal(kept.status, 409);
-    // 5. 选了没发的那份：放弃即删；M 里从来没有它。
-    const second = (await (await pick('staged-pick-2', JPEG)).json()) as { asset_id: string; m_sync_state: string };
-    assert.equal(second.m_sync_state, 'staged');
-    const discarded = await fetch(`${base}/api/v1/assets/${second.asset_id}`, { method: 'DELETE', headers: auth({ Origin: base }) });
+
+    const shared = await selected('staged-pick-3', PNG);
+    assert.notEqual(shared, first, '同哈希为不同 E 资产');
+    const uniqueBytes = Buffer.concat([JPEG, Buffer.from('独有字节')]);
+    unavailableHash = sha256Hex(uniqueBytes);
+    const unique = await selected('staged-pick-4', uniqueBytes);
+    const secondBatch = await send('staged-send-2', shared, unique);
+    assert.equal(secondBatch.status, 503);
+    assert.equal(messageCount('staged-send-2'), 0);
+    assert.equal(media.isAssetReferenced(first).by_message_revisions, 1);
+    assert.equal(media.getAsset(unique).m_sync_state, 'staged');
+    const discarded = await fetch(`${base}/api/v1/assets/${unique}`, { method: 'DELETE', headers: auth({ Origin: base }) });
     assert.equal(discarded.status, 200);
     assert.equal(((await discarded.json()) as { state: string }).state, 'discarded');
-    assert.equal((await fetch(`${base}/api/v1/assets/${second.asset_id}`, { headers: auth() })).status, 404);
-    assert.deepEqual(uploads, [sha256Hex(PNG)]);
+    assert.equal((await fetch(`${base}/api/v1/assets/${unique}`, { headers: auth() })).status, 404);
+    assert.deepEqual([...masterObjects], [pngHash, jpegHash], '相同字节复用原正式对象');
+
+    const abandoned = await selected('staged-abandoned', uniqueBytes);
+    const beforeDiscard = attempts.length;
+    assert.equal((await fetch(`${base}/api/v1/assets/${abandoned}?staged=1`, { method: 'DELETE', headers: auth({ Origin: base }) })).status, 200);
+    assert.equal(attempts.length, beforeDiscard, '未点击发送的草稿完全不进 M');
   } finally { storeSlot.mStore = null; }
 });

@@ -64,11 +64,12 @@ async function runImageGenerate(deps: ImageGenModuleDeps, input: { prompt: strin
     attemptId: ctx.attemptId,
     backgroundRunId: ctx.backgroundRunId,
     signal: ctx.signal,
+    checkChatPublishAllowed: ctx.checkChatPublishAllowed,
   });
   const heartbeatReceipt = ctx.backgroundRunId ? deps.imagegen.heartbeatReceipt(opKey, r) : undefined;
   if (!r.ok) return { ok: false, heartbeatReceipt, output: {
     error_code: r.code, detail: r.detail, ...(r.retryable ? { retryable: true } : {}),
-    ...(r.saved_asset_id ? { saved: true, asset_id: r.saved_asset_id, creation_id: r.saved_creation_id ?? null } : {}),
+    ...(r.saved_asset_id ? { saved: true, published: false, asset_id: r.saved_asset_id, creation_id: r.saved_creation_id ?? null } : {}),
     ...(r.saved_album_entry_id ? { album_entry_id: r.saved_album_entry_id } : {}),
   } };
   return { ok: true, heartbeatReceipt, output: {

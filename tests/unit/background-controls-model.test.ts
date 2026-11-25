@@ -30,3 +30,17 @@ test('T-A02：心跳状态文案只转述服务端资格，开关关闭、休息
   assert.equal(keepwarmStatusText({ blocked_reason: null, scheduled: false }, window, format), '暂无排程（还没有真实聊天）');
   assert.equal(keepwarmStatusText(undefined, undefined, format), '暂无排程（还没有真实聊天）');
 });
+
+test('普通保温排在前面时仍显示服务端的晨间目标和顺延依据', () => {
+  assert.equal(keepwarmStatusText({
+    scheduled: true,
+    next_keepwarm_at: '2026-11-25T00:15:00.000Z',
+    next_keepwarm_basis: 'maintenance',
+    morning_wake: {
+      scheduled: true,
+      target_at: '2026-11-25T00:30:00.000Z',
+      basis: 'morning_postponed',
+      postponed_by_at: '2026-11-24T23:40:00.000Z',
+    },
+  }, undefined, (at) => backgroundInputTime(at).slice(-5)), '下次 08:15（按上次维护） · 晨间唤醒预计 08:30（按 07:40 聊天顺延）');
+});

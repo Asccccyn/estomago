@@ -33,9 +33,10 @@ test('T-A05：休息意图只认她本人明确的表达——引用、提问、
   const rest = ['晚安，我睡了', '我们睡吧', '晚安', '晚安！', '晚安，爱你', '我先睡了，明天再聊', '我睡了，你也早点休息', '跟你说晚安',
     '那我也睡了', '我睡觉了', '去睡觉啦', '我先去休息了', '我好困，先睡了', '困死了，睡了', '晚安，明天见', '晚安，梦里见', '晚安，不要熬夜',
     '晚安，醒了叫我', '晚安不要熬夜', 'char晚安', '今天发生了很多很多事，工作也很累，就不一一说了，总之先这样吧，我先睡了', "I'm going to bed, good night", '晚安，等会再聊'];
-  const resume = ['我醒了', '早安，继续聊', '我回来了，我们接着聊', '早安', '早上好', '我起床了', '起来了', '我回来了', '继续聊吧',
+  const resume = ['我醒了', '我已经醒了', '我刚醒了', '早安，继续聊', '我回来了，我们接着聊', '早安', '早上好', '我起床了', '起来了', '我回来了', '继续聊吧',
     '今天睡得特别好，一起床就看到阳光，早安', '早安，今天几点出门？', '我醒了，你继续睡'];
   const neither = ['昨天你说了晚安', '晚安这个功能怎么改', '我还不睡，先聊一会', '为什么说晚安还会叫醒', '“晚安”', '“晚安”是什么意思', '你先睡吧，我再玩一会',
+    '我不想说晚安', '宝宝睡了，我们轻声聊', '我家宝宝睡了', '我们睡吧？', '我们睡吧?',
     '睡了吗', '今晚早点睡', '等会再睡', '我午睡了', '我今天下午睡了午觉，现在精神很好', '早点睡哦', '我还不困，再陪我聊会儿', '不要说晚安', '别跟我说晚安了',
     '你醒了吗', '醒了叫我', '我还没醒', '明天起床叫我', '半夜又醒了', '他醒了', '昨天你说早安',
     '爱你', '再抱一下', '🌙', '', '   ', '哈哈哈', '今天天气真好'];
@@ -127,28 +128,39 @@ test('T-A04：休息期间调度 tick 不领取心跳、不保留到期目标；
   assert.deepEqual(executed, ['keepwarm'], '未休息时照常领取');
   const before = heartbeatRuns();
 
-  // 21:40 她明确说睡：之后再过多少个 tick、过午夜、到 08:00，都不会自己恢复。
+  // 21:40 她明确说睡：夜间与 08:00 前零派发；次日 08:00 给一次晨间机会且保留休息状态，之后不再滚出普通心跳。
   assert.equal(activity.noteRestDecision('primary', { kind: 'rest', source: 'owner_message', messageId: 'm-goodnight', atIso: iso }), true);
-  for (const [label, time] of [['21:45', '2026-10-23T21:45:00+08:00'], ['23:30', '2026-10-23T23:30:00+08:00'], ['00:10', '2026-10-24T00:10:00+08:00'], ['08:00', '2026-10-24T08:00:00+08:00']] as const) {
+  for (const [label, time, expectedDue] of [
+    ['21:45', '2026-10-23T21:45:00+08:00', null],
+    ['23:30', '2026-10-23T23:30:00+08:00', null],
+    ['00:10', '2026-10-24T00:10:00+08:00', null],
+    ['07:59:59', '2026-10-24T07:59:59+08:00', null],
+  ] as const) {
     now = Date.parse(time);
-    // 即使领取前一刻还留着一个到期值，领取时也按当下状态拦住。
     db.prepare("UPDATE background_tasks SET next_due_at = ? WHERE kind = 'keepwarm'").run(new Date(now).toISOString());
     await scheduler.tick();
     assert.equal(activity.resting('primary'), true, label);
     assert.equal(heartbeatRuns(), before, `${label} 没有新的心跳执行`);
-    assert.equal(shownDue(), null, `${label} 页面读不到可执行时间`);
+    assert.equal(shownDue(), expectedDue, `${label} 到期目标`);
   }
+  now = Date.parse('2026-10-24T08:00:00+08:00');
+  await scheduler.tick();
+  assert.equal(activity.resting('primary'), true, '08:00 晨间唤醒不清除休息状态');
+  assert.equal(heartbeatRuns(), before + 1, '08:00 执行唯一一次晨间唤醒');
+  const morningRun = db.prepare("SELECT occurrence_key FROM background_runs WHERE kind='keepwarm' ORDER BY rowid DESC LIMIT 1").get() as { occurrence_key: string };
+  assert.equal(morningRun.occurrence_key, 'morning-wake:primary:2026-10-24');
+  assert.equal(shownDue(), null, '晨间机会消费后保持休息无后续排程');
 
-  // char说话不会解除；显式自主预约在同一时段照常执行。
+  // char说话不会解除；显式自主预约在同一时段照常执行，且 08:05 / 08:50 不会再起心跳。
   activity.noteRealPublication('primary', 'assistant-says-goodnight', 1, iso);
   assert.equal(activity.resting('primary'), true);
   now = Date.parse('2026-10-24T08:05:00+08:00');
   db.prepare("UPDATE background_tasks SET next_due_at = ? WHERE id = 'auto'").run(new Date(now).toISOString());
   await scheduler.tick();
-  assert.deepEqual(executed, ['keepwarm', 'autonomous']);
-  assert.equal(heartbeatRuns(), before);
+  assert.deepEqual(executed, ['keepwarm', 'keepwarm', 'autonomous']);
+  assert.equal(heartbeatRuns(), before + 1);
 
-  // 资格门在读取牌组之前就结束，所以抽卡轮和十张耗尽后的“回 1”走的是同一个门。
+  // 资格门在读取牌组之前就结束，所以普通抽卡轮和十张耗尽后的“回 1”走的是同一个门。
   activity.noteRealPublication('primary', 'm2', 1, new Date(now - 3_000_001).toISOString());
   assert.deepEqual(keepwarmDispatchGate({ db, activity, conversationId: 'primary', windowId: 'w-rest', inputActivityRevision: null, nowMs: now }), {
     decision: 'noop', resultCode: 'KEEPWARM_RESTING', detail: '乔乔已休息：等她明确回来或手动恢复' });
@@ -156,7 +168,7 @@ test('T-A04：休息期间调度 tick 不领取心跳、不保留到期目标；
   // 她明确回来：按原真实活动和缓存资格重新计算，只领取一次，不补休息期间的机会。
   assert.equal(activity.noteRestDecision('primary', { kind: 'resume', source: 'owner_message', messageId: 'm-morning', atIso: iso }), true);
   await scheduler.tick();
-  assert.deepEqual(executed, ['keepwarm', 'autonomous', 'keepwarm']);
+  assert.deepEqual(executed, ['keepwarm', 'keepwarm', 'autonomous', 'keepwarm']);
   assert.equal(activity.resting('primary'), false);
 });
 

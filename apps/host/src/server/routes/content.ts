@@ -1,3 +1,4 @@
+import { ContentOperationCoordinator } from '../../integrations/content/coordinator.ts';
 // server/routes/content.ts（P07.2 第二批）：content 薄代理路由组。
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序（外层 est 认证已过）/响应与错误码逐字保持。
 // P1（四仓合并审计 20261106，F06/F07）：写路径经 ContentOperationCoordinator（同操作回查→
@@ -61,9 +62,7 @@ export async function handleContentProxy(req: IncomingMessage, res: ServerRespon
       }
     } catch { /* 已删自报值：如实不带 */ }
   }
-  // Attachments picked in a post draft are staged like chat drafts: they enter the master store
-  // only when the post or note that uses them is saved.
-  if (d.media && method !== 'DELETE') {
+  if (d.media && method !== 'DELETE' && fwdBody && !(d.contentOps instanceof ContentOperationCoordinator)) {
     const referenced = [fwdBody.asset_id, fwdBody.work_asset_id, fwdBody.icon_asset_id,
       ...(Array.isArray(fwdBody.asset_ids) ? fwdBody.asset_ids : [])].filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (referenced.length > 0) {

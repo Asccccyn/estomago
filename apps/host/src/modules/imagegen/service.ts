@@ -31,6 +31,7 @@ type ImageGenOperation = {
   frameCount?: number; frameDurationMs?: number; deliver?: 'send' | 'save_only';
   roomId?: string | null; turnId?: string | null; windowId?: string; attemptId?: string | null;
   backgroundRunId?: string | null; signal?: AbortSignal;
+  checkChatPublishAllowed?: () => { allowed: true } | { allowed: false; code: string; detail: string };
 };
 
 type ImageGenOperationRow = {
@@ -318,6 +319,10 @@ export class ImageGenService {
       ok: false, code, detail, retryable, saved_asset_id: saved.asset_id, saved_creation_id: saved.creation_id,
       ...(saved.album_entry_id ? { saved_album_entry_id: saved.album_entry_id } : {}),
     });
+    const liveGate = o.checkChatPublishAllowed?.();
+    if (liveGate && !liveGate.allowed) {
+      return fail(liveGate.code, `${liveGate.detail}。作品已保存，图片未发出。本人明确要求补发时，沿用原操作键只补发布。`, true);
+    }
     if (o.signal?.aborted || lifetime?.expired() || (o.backgroundRunId && this.deps.backgroundRunRemainingMs?.(o.backgroundRunId) === 0)) {
       return fail('IMAGEGEN_PUBLISH_CANCELLED', '作品已保存，本轮已停止或超过期限，图片未发出。本人明确要求补发时，沿用原操作键只补发布。', true);
     }

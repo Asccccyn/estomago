@@ -23,7 +23,7 @@ export function resolveToolGroups(db: Db, specs: readonly HostToolSpec[], declar
 
 export const RESIDENT_TOOL_HEADING = '常驻工具';
 
-const RESIDENT_REMINDER = '你想记下一件事，可以自己存，发现记错了也可以改。想起旧事，可以自己去找，想往下看也可以点开读。想画图、发语音、打电话、给自己约个时间、写一颗星、问宿主用户要一颗星、翻相册或收藏、发朋友圈，下面的工具就在手边。';
+const RESIDENT_REMINDER = '你想记下一件事，可以自己存，发现记错了也可以改。想起旧事，可以自己去找，想往下看也可以点开读。想画图、发语音、打电话、给自己约个时间、写一颗星、问宿主用户要一颗星、翻相册或收藏、发朋友圈、抽一张今天的牌，下面的工具就在手边。';
 const MAP_REMINDER = '想做别的事，比如读聊天记录、改计划或找旧存档，就到工具地图里找。用 tool_catalog 的 query 说你想做什么。搜不到时，可以省略 query 看当前目录，再用准确工具名查询。';
 
 export function renderToolContext(specs: readonly HostToolSpec[], groups: Record<string, ToolGroup>, mode: 'deferred' | 'direct' = 'deferred'): string | null {

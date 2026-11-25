@@ -90,6 +90,14 @@ export class VoiceSendService {
 
   /** 已有音频时，只补发布。失败回执使用已冻结窗口也支持的附件工具。 */
   private publishSavedVoice(assetId: string, clientMessageId: string, text: string, ctx: ToolExecContext, source: 'generated' | 'reused' | 'recovered'): CapabilityOutcome<Record<string, unknown>> {
+    const liveGate = ctx.checkChatPublishAllowed?.();
+    if (liveGate && !liveGate.allowed) {
+      return { ok: false, error: {
+        error_code: liveGate.code,
+        saved: true, published: false, asset_id: assetId,
+        detail: `${liveGate.detail}。音频已保存，消息未发布。她要求只补发时，用 chat_send_attachment，传本回执的 asset_id、presentation=voice，content 沿用本次的 text。`,
+      } };
+    }
     if (!ctx.signal?.aborted) {
       try {
         this.deps.media.validateForSend([{ asset_id: assetId, presentation: 'voice' }]);
@@ -118,7 +126,7 @@ export class VoiceSendService {
     }
     return { ok: false, error: {
       error_code: ctx.signal?.aborted ? 'CANCELLED' : 'VOICE_PUBLISH_FAILED',
-      saved: true, asset_id: assetId,
+      saved: true, published: false, asset_id: assetId,
       detail: '音频已保存，消息未发布。她要求只补发时，用 chat_send_attachment，传本回执的 asset_id、presentation=voice，content 沿用本次的 text。她明确要求重录时，再调用 chat_send_voice。',
     } };
   }

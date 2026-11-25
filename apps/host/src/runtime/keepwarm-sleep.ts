@@ -3,6 +3,7 @@
 import type { Config } from '../config/schema.ts';
 
 export type KeepwarmSleepWindow = Config['background']['keepwarm']['sleep_window'];
+export type SleepWindowConfig = KeepwarmSleepWindow;
 export type KeepwarmSleepState = {
   blocked: boolean;
   code: 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | null;

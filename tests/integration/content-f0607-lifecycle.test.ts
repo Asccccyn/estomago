@@ -14,7 +14,12 @@ import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { buildPaths } from '../../apps/host/src/config/paths.ts';
 import { ContentServer, sha256ish } from '../../apps/content/src/service.ts';
 import { ContentOperationCoordinator } from '../../apps/host/src/integrations/content/coordinator.ts';
+import { contentForward } from '../../apps/host/src/integrations/content/client.ts';
+import type { MariposaMediaStore } from '../../apps/host/src/integrations/mariposa/media-store.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { sha256Hex } from '../../apps/host/src/util/id.ts';
+import { albumUploadReceipt, readAlbumUploadReceipt, reselectAlbumUpload, startAlbumUpload, uploadAlbumEntry,
+  type AlbumUpload } from '../../apps/web/react/src/album-upload.ts';
 
 const root = tempRoot('f0607-p1-');
 writeApprovedIdentity(root);
@@ -58,6 +63,171 @@ before(async () => {
   token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
 });
 after(async () => { await host.stop(); await contentServer.stop(); });
+
+test('C1 HTTP：正式存档保存、详情、固定修订原文与撤销', async t => {
+  // A published user message may remain queued while the room is busy. Keep this turn queued
+  // until the real edit endpoint exercises the supported pre-dispatch edit window.
+  const enqueue = host.supervisor.enqueue;
+  const queued: string[] = [];
+  host.supervisor.enqueue = id => { queued.push(id); };
+  t.after(async () => {
+    host.supervisor.enqueue = enqueue;
+    for (const id of queued) host.supervisor.enqueue(id);
+    await host.supervisor.waitIdle();
+  });
+  const chat = '/api/v1/conversations/primary/messages';
+  const original = '存档钉住的第一版';
+  const message = await contentWrite('POST', chat, { content: original, client_message_id: 'archive-c1-chat' }, {});
+  assert.equal(message.status, 201);
+  const messageId = message.body.message.id;
+  const now = new Date().toISOString();
+  // Synthetic M source-sync receipt at the normal archive admission boundary.
+  host.db.prepare(`INSERT INTO source_sync_receipts
+    (id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at)
+    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`)
+    .run('c1-receipt', 'c1-ingest', messageId, 'c1-source-room', 'c1-source-message', sha256Hex(original), now, now);
+  const created = await contentWrite('POST', '/api/v1/archives', { kind: 'sweet', message_ids: [messageId] }, { 'Idempotency-Key': 'c1-create' });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const edited = await contentWrite('PUT', `${chat}/${messageId}`, { content: '后来改过的第二版' }, { 'If-Match': '"1"' });
+  assert.equal(edited.status, 200, JSON.stringify(edited.body));
+  const archive = `/api/v1/archives/${created.body.archive_id}`;
+  const detail = await fetch(base + archive, { headers: auth() });
+  assert.equal(detail.status, 200);
+  assert.equal((await detail.json() as { messages: Array<{ revision: number }> }).messages[0]?.revision, 1);
+  const expanded = await fetch(base + archive + '/messages', { headers: auth() });
+  assert.equal(expanded.status, 200);
+  const { items } = await expanded.json() as { items: Array<{ message_id: string; revision: number; text: string }> };
+  assert.deepEqual(items.map(({ message_id, revision, text }) => [message_id, revision, text]), [[messageId, 1, original]]);
+  const removed = await contentWrite('DELETE', archive, undefined, { 'If-Match': '"1"' });
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  assert.equal((await fetch(base + archive + '/messages', { headers: auth() })).status, 404);
+});
+
+test('C2 HTTP：上传和归类 201 正文挂住，刷新重选和续办只产生一份正本及一条关系', async () => {
+  const media = (host as unknown as { mediaServiceRef: MediaService }).mediaServiceRef;
+  const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
+  const previousStore = storeSlot.mStore;
+  const bytes = Buffer.concat([PNG, Buffer.from('c2-unique')]);
+  const uploadedHashes: string[] = [];
+  storeSlot.mStore = { async uploadBytes(bytes: Uint8Array) {
+    const content_hash = sha256Hex(bytes);
+    uploadedHashes.push(content_hash);
+    return { content_hash };
+  } } as unknown as MariposaMediaStore;
+  const newFile = () => new File([new Uint8Array(bytes)], 'c2.png', { type: 'image/png' });
+  let attempt = startAlbumUpload({ key: 'c2-upload', album: 'important_photos' }, newFile());
+  const record = (value: AlbumUpload) => { attempt = value; };
+  const restore = () => readAlbumUploadReceipt(albumUploadReceipt(attempt))!;
+  const uploadKeys: Array<string | null> = [];
+  const entryKeys: Array<string | null> = [];
+  const lostStatuses: number[] = [];
+  const request: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const headers = new Headers(init?.headers);
+    const key = headers.get('Idempotency-Key');
+    const keys = url.startsWith('/api/v1/assets?') ? uploadKeys : url.endsWith('/entries') ? entryKeys : null;
+    keys?.push(key);
+    const response = await fetch(base + url, { ...init, headers: auth({ ...Object.fromEntries(headers), Origin: base }) });
+    if (keys?.length !== 1) return response;
+    lostStatuses.push(response.status);
+    await response.arrayBuffer();
+    return new Response(new ReadableStream<Uint8Array>({}), { status: response.status, headers: response.headers });
+  };
+  try {
+    await assert.rejects(uploadAlbumEntry(attempt, record, request, 400), /上传超时.*结果待确认/);
+    assert.equal(restore().assetId, undefined);
+    attempt = reselectAlbumUpload(restore(), newFile());
+    await assert.rejects(uploadAlbumEntry(attempt, record, request, 400), /归类.*超时.*结果待确认/);
+    const saved = restore();
+    assert.ok(saved.assetId);
+    assert.equal(saved.file, undefined);
+    await uploadAlbumEntry(saved, record, request, 400);
+    assert.deepEqual(lostStatuses, [201, 201]);
+    assert.deepEqual(uploadKeys, ['c2-upload', 'c2-upload']);
+    assert.deepEqual(entryKeys, ['c2-upload:entry', 'c2-upload:entry']);
+    assert.deepEqual(uploadedHashes, [sha256Hex(bytes)]);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM media_assets WHERE content_sha256=?').get(sha256Hex(bytes))?.n, 1);
+    assert.equal(contentServer.db.prepare('SELECT COUNT(*) AS n FROM album_entries WHERE asset_id=? AND deleted_at IS NULL').get(saved.assetId)?.n, 1);
+  } finally { storeSlot.mStore = previousStore; }
+});
+
+test('C3 HTTP：普通帖子、预留留言与映射源编辑共用暂存落正及旧回执边界', async () => {
+  const media = (host as unknown as { mediaServiceRef: MediaService }).mediaServiceRef;
+  const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
+  const previousStore = storeSlot.mStore;
+  let blockedHash: string | null = null;
+  const masterObjects = new Set<string>();
+  let masterWrites = 0;
+  storeSlot.mStore = {
+    async uploadBytes(bytes: Uint8Array) {
+      const content_hash = sha256Hex(Buffer.from(bytes));
+      masterWrites++;
+      if (blockedHash === content_hash) throw Error('synthetic master failure');
+      const deduplicated = masterObjects.has(content_hash);
+      masterObjects.add(content_hash);
+      return { content_hash, deduplicated };
+    },
+  } as unknown as MariposaMediaStore;
+  const stage = async (key: string) => {
+    const bytes = Buffer.concat([PNG, Buffer.from(key)]);
+    const response = await fetch(base + '/api/v1/assets?purpose=chat_image&staged=1', { method: 'POST',
+      headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': key, Origin: base }), body: new Uint8Array(bytes) });
+    assert.equal(response.status, 201);
+    const asset = await response.json() as { asset_id: string; m_sync_state: string };
+    assert.equal(asset.m_sync_state, 'staged');
+    return { id: asset.asset_id, hash: sha256Hex(bytes) };
+  };
+  try {
+    const posts = '/api/v1/content/posts';
+    const postImage = await stage('c3-post-image');
+    const noteImage = await stage('c3-note-image');
+    const replacement = await stage('c3-edit-image');
+    assert.equal(masterWrites, 0);
+    const post = await contentWrite('POST', posts, { body: '映射来源原帖', asset_ids: [postImage.id] }, { 'Idempotency-Key': 'c3-post-save' });
+    assert.equal(post.status, 201, JSON.stringify(post.body));
+    const note = await contentWrite('POST', '/api/v1/content/future-notes', { body: '预留留言', asset_ids: [noteImage.id] }, { 'Idempotency-Key': 'c3-note-save' });
+    assert.equal(note.status, 201, JSON.stringify(note.body));
+    assert.deepEqual(post.body.asset_ids, [postImage.id]);
+    assert.deepEqual(note.body.asset_ids, [noteImage.id]);
+    assert.deepEqual([...masterObjects], [postImage.hash, noteImage.hash]);
+
+    // Real Content projection ingress, supplying a frozen source card for the host HTTP edit.
+    const projected = await contentForward({ baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token }, {
+      method: 'PUT', actor: 'qiaosheng', path: '/internal/heartbeat-projections/c3-staged',
+      body: { mode: 'draw', conversationId: 'primary', businessDate: '2026-11-24', version: 1, state: 'drawn_no_comment', messages: [],
+        card: { number: 1, source: { kind: 'moments', namespace: 'content', id: post.body.id,
+          revision: 1, identity: `content:moments:${post.body.id}`, permissionScope: 'primary' } } },
+    });
+    assert.equal(projected.status, 200, JSON.stringify(projected.body));
+    const mappingId = (projected.body as { id: string }).id;
+    const source = `${posts}/${post.body.id}`;
+    const edit = () => contentWrite('PUT', `/api/v1/content/moment-references/${mappingId}/blocks/card`,
+      { body: '从映射编辑原帖', asset_ids: [postImage.id, replacement.id], expected_source_revision: 1 },
+      { 'Idempotency-Key': 'c3-map-edit', 'If-Match': '"1"' });
+    blockedHash = replacement.hash;
+    const failed = await edit();
+    assert.equal(failed.status, 503, JSON.stringify(failed.body));
+    assert.equal(failed.body.error.code, 'asset_master_commit_failed');
+    assert.equal(media.getAsset(replacement.id).m_sync_state, 'staged');
+    assert.equal((await (await fetch(base + source, { headers: auth() })).json() as { revision: number }).revision, 1);
+    assert.deepEqual([...masterObjects], [postImage.hash, noteImage.hash]);
+    blockedHash = null;
+
+    const saved = await edit();
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    const current = await (await fetch(base + source, { headers: auth() })).json() as { revision: number; asset_ids: string[] };
+    assert.deepEqual([current.revision, current.asset_ids], [2, [postImage.id, replacement.id]]);
+    for (const asset of [postImage, noteImage, replacement]) {
+      assert.equal(media.getAsset(asset.id).m_sync_state, 'synced');
+      assert.equal(media.isAssetReferenced(asset.id).by_external_refs, 1);
+      assert.equal(await deleteAsset(asset.id), 409);
+    }
+    assert.deepEqual([...masterObjects], [postImage.hash, noteImage.hash, replacement.hash]);
+    assert.equal(masterWrites, 4, '三次成功落正及一次暂时失败');
+    assert.deepEqual(await edit(), saved, '原键连同原 If-Match 重放原回执');
+    assert.equal(masterWrites, 4);
+  } finally { storeSlot.mStore = previousStore; }
+});
 
 test('F01 当前完整成员：creation icon=A/work=A 只换 work=B，A 仍受保护；仅改正文不释放', async () => {
   const a = await uploadAsset('f01-a');

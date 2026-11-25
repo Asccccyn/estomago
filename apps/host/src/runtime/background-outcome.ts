@@ -8,6 +8,7 @@ import { tailBoundaryOf } from './cache-plan.ts';
 import type { ManifestEntry } from '../context/review-policy.ts';
 import type { SupervisorDeps } from './supervisor.ts';
 import { readTurnCompletion } from './turn-completion.ts';
+import { isMorningWakeRun } from './wake-activity.ts';
 
 export type BackgroundOutcomeInput = {
   db: Db;
@@ -38,6 +39,7 @@ export type BackgroundOutcomeInput = {
 
 export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string } {
   const { db, loop, kind, runId, heartbeat } = input;
+  const morningWake = isMorningWakeRun(db, runId);
   const completed = loop.result.outcome === 'completed' && !loop.result.errorCode;
   const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
   const restPaused = loop.result.errorCode === 'KEEPWARM_RESTING';
@@ -56,7 +58,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
     ? typeof last.content === 'string' ? last.content
       : last.content.filter(block => block.type === 'text').map(block => block.text).join('')
     : null;
-  const exhausted = heartbeat?.mode === 'exhausted_keepwarm';
+  const exhausted = heartbeat?.mode === 'exhausted_keepwarm' && !morningWake;
   const exhaustedReply = exhausted && completed && Boolean(observed) && lastText?.trim() === '1';
   const missingExhaustedReply = exhausted && completed && !exhaustedReply;
   const paused = sleepPaused || restPaused;
@@ -96,7 +98,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
       .run(input.toolCallsObserved, published(conn).length, now, runId);
     // A recovered full tool-call batch proves this request even if its local
     // SDK stop was interrupted. Cache/usage evidence stays untouched.
-    if (kind === 'keepwarm' && completed && input.activity && input.capturedActivityRevision !== null) {
+    if (kind === 'keepwarm' && !morningWake && completed && input.activity && input.capturedActivityRevision !== null) {
       const request = db.prepare(`
         SELECT id,dispatch_started_at FROM provider_requests
         WHERE background_run_id=? AND (outcome='completed' OR id=?) AND sent_at IS NOT NULL AND dispatch_started_at IS NOT NULL
@@ -123,7 +125,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
         const projection = heartbeat.runtime.commitInTx({
           runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
           hostText: heartbeat.hostText, finalMessages: retained, mode: heartbeat.mode,
-          completed, hadSent: Boolean(observed),
+          morningWake, completed, hadSent: Boolean(observed),
           responseOffset: sent?.length, terminal: terminal(), speechHold,
         });
         if (projection.manifest.length) {
@@ -148,7 +150,7 @@ export function classifyBackgroundOutcome(input: BackgroundOutcomeInput): { outc
       if (heartbeat && observed) {
         const projection = heartbeat.runtime.commitInTx({
           runId, conversationId: input.conversationId, turnId: input.turnId, attemptId: input.attemptId,
-          hostText: heartbeat.hostText, finalMessages: [], mode: heartbeat.mode, completed: false, hadSent: true,
+          hostText: heartbeat.hostText, finalMessages: [], mode: heartbeat.mode, morningWake, completed: false, hadSent: true,
           terminal: terminal(),
         });
         heartbeatEvents = projection.eventRows;

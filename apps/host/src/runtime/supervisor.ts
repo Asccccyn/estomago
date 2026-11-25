@@ -1,4 +1,4 @@
-import { isVoiceCallActive } from '../modules/voice/call-service.ts';
+import { isCallActivityActive, isVoiceCallActive } from '../modules/voice/call-service.ts';
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';
@@ -68,11 +68,12 @@ import { WindowBootstrapMachine, BOOTSTRAP_DEADLINE_MS } from './window-bootstra
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
 import { renderToolContext, resolveToolGroups } from './tool-initial-visible.ts';
+import { isMorningWakeRun } from './wake-activity.ts';
 import { ConversationActivityService } from './wake-activity.ts';
 import { keepwarmSleepState } from './keepwarm-sleep.ts';
 import { keepwarmDispatchGate } from './background-keepwarm-gate.ts';
 import { classifyBackgroundOutcome } from './background-outcome.ts';
-import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
+import { HEARTBEAT_BLOCKED_BEFORE_SEND, settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
 import { ContractError, ToolNotDispatched } from './or-contract.ts';
 import { projectRevisionBlocks, materializeEnvelope, toolResultContent, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
@@ -436,12 +437,19 @@ export class TurnSupervisor {
     let capturedActivityRevision: number | null = null;
     let heartbeatMode: HeartbeatMode | null = null;
     let heartbeatHostText: string | null = null;
+    const morningWake = opts.kind === 'keepwarm' && isMorningWakeRun(d.db, opts.runId);
     // —— 心跳专属派发门（R4a 迁 runtime/background-keepwarm-gate.ts；05 §派发门与异常）——
     if (opts.kind === 'keepwarm') {
-      const gate = keepwarmDispatchGate({ db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id, inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs() });
+      const gate = keepwarmDispatchGate({ db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id, inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs(), morningWake: morningWake ? { sleepWindow: d.config.background.keepwarm.sleep_window } : null });
       if (gate.decision === 'noop') return { outcome: 'noop', result_code: gate.resultCode, detail: gate.detail };
       capturedActivityRevision = gate.capturedActivityRevision;
     }
+    const yieldEligible = opts.yieldEligible ?? opts.kind === 'keepwarm';
+    const yieldRequested = () => Boolean(yieldEligible && d.keepwarmYieldCheck?.(opts.runId))
+      // Telephone turns use the same acceptance transaction as chat and do not notify the scheduler.
+      || (morningWake && ((d.activity?.get(opts.conversationId)?.activity_revision ?? 0) !== capturedActivityRevision
+        || isCallActivityActive(d.db, opts.conversationId, this.nowMs())));
+    if (morningWake && yieldRequested()) return { outcome: 'noop', result_code: 'KEEPWARM_YIELDED' };
     const baseTools = this.windowTools(window.id);
     const toolset = storedToolset(d.db, window.id)!;
 
@@ -452,17 +460,19 @@ export class TurnSupervisor {
       const offered = toolset.protocol === 'deferred' || toolset.onDemand ? toolset.catalog : toolset.tools;
       const supportsDraw = offered.some(tool => tool.function.name === HEARTBEAT_DRAW_TOOL)
         && offered.some(tool => tool.function.name === TURN_COMPLETION_TOOL);
-      if (!supportsDraw && d.heartbeat.status(opts.conversationId).mode !== 'exhausted_keepwarm') {
+      if (!supportsDraw && !morningWake && d.heartbeat.status(opts.conversationId).mode !== 'exhausted_keepwarm') {
         return { outcome: 'failed', result_code: 'HEARTBEAT_TOOL_WINDOW_UNAVAILABLE' };
       }
       const prepared = await d.heartbeat.begin({
-        runId: opts.runId, conversationId: opts.conversationId, signal: controller.signal, now: new Date(this.nowMs()),
+        runId: opts.runId, conversationId: opts.conversationId, signal: controller.signal, now: () => new Date(this.nowMs()),
+        morningWake, allowDraw: supportsDraw,
       });
-      if (controller.signal.aborted || opts.isCancelRequested() || d.keepwarmYieldCheck?.(opts.runId)) {
+      if (controller.signal.aborted || opts.isCancelRequested()) {
         return { outcome: 'noop', result_code: 'HEARTBEAT_CANCELLED_BEFORE_DISPATCH' };
       }
+      if (yieldRequested()) return { outcome: 'noop', result_code: 'KEEPWARM_YIELDED' };
       heartbeatMode = prepared.mode;
-      if (heartbeatMode === 'unprepared' || heartbeatMode === 'source_unavailable') {
+      if (!morningWake && (heartbeatMode === 'unprepared' || heartbeatMode === 'source_unavailable')) {
         return { outcome: 'failed', result_code: heartbeatMode === 'unprepared'
           ? 'HEARTBEAT_DECK_UNPREPARED' : 'HEARTBEAT_SOURCE_UNAVAILABLE',
           ...(prepared.unavailable?.length ? { detail: '读取不可用的来源：' + prepared.unavailable.join(',') } : {}) };
@@ -493,7 +503,7 @@ export class TurnSupervisor {
     if (opts.kind === 'autonomous' && taskRow.origin === 'self_schedule') {
       tailNote += '\n结束前，把要告诉乔乔的话发到聊天；有后续就自行安排。';
     }
-    const taskDefinition = heartbeatMode === 'exhausted_keepwarm' || (toolset.protocol === 'direct' && !scopedTaskTools)
+    const taskDefinition = (heartbeatMode === 'exhausted_keepwarm' && !morningWake) || (toolset.protocol === 'direct' && !scopedTaskTools)
       ? null
       : taskDefinitionContext(toolset, 'background_complete', opts.runId);
     if (taskDefinition) tailNote += '\n' + taskDefinition;
@@ -548,11 +558,11 @@ export class TurnSupervisor {
       scopedTaskTools,
       heartbeatMode: heartbeatMode ?? undefined,
       heartbeatHostText: heartbeatHostText ?? undefined,
+      morningWake,
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
         observeToolCall: () => { toolCallsObserved++; },
-        // RB2-03：让位资格由调用方按控制类型传入（keepwarm/free_activity）。
-        yieldRequested: (opts.yieldEligible ?? opts.kind === 'keepwarm') && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
+        yieldRequested,
       },
     });
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.
@@ -563,7 +573,7 @@ export class TurnSupervisor {
         ? { heartbeat: { runtime: d.heartbeat, mode: heartbeatMode, hostText: heartbeatHostText } } : {}),
       // Self-wake appointments and free activity keep their own contract; the
       // sleep window and rest only stop the heartbeat.
-      speechHold: opts.kind === 'keepwarm' ? this.heartbeatSpeechHold(opts.conversationId) : null,
+      speechHold: opts.kind === 'keepwarm' ? this.heartbeatSpeechHold(opts.conversationId, opts.runId) : null,
     });
   }
 
@@ -612,7 +622,7 @@ export class TurnSupervisor {
   }
 
   private confirmModelRequest(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
-    'windowId' | 'turnId' | 'attemptId' | 'purpose' | 'background' | 'heartbeatMode' | 'heartbeatHostText'>, input: {
+    'windowId' | 'turnId' | 'attemptId' | 'purpose' | 'background' | 'heartbeatMode' | 'heartbeatHostText' | 'morningWake' | 'flushChatTail'>, input: {
     requestId: string; round: number; attemptIndex: number; generationId: string | null;
     messages: OrMessage[]; confirmedSeen: ManifestEntry[];
   }): void {
@@ -621,7 +631,7 @@ export class TurnSupervisor {
     const markSent = () => db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
       .run(new Date().toISOString(), attemptIndex, generationId ?? null, requestId);
     const { turnId } = o;
-    if (round === 0 && (o.heartbeatMode === 'draw' || o.heartbeatMode === 'exhausted_keepwarm') && turnId && trajectory) {
+    if (round === 0 && (o.heartbeatMode === 'draw' || o.heartbeatMode === 'exhausted_keepwarm' || o.morningWake) && turnId && trajectory) {
       // Confirm the first invitation and its recoverable prefix together, before publication.
       tx(db, () => {
         markSent();
@@ -636,21 +646,21 @@ export class TurnSupervisor {
     if (o.background?.kind === 'keepwarm') {
       heartbeat?.observeDelivery(o.background.runId, requestId, messages, o.heartbeatHostText);
     } else if (o.purpose === 'chat' && o.turnId) {
-      heartbeat?.observeChatDelivery(o.turnId, requestId, messages);
+      heartbeat?.observeChatDelivery(o.turnId, requestId, messages, o.flushChatTail);
     }
   }
 
   private observeHeartbeatBatch(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
-    'conversationId' | 'windowId' | 'turnId' | 'attemptId' | 'background' | 'heartbeatMode' | 'heartbeatHostText'>,
+    'conversationId' | 'windowId' | 'turnId' | 'attemptId' | 'background' | 'heartbeatMode' | 'heartbeatHostText' | 'morningWake'>,
     requestId: string, tail: OrMessage[], sentMessages: OrMessage[], confirmedSeen: ManifestEntry[]): void {
     const { db, heartbeat, trajectory } = this.d;
     const { turnId, attemptId, conversationId, windowId, background } = o;
     if (background?.kind !== 'keepwarm' || !turnId || !trajectory || !heartbeat) return;
-    const speechHold = this.heartbeatSpeechHold(conversationId);
+    const speechHold = this.heartbeatSpeechHold(conversationId, background.runId);
     const eventRows = tx(db, () => {
       stageHeartbeatCheckpoint(db, { requestId, windowId, turnId, attemptId,
         batch: { tail, sentMessages }, confirmedSeen, heartbeatHostText: o.heartbeatHostText });
-      return o.heartbeatMode === 'draw' && !speechHold
+      return (o.heartbeatMode === 'draw' || o.morningWake) && !speechHold
         ? heartbeat.publishRepliesInTx({ runId: background.runId, turnId, attemptId, conversationId }, tail, sentMessages.length).eventRows
         : [];
     });
@@ -685,6 +695,8 @@ export class TurnSupervisor {
     completionManifest?: readonly ManifestEntry[];
     heartbeatMode?: HeartbeatMode;
     heartbeatHostText?: string;
+    morningWake?: boolean;
+    flushChatTail?: () => void;
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
      *  完整工具循环（2026-10-22：KEEPWARM_TOOL_REFUSED 已删除）。 */
@@ -834,8 +846,9 @@ export class TurnSupervisor {
       // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
       // 物化为 Provider 图像块；envelope/payload_json（内部证据）与轨迹保持引用形态（Base64 不入库）。
       // previousPayload 同规则物化——append-only 断言在物化形态上执行（新旧同语义规则，不忽略失败）。
+      const imageRunScope = o.background?.runId ?? (o.purpose === 'chat' ? o.turnId ?? undefined : undefined);
       const matEnv = async (env: typeof envelope): Promise<typeof envelope> => projectModelHistory(d.media ? await materializeEnvelope(env, d.media, id =>
-        d.heartbeat?.readImage(id, o.conversationId, o.background?.runId)
+        d.heartbeat?.readImage(id, o.conversationId, imageRunScope)
         ?? (d.mediaTools ? d.mediaTools.readImage(id, o.conversationId) : d.media!.readContentResolvingMaster(id, { modelImage: true }))) as typeof envelope : env);
       const runEnvelope = await matEnv(envelope);
       // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
@@ -852,12 +865,12 @@ export class TurnSupervisor {
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
           if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+          // Check newly accepted foreground activity before today's new rest can consume a zero-send morning.
+          if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
           if (o.background.kind === 'keepwarm') {
-            const hold = this.keepwarmHold(o.conversationId);
+            const hold = this.keepwarmHold(o.conversationId, o.background.runId);
             if (hold) throw new ContractError(hold);
           }
-          // S-06：心跳让位——用户消息已到来且本维护轮尚未开始新的付费请求（安全边界）
-          if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
           const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id = ?').get(o.background.runId) as { model_requests_started: number } | undefined)?.model_requests_started ?? 0;
           if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
         }
@@ -899,9 +912,15 @@ export class TurnSupervisor {
           });
         }
         if (o.background?.kind === 'keepwarm') {
-          await this.admitHeartbeatDispatch(o.background.runId, lastPrqId, bgDispatchId, envelope.messages, o.controller.signal);
+          await this.admitHeartbeatDispatch(o.background.runId, lastPrqId, bgDispatchId, envelope.messages, o.controller.signal, () => {
+            if (o.controller.signal.aborted || o.background!.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+            if (o.background!.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
+            const hold = this.keepwarmHold(o.conversationId, o.background!.runId);
+            if (hold) throw new ContractError(hold);
+            if (d.keepwarmEnabled?.() === false) throw new ContractError('KEEPWARM_DISABLED');
+          });
         } else if (o.purpose === 'chat' && o.turnId) {
-          d.heartbeat?.beforeChatDispatch(o.turnId, lastPrqId, envelope.messages);
+          await this.admitChatDispatch(o.turnId, lastPrqId, envelope.messages, o.controller.signal);
         }
         dispatched = true;
         lastSentMessages = envelope.messages;
@@ -1016,6 +1035,10 @@ export class TurnSupervisor {
         ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) !== 'context_review_complete'),
         ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) === 'context_review_complete'),
       ];
+      if (o.flushChatTail && o.turnId && d.heartbeat?.cards.getDeliveredDraw(o.turnId) &&
+          !ordered.some(t => effectiveToolName(t.tool_name ?? '', t.text) === TURN_COMPLETION_TOOL)) {
+        o.flushChatTail();
+      }
       for (const t of ordered) {
         if (readTurnCompletion(d.db, o.attemptId, o.turnId) &&
             effectiveToolName(t.tool_name ?? '', t.text) !== TURN_COMPLETION_TOOL) {
@@ -1029,7 +1052,7 @@ export class TurnSupervisor {
           return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, 'EXECUTION_CANCELLED');
         }
         if (o.background?.kind === 'keepwarm') {
-          const hold = this.keepwarmHold(o.conversationId);
+          const hold = this.keepwarmHold(o.conversationId, o.background.runId);
           if (hold) return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: hold, errorMessage: hold === 'KEEPWARM_RESTING'
             ? '乔乔已休息：心跳不再继续，已完成动作保留' : '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, hold);
         }
@@ -1082,6 +1105,7 @@ export class TurnSupervisor {
             toolDispatch.current = { id: rec.dispatchId, quote };
             if (o.background?.kind === 'keepwarm' && t.tool_id) markHeartbeatToolStarted(d.db, o.attemptId, lastPrqId, t.tool_id);
           } } : {}),
+          ...(o.background?.kind === 'keepwarm' ? { checkChatPublishAllowed: () => this.checkKeepwarmChatPublish(o) } : {}),
         });
         } catch (error) {
           if ((error as { code?: string }).code === 'IDEMPOTENCY_CONFLICT') {
@@ -1235,7 +1259,7 @@ export class TurnSupervisor {
         } } : {}),
         // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
         // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
-        ...(d.media ? { readImage: (assetId: string) => d.heartbeat?.readImage(assetId, o.conversationId, o.background?.runId)
+        ...(d.media ? { readImage: (assetId: string) => d.heartbeat?.readImage(assetId, o.conversationId, o.background?.runId ?? (o.purpose === 'chat' ? o.turnId ?? undefined : undefined))
           ?? (d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId, { modelImage: true })) } : {}),
         beforeModel: async (messages, round) => {
           if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
@@ -1248,7 +1272,7 @@ export class TurnSupervisor {
           if (o.background) {
             if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
             if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
-            const hold = o.background.kind === 'keepwarm' ? this.keepwarmHold(o.conversationId) : null;
+            const hold = o.background.kind === 'keepwarm' ? this.keepwarmHold(o.conversationId, o.background.runId) : null;
             if (hold) throw new ContractError(hold);
             const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id=?').get(o.background.runId) as { model_requests_started: number }).model_requests_started;
             if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
@@ -1274,9 +1298,15 @@ export class TurnSupervisor {
           requestContext.responseModel = null;
           recordRequestExecution(d.db, requestContext, o.background?.runId);
           if (o.background?.kind === 'keepwarm') {
-            await this.admitHeartbeatDispatch(o.background.runId, requestId, dispatchId, messages, o.controller.signal);
+            await this.admitHeartbeatDispatch(o.background.runId, requestId, dispatchId, messages, o.controller.signal, () => {
+              if (o.controller.signal.aborted || o.background!.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+              if (o.background!.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
+              const hold = this.keepwarmHold(o.conversationId, o.background!.runId);
+              if (hold) throw new ContractError(hold);
+              if (d.keepwarmEnabled?.() === false) throw new ContractError('KEEPWARM_DISABLED');
+            });
           } else if (o.purpose === 'chat' && o.turnId) {
-            d.heartbeat?.beforeChatDispatch(o.turnId, requestId, messages);
+            await this.admitChatDispatch(o.turnId, requestId, messages, o.controller.signal);
           }
           lastSentMessages = structuredClone(messages);
           if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
@@ -1303,10 +1333,14 @@ export class TurnSupervisor {
           if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
           if (o.controller.signal.aborted || o.background?.isCancelRequested()) throw new ToolNotDispatched('EXECUTION_CANCELLED');
           if (o.background?.kind === 'keepwarm') {
-            const hold = this.keepwarmHold(o.conversationId);
+            const hold = this.keepwarmHold(o.conversationId, o.background.runId);
             if (hold) throw new ToolNotDispatched(hold);
           }
           if (o.background?.yieldRequested?.()) throw new ToolNotDispatched('KEEPWARM_YIELDED');
+          if (o.flushChatTail && o.turnId && d.heartbeat?.cards.getDeliveredDraw(o.turnId) &&
+              effectiveToolName(name, args) !== TURN_COMPLETION_TOOL) {
+            o.flushChatTail();
+          }
           o.background?.observeToolCall?.();
           let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
           let executed: ToolExecResult;
@@ -1341,6 +1375,7 @@ export class TurnSupervisor {
               toolDispatch = { id: admission.dispatchId, quote };
               if (o.background?.kind === 'keepwarm' && requestId) markHeartbeatToolStarted(d.db, o.attemptId, requestId, toolCallId);
             } } : {}),
+            ...(o.background?.kind === 'keepwarm' ? { checkChatPublishAllowed: () => this.checkKeepwarmChatPublish(o) } : {}),
           });
           } catch (error) {
             if ((error as { code?: string }).code === 'IDEMPOTENCY_CONFLICT') {
@@ -1387,18 +1422,38 @@ export class TurnSupervisor {
   }
 
   private async admitHeartbeatDispatch(
-    runId: string, requestId: string, dispatchId: string | null, messages: OrMessage[], signal: AbortSignal,
+    runId: string,
+    requestId: string,
+    dispatchId: string | null,
+    messages: OrMessage[],
+    signal: AbortSignal,
+    checkLiveGate?: () => void,
   ): Promise<void> {
     try {
-      await this.d.heartbeat?.beforeDispatch(runId, requestId, messages, signal);
+      await this.d.heartbeat?.beforeDispatch(runId, requestId, messages, signal, checkLiveGate);
     } catch (error) {
       // The local gate refused before any transport. Close the reservation
       // rather than carrying this known-zero continuation as an unknown cost.
       this.d.db.prepare('UPDATE provider_requests SET dispatch_started_at=NULL WHERE id=? AND sent_at IS NULL')
         .run(requestId);
       if (dispatchId) settleBackgroundDispatch(this.d.db, dispatchId, {
-        actualCostMicroUsd: 0, outcomeCode: 'HEARTBEAT_BLOCKED_BEFORE_SEND', providerRequestId: requestId,
+        actualCostMicroUsd: 0, outcomeCode: HEARTBEAT_BLOCKED_BEFORE_SEND, providerRequestId: requestId,
       });
+      throw error;
+    }
+  }
+
+  private async admitChatDispatch(
+    turnId: string,
+    requestId: string,
+    messages: OrMessage[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.d.heartbeat?.beforeChatDispatch(turnId, requestId, messages, signal);
+    } catch (error) {
+      this.d.db.prepare('UPDATE provider_requests SET dispatch_started_at=NULL WHERE id=? AND sent_at IS NULL')
+        .run(requestId);
       throw error;
     }
   }
@@ -1418,16 +1473,40 @@ export class TurnSupervisor {
 
   /** Why a running heartbeat may not take its next step, read at the moment of
    *  that step: the fixed sleep window, or the owner's standing rest decision. */
-  private keepwarmHold(conversationId: string): 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | 'KEEPWARM_RESTING' | null {
+  private checkKeepwarmChatPublish(o: { conversationId: string; controller: AbortController; background?: { runId: string; isCancelRequested: () => boolean; yieldRequested?: (() => boolean) | null } }): { allowed: true } | { allowed: false; code: string; detail: string } {
+    const deny = (code: string, detail: string) => ({ allowed: false as const, code, detail });
+    if (o.controller.signal.aborted || o.background?.isCancelRequested()) return deny('EXECUTION_CANCELLED', '当前后台运行已取消，未发入聊天。');
+    if (o.background?.yieldRequested?.()) return deny('KEEPWARM_YIELDED', '前台聊天或通话优先，后台发言已让位。');
+    const hold = this.heartbeatSpeechHold(o.conversationId, o.background?.runId);
+    if (hold === 'sleep') return deny('KEEPWARM_SLEEP_WINDOW', '已进入睡眠静默时段，未发入聊天。');
+    if (hold === 'rest') return deny('KEEPWARM_RESTING', '乔乔正在休息，未发入聊天。');
+    if (hold === 'disabled') return deny('KEEPWARM_DISABLED', '心跳保温已关闭，未发入聊天。');
+    return { allowed: true };
+  }
+
+  private keepwarmHold(conversationId: string, runId?: string): 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | 'KEEPWARM_RESTING' | null {
     const sleep = keepwarmSleepState(this.d.config.background.keepwarm.sleep_window, this.nowMs());
     if (sleep.blocked) return sleep.code!;
-    return this.d.activity?.resting(conversationId) ? 'KEEPWARM_RESTING' : null;
+    if (!this.d.activity?.resting(conversationId)) return null;
+    if (runId && isMorningWakeRun(this.d.db, runId)) {
+      const nowMs = this.nowMs();
+      const shanghaiDate = new Date(nowMs + 8 * 3_600_000).toISOString().slice(0, 10);
+      const today08Ms = Date.parse(`${shanghaiDate}T08:00:00+08:00`);
+      const run = this.d.db.prepare('SELECT COALESCE(first_dispatch_started_at, created_at) AS started_at FROM background_runs WHERE id = ?').get(runId) as { started_at: string | null } | undefined;
+      const rest = this.d.db.prepare('SELECT rest_decided_at FROM conversation_activity WHERE conversation_id = ?').get(conversationId) as { rest_decided_at: string | null } | undefined;
+      const restMs = rest?.rest_decided_at ? Date.parse(rest.rest_decided_at) : NaN;
+      const startedMs = run?.started_at ? Date.parse(run.started_at) : today08Ms;
+      if (Number.isFinite(restMs) && restMs < today08Ms && (!Number.isFinite(startedMs) || restMs < startedMs)) {
+        return null;
+      }
+    }
+    return 'KEEPWARM_RESTING';
   }
 
   /** Why heartbeat speech may not enter the chat now. Card delivery, tool
    *  facts, protocol and cost are unaffected; nothing is resent later. */
-  private heartbeatSpeechHold(conversationId: string): HeartbeatSpeechHold | null {
-    const hold = this.keepwarmHold(conversationId);
+  private heartbeatSpeechHold(conversationId: string, runId?: string): HeartbeatSpeechHold | null {
+    const hold = this.keepwarmHold(conversationId, runId);
     if (hold) return hold === 'KEEPWARM_RESTING' ? 'rest' : 'sleep';
     return this.d.keepwarmEnabled?.() === false ? 'disabled' : null;
   }
@@ -3263,7 +3342,14 @@ export class TurnSupervisor {
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
         trajectoryRebuiltThisTurn: trajInitializedThisTurn,
-        onEvent: handleEvent, seenSequence: orSeenHighWater,
+        onEvent: handleEvent,
+        flushChatTail: () => {
+          if (!runToken.token.cancelled) {
+            const tail = segmenter.flushTail();
+            if (tail) publishSegments([tail]);
+          }
+        },
+        seenSequence: orSeenHighWater,
         seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions,
         completionManifest: [
           ...catchupManifest,

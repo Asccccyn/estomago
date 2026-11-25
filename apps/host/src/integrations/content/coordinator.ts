@@ -214,6 +214,14 @@ export class ContentOperationCoordinator {
     }
     const invalidCreation = await this.validateCreationWork(currentIntent);
     if (invalidCreation) return invalidCreation;
+    if (req.method !== 'DELETE' && candidates.length > 0) {
+      try {
+        await this.media.commitStagedAssets(candidates);
+      } catch (err) {
+        if (err instanceof MediaError) return { status: err.httpStatus, body: { error: { code: err.code.toLowerCase(), message: err.message } } };
+        throw err;
+      }
+    }
 
     // ③ HTTP 前持久意图 + pin（同一本地事务；失败=操作未被接受，不提交 content）。
     //    R3-C01：同键异参在事务内权威判定——并发下第二个异参请求在此处得到 409，

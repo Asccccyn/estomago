@@ -449,6 +449,7 @@ export class Host {
       dailyMemorySelection: dailyMemory.read,
     });
     contentOps?.setSourceMutationGuard((path, operation) => heartbeat.guardSourceMutation(path, operation));
+    tools.setHeartbeatCards(heartbeat.cards);
     registerHeartbeatDrawCapability(capabilityRegistry, heartbeat);
     (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, {
       wishstar, replyTarget: (ref, ctx) => heartbeat.replyTarget(ref, ctx),

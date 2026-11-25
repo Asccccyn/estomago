@@ -150,3 +150,97 @@ test('请求长时间没有回应时给出超时提示，而不是一直停在 u
   // An asset already known needs no new receipt; the same record resumes the relation step.
   assert.deepEqual(stored, [])
 })
+
+// C2 / 审计 #12：响应头已到但正文挂起或被截断时，期限覆盖整个正文读取；结果待确认可沿原操作键重试，
+// 与确定性的 HTTP 错误（409 idempotency_conflict）区分。
+const hangingBody = (status: number): Response => new Response(new ReadableStream<Uint8Array>({ start() { /* 头已到，正文永不到 */ } }), {
+  status, headers: { 'Content-Type': 'application/json' },
+})
+
+test('C2：上传 201 头已到但正文挂起——超时退出上传态，重试沿同一操作键，只建一个条目', async () => {
+  const file = new File(['hang fixture'], 'hang.png', { type: 'image/png' })
+  const attempt = startAlbumUpload({ key: 'hang-one', album: 'important_photos' }, file)
+  const uploadKeys: Array<string | null> = []
+  const entryKeys: Array<string | null> = []
+  const stored: AlbumUpload[] = []
+  let hang = true
+  const request: typeof fetch = async (input, init) => {
+    const url = String(input)
+    if (url.startsWith('/api/v1/assets?purpose=')) {
+      uploadKeys.push(new Headers(init?.headers).get('Idempotency-Key'))
+      if (hang) return hangingBody(201)
+      return Response.json({ asset_id: 'asset-hang', mime_type: 'image/png', state: 'available', m_sync_state: 'synced' }, { status: 201 })
+    }
+    assert.equal(url, '/api/v1/content/albums/important_photos/entries')
+    entryKeys.push(new Headers(init?.headers).get('Idempotency-Key'))
+    return Response.json({ id: 'entry-hang' }, { status: 201 })
+  }
+  await assert.rejects(uploadAlbumEntry(attempt, record => { stored.push(record) }, request, 30), /上传超时，网络可能较慢，结果待确认/)
+  assert.deepEqual(stored, [], '正文未到不记录资产身份')
+  assert.deepEqual(entryKeys, [], '上传结果未确认不建立条目')
+  hang = false
+  await uploadAlbumEntry(attempt, record => { stored.push(record) }, request, 30)
+  assert.deepEqual(uploadKeys, ['hang-one', 'hang-one'], '重试沿同一操作键，由服务端按原键核回同一资产')
+  assert.deepEqual(entryKeys, ['hang-one:entry'])
+  assert.deepEqual(stored, [{ key: 'hang-one', album: 'important_photos', assetId: 'asset-hang' }])
+})
+
+test('C2：归类 201 头已到但正文挂起——超时提示待确认，重试沿同一条目操作键且不重传文件', async () => {
+  const entryKeys: Array<string | null> = []
+  let hang = true
+  const request: typeof fetch = async (input, init) => {
+    const url = String(input)
+    if (url === '/api/v1/assets/asset-e') return Response.json({ id: 'asset-e', mime_type: 'image/jpeg', state: 'available', m_sync_state: 'synced' })
+    assert.equal(url, '/api/v1/content/albums/important_photos/entries')
+    assert.equal(init?.body instanceof File, false, '不重传文件字节')
+    entryKeys.push(new Headers(init?.headers).get('Idempotency-Key'))
+    return hang ? hangingBody(201) : Response.json({ id: 'entry-e' }, { status: 201 })
+  }
+  const attempt: AlbumUpload = { key: 'entry-hang', album: 'important_photos', assetId: 'asset-e' }
+  await assert.rejects(uploadAlbumEntry(attempt, () => assert.fail('资产已知，无需新记录'), request, 30), /归类（资产 asset-e）超时/)
+  hang = false
+  await uploadAlbumEntry(attempt, () => assert.fail('资产已知，无需新记录'), request, 30)
+  assert.deepEqual(entryKeys, ['entry-hang:entry', 'entry-hang:entry'])
+})
+
+test('C2：201 正文被截断——判为回执不完整（待确认），保留操作键与文件；409 idempotency_conflict 仍是确定性拒绝', async () => {
+  const file = new File(['truncated fixture'], 'cut.png', { type: 'image/png' })
+  const attempt = startAlbumUpload({ key: 'cut-one', album: 'important_photos' }, file)
+  const stored: AlbumUpload[] = []
+  const truncated: typeof fetch = async () => new Response('{"asset_id":"asset-cu', { status: 201, headers: { 'Content-Type': 'application/json' } })
+  await assert.rejects(uploadAlbumEntry(attempt, record => { stored.push(record) }, truncated, 30), /上传回执不完整。使用本次操作重试可核对原资产/)
+  assert.deepEqual(stored, [], '截断回执不产生资产身份')
+  assert.equal(attempt.file, file, '原文件仍在本次记录里，可沿原键重试')
+  assert.equal(attempt.key, 'cut-one')
+
+  const truncatedEntry: typeof fetch = async (input) => String(input) === '/api/v1/assets/asset-t'
+    ? Response.json({ id: 'asset-t', mime_type: 'image/png', state: 'available', m_sync_state: 'synced' })
+    : new Response('{"id":"entr', { status: 201 })
+  await assert.rejects(uploadAlbumEntry({ key: 'cut-entry', album: 'important_photos', assetId: 'asset-t' }, () => {}, truncatedEntry, 30),
+    /归类回执不完整（资产 asset-t）/)
+
+  const conflict: typeof fetch = async () => Response.json({ error: { code: 'idempotency_conflict', message: 'x' } }, { status: 409 })
+  const conflictStored: AlbumUpload[] = []
+  await assert.rejects(uploadAlbumEntry(startAlbumUpload({ key: 'conflict-one', album: 'important_photos' }, file), record => { conflictStored.push(record) }, conflict, 30),
+    /选中的文件内容与原文件不同/)
+  assert.deepEqual(conflictStored, [{ key: 'conflict-one', album: 'important_photos' }], '确定性冲突回到等待原文件状态')
+})
+
+test('C2：归类成功响应的连接中断时，沿原归类操作键核对结果', async () => {
+  const attempt: AlbumUpload = { key: 'interrupted-entry', album: 'important_photos', assetId: 'asset-interrupted' }
+  const keys: Array<string | null> = []
+  const request: typeof fetch = async (input, init) => {
+    if (String(input) === '/api/v1/assets/asset-interrupted') {
+      return Response.json({ id: 'asset-interrupted', mime_type: 'image/jpeg', state: 'available', m_sync_state: 'synced' })
+    }
+    assert.equal(String(input), '/api/v1/content/albums/important_photos/entries')
+    keys.push(new Headers(init?.headers).get('Idempotency-Key'))
+    if (keys.length > 1) return Response.json({ id: 'entry-interrupted' })
+    const interrupted = new ReadableStream({ start(controller) { controller.error(new TypeError('connection closed')) } })
+    return new Response(interrupted, { status: 201 })
+  }
+  const record = () => assert.fail('资产已确认，无需更新资产身份')
+  await assert.rejects(uploadAlbumEntry(attempt, record, request), /归类（资产 asset-interrupted）连接中断，结果待确认/)
+  await uploadAlbumEntry(attempt, record, request)
+  assert.deepEqual(keys, ['interrupted-entry:entry', 'interrupted-entry:entry'])
+})

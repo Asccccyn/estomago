@@ -42,7 +42,7 @@ test('新窗口从实际 Claude SDK MCP 发布各自的参数，以原生 text �
           const tools = (await client.listTools()).tools;
           discovered = tools.map(tool => tool.name);
           assert.ok(!discovered.includes('tool_invoke'));
-          assert.equal(discovered.length, 17);
+          assert.equal(discovered.length, 18);
           for (const name of ['conversation_archive','image_generate']) {
             assert.equal(discovered.filter(tool => tool === name).length, 1);
           }
@@ -108,7 +108,7 @@ test('新窗口从实际 Claude SDK MCP 发布各自的参数，以原生 text �
   assert.equal(snapshot.protocol, 'direct');
   assert.deepEqual([...discovered, 'chat_send_text'], snapshot.tools.map(spec => spec.function.name));
   const requests = host.db.prepare("SELECT payload_json FROM provider_requests WHERE turn_id=? AND purpose='chat' ORDER BY rowid").all(turnId);
-  assert.deepEqual(requests.map(r => JSON.parse(String(r.payload_json)).tools.length), [17, 17, 18]);
+  assert.deepEqual(requests.map(r => JSON.parse(String(r.payload_json)).tools.length), [18, 18, 19]);
   assert.deepEqual(discovered.filter(name => !['tool_catalog', 'tool_define'].includes(name)),
     snapshot.catalog.filter(spec => snapshot.groups[spec.function.name] === 'C').map(spec => spec.function.name));
   assert.equal(host.db.prepare("SELECT count(*) AS n FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.speaker='assistant' AND r.content=?").get(text)?.n, 1);
