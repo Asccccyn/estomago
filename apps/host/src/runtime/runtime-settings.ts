@@ -1,11 +1,23 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 // 运行时设置（她裁定 2026-10-08：聊天窗内置换模型/推理等级）。
 //  - 持久正本在 chat.sqlite3（迁移 19 runtime_settings）——改设置不重启、
 //    不改配置文件；config 文件仍是默认值来源（override 未设时回落）。
-//  - or_model：切换后型号变化进窗口指纹 → 走既有受控换窗（停→选历史→
-//    新窗按新型号装配）。清空 override = 回落配置默认（同样按指纹变化处理）。
+//  - 模型与入口是下一回合的执行选择，沿用当前窗口与轨迹。
 //  - reasoning_effort：仅生成参数（OR reasoning.effort 七档）——**不进
 //    指纹、不换窗**，下一请求立即生效（上下文全复用）。
 //  - 仅信封驱动（OR）面生效；DS 官方直连无 effort 参数，模型沿用配置。
+export const SDK_MODEL_OPTIONS = ['claude-opus-4-6', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-fable-5-2'] as const;
+export const SDK_TO_API_MODEL: Record<string, string> = {
+  'claude-opus-4-6': 'anthropic/claude-opus-4.6',
+  'claude-opus-5-5': 'anthropic/claude-opus-5.5',
+  'claude-fable-5-1': 'anthropic/claude-fable-5.1',
+  'claude-fable-5-2': 'anthropic/claude-fable-5.2',
+};
+export function sdkEffortsForModel(model: string | null): string[] | null {
+  const apiModel = model ? SDK_TO_API_MODEL[model] ?? null : null;
+  return effortsForModel(null, apiModel);
+}
+
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 
@@ -64,6 +76,7 @@ const DOCUMENTED_EFFORTS: Record<string, readonly string[]> = {
   'anthropic/claude-opus-4.6': ['low', 'medium', 'high', 'max'],
   'anthropic/claude-opus-5.5': ['low', 'medium', 'high', 'xhigh', 'max'],
   'anthropic/claude-fable-5.1': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'anthropic/claude-fable-5.2': ['low', 'medium', 'high', 'xhigh', 'max'],
 };
 
 /** Known models use verified native levels, intersected with provider restrictions.
@@ -95,14 +108,24 @@ export function effortsForModel(meta: OrModelReasoningMeta | null, model?: strin
 
 export class RuntimeSettingsService {
   private db: Db;
+  private executionSelection = new AsyncLocalStorage<Map<string, string | null>>();
   constructor(db: Db) {
     this.db = db;
   }
 
+  atExecutionBoundary<T>(work: () => Promise<T>): Promise<T> {
+    const selected = new Map(['access_policy', 'or_model', 'sdk_model', 'reasoning_effort'].map(key => [key, this.get(key)]));
+    return this.executionSelection.run(selected, work);
+  }
+
   get(key: string): string | null {
+    const selected = this.executionSelection.getStore();
+    if (selected?.has(key)) return selected.get(key)!;
     const row = this.db.prepare('SELECT value FROM runtime_settings WHERE key = ?').get(key) as { value: string } | undefined;
     return row?.value ?? null;
   }
+
+  effectiveSdkModel(defaultModel: string | null): string | null { return this.get('sdk_model') ?? defaultModel; }
 
   orModel(): string | null {
     const v = this.get('or_model');
@@ -113,6 +136,10 @@ export class RuntimeSettingsService {
     const v = this.get('reasoning_effort');
     if (!v || v === 'default') return null;
     return (REASONING_EFFORTS as readonly string[]).includes(v) ? v as ReasoningEffortChoice : null;
+  }
+
+  accessPolicy(configDefault: 'configured' | 'subscription-first'): 'configured' | 'subscription-first' {
+    return (this.get('access_policy') as 'configured' | 'subscription-first' | null) ?? configDefault;
   }
 
   /** 写入（人触发；空串/null = 清除 override 回落默认）。 */

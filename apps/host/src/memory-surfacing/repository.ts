@@ -1,10 +1,12 @@
+import type { SolUsage } from './sol-provider.ts';
 // surfacing 运行表（迁移 v29）+ 作业状态机 CAS + 覆盖清单。
 // 有界运行数据（docs/02）：候选选择/预留/实际交付分开存；coverage 是
 // 投影清单可重建，不是永久 seen。表含对话/记忆投影——不进日志/Git。
-import { projectSurfacedMemory } from './contracts.ts';
+import { projectSurfacedMemory, readValidatedItems } from './contracts.ts';
+import type { SpeakerLabels } from '../identity/speaker-labels.ts';
 import { tx, type Db } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
-import type { EventHypothesis, SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
+import type { MissingQuote, SurfaceItem, SurfacingJobState, SurfaceJobEventPayload } from './contracts.ts';
 
 export type JobRow = {
   id: string;
@@ -20,7 +22,10 @@ export type JobRow = {
   m_snapshot_ref: string | null;
   policy_revision: number | null;
   prompt_revision: string | null;
-  hypotheses_json: string | null;
+  sol_decision: string | null;
+  sol_topic: string | null;
+  sol_plan_json: string | null;
+  sol_usage_json: string | null;
   receipt_id: string | null;
   items_json: string | null;
   reason_code: string | null;
@@ -28,9 +33,18 @@ export type JobRow = {
   created_at: string;
   updated_at: string;
   expires_at: string | null;
+  /** R9（2026-11-03）：M 响应返回的真实执行版本（观测/对账，不参与作业键） */
+  m_policy_revision: number | null;
+  m_prompt_revision: string | null;
 };
 
-const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, hypotheses_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at';
+const JOB_COLS = 'id, conversation_id, source_message_id, source_revision, source_sequence, target_message_id, target_revision, state, generation, m_operation_id, m_snapshot_ref, policy_revision, prompt_revision, sol_decision, sol_topic, sol_plan_json, sol_usage_json, receipt_id, items_json, reason_code, deadline_ms, created_at, updated_at, expires_at, m_policy_revision, m_prompt_revision';
+
+export const SOL_INPUT_TOO_LARGE = 'SURFACE_SOL_INPUT_TOO_LARGE';
+// 旧 E 作业共用 BODY_TOO_LARGE。只有构造 Sol 输入时，两端为同一修订，且尚无 Sol 决定和 M 操作号。
+const SOL_INPUT_OVERFLOW_JOB = `(j.state='blocked' AND j.sol_decision IS NULL AND j.m_operation_id IS NULL
+  AND j.target_message_id=j.source_message_id AND j.target_revision=j.source_revision
+  AND j.reason_code IN ('${SOL_INPUT_TOO_LARGE}', 'SURFACE_BODY_TOO_LARGE'))`;
 
 export class SurfacingRepository {
   private db: Db;
@@ -67,25 +81,26 @@ export class SurfacingRepository {
   // —— 事务内登记（MessageService 调用；只 SQL，不做网络）——
 
   /** 逻辑作业唯一键 (room, source_message_id, source_revision, policy, prompt)：
-   *  前端重发相同 client_message_id 由 MessageService 幂等挡住，不重复建作业。 */
+   *  前端重发相同 client_message_id 由 MessageService 幂等挡住，不重复建作业。
+   *  SOL_RECALL_REFACTOR：每条正式消息都登记（旧 regex 意图门退役）；语义
+   *  判断在提交后由 Sol 三态完成（service.preparePhase），事务内零网络。 */
   registerAcceptedJob(o: {
     conversationId: string; messageId: string; revision: number; sequence: number;
     content: string; contentHash: string; occurredAt: string | null;
-    hypotheses: EventHypothesis[]; policyRevision: number; promptRevision: string;
+    policyRevision: number; promptRevision: string;
     deadlineMs?: number;
   }): string | null {
-    if (o.hypotheses.length === 0) return null;
     const id = genId('sfj');
     const now = new Date().toISOString();
     this.db.prepare(
       `INSERT INTO surfacing_jobs(id, conversation_id, source_message_id, source_revision,
-         source_sequence, state, generation, hypotheses_json, policy_revision, prompt_revision,
+         source_sequence, state, generation, policy_revision, prompt_revision,
          source_body_hash, deadline_ms, created_at, updated_at, target_message_id, target_revision, expires_at)
-       VALUES (?,?,?,?,?, 'pending', 0, ?,?,?,?, ?, ?, ?, ?, ?, ?)
+       VALUES (?,?,?,?,?, 'pending', 0,?,?,?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(conversation_id, source_message_id, source_revision, policy_revision, prompt_revision)
        DO NOTHING`,
     ).run(id, o.conversationId, o.messageId, o.revision, o.sequence,
-      JSON.stringify(o.hypotheses), o.policyRevision, o.promptRevision,
+      o.policyRevision, o.promptRevision,
       o.contentHash, o.deadlineMs ?? null, now, now, o.messageId, o.revision,
       o.deadlineMs == null ? null : new Date(Date.parse(now) + o.deadlineMs).toISOString());
     const row = this.jobByLogicalKey(o.conversationId, o.messageId, o.revision, o.policyRevision, o.promptRevision);
@@ -105,17 +120,36 @@ export class SurfacingRepository {
   }
 
   /** 消息编辑撤销尚未保留的旧修订作业；已发送交付事实保持原样。 */
-  cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {
+  /** P3（U05）+RB01（复审 20261106）：会话级取消全部未终态作业（通话活动开始时调用）。
+   *  与 cancelJobsForRevision 同一收尾出口：逐行 emitState 状态事件（SSE 投影），
+   *  不绕过 repo 状态事件直接裸 UPDATE。返回取消行数。 */
+  cancelJobsForConversation(conversationId: string, reasonCode: string): number {
     const affected = this.db.prepare(
-      `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
-         ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
-    ).all(conversationId, messageId, supersededRevision, messageId, supersededRevision) as Array<{ id: string; state: SurfacingJobState }>;
-    // 修订失效原因落行（她 1021 执行稿：修订一致性可取证）；交付行不动
+      `SELECT id, state FROM surfacing_jobs WHERE conversation_id=? AND state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started')`,
+    ).all(conversationId) as Array<{ id: string; state: SurfacingJobState }>;
     const r = this.db.prepare(
-      `UPDATE surfacing_jobs SET state='cancelled', reason_code='SOURCE_OR_TARGET_REVISED', updated_at=?
-       WHERE conversation_id=? AND ((source_message_id=? AND source_revision=?) OR (target_message_id=? AND target_revision=?)) AND state NOT IN
-         ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')`,
-    ).run(new Date().toISOString(), conversationId, messageId, supersededRevision, messageId, supersededRevision);
+      `UPDATE surfacing_jobs SET state='cancelled', updated_at=?, reason_code=?
+       WHERE conversation_id=? AND state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started')`,
+    ).run(new Date().toISOString(), reasonCode, conversationId);
+    for (const row of affected) {
+      this.emitState(row.id, row.state, 'cancelled', { reason_code: reasonCode });
+    }
+    return Number(r.changes);
+  }
+
+  cancelJobsForRevision(conversationId: string, messageId: string, supersededRevision: number): number {
+    // 停止回合也走这里。保留已经发生的输入超限；真正编辑后由当前修订判定边界有效性。
+    const where = `j.conversation_id=? AND ((j.source_message_id=? AND j.source_revision=?)
+      OR (j.target_message_id=? AND j.target_revision=?)) AND j.state NOT IN
+      ('retained','attempted_not_retained','cancelled','superseded','missed_target','expired')
+      AND ${SOL_INPUT_OVERFLOW_JOB} IS NOT TRUE`;
+    const args = [conversationId, messageId, supersededRevision, messageId, supersededRevision];
+    const affected = this.db.prepare(`SELECT j.id, j.state FROM surfacing_jobs j WHERE ${where}`)
+      .all(...args) as Array<{ id: string; state: SurfacingJobState }>;
+    const r = this.db.prepare(
+      `UPDATE surfacing_jobs AS j SET state='cancelled', reason_code='SOURCE_OR_TARGET_REVISED', updated_at=?
+       WHERE ${where}`,
+    ).run(new Date().toISOString(), ...args);
     for (const row of affected) {
       this.emitState(row.id, row.state, 'cancelled', { reason_code: 'SOURCE_OR_TARGET_REVISED' });
     }
@@ -164,40 +198,93 @@ export class SurfacingRepository {
     return row ?? null;
   }
 
-  /** P1 省略表达延续依据：[minSourceSequence, beforeSequence) 内最近一条
-   *  已确定回忆对象或已验证交付的同轮作业；empty/rejected/blocked/
-   *  cancelled 不算。只读，retained 仅用于意图延续，绝不复用旧交付。 */
-  preparedBetween(conversationId: string, minSourceSequence: number, beforeSequence: number): JobRow | null {
-    const row = this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs
-       WHERE conversation_id=? AND state IN ('prepared','ready','reserved','dispatch_started','retained')
-         AND source_message_id=target_message_id AND source_revision=target_revision
-         AND EXISTS (SELECT 1 FROM messages m WHERE m.id=surfacing_jobs.source_message_id
-           AND m.current_revision=surfacing_jobs.source_revision
-           AND m.conversation_id=surfacing_jobs.conversation_id AND m.speaker='owner')
-         AND source_sequence >= ? AND source_sequence < ?
-       ORDER BY source_sequence DESC LIMIT 1`,
-    ).get(conversationId, minSourceSequence, beforeSequence) as JobRow | undefined;
-    return row ?? null;
-  }
-
-  pendingJobs(limit = 20): JobRow[] {
-    return this.db.prepare(
-      `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state='pending' ORDER BY created_at ASC LIMIT ?`,
-    ).all(limit) as JobRow[];
-  }
-
   recoverableJobs(): JobRow[] {
     return this.db.prepare(
       `SELECT ${JOB_COLS} FROM surfacing_jobs WHERE state IN ('pending','preparing','prepared','target_bound','validating','ready','reserved','dispatch_started') ORDER BY created_at ASC`,
     ).all() as JobRow[];
   }
 
+  solInputBoundary(conversationId: string, beforeSequence: number): number {
+    const row = this.db.prepare(`SELECT COALESCE(MAX(j.source_sequence), 0) AS seq
+      FROM surfacing_jobs j JOIN messages m ON m.id=j.source_message_id AND m.current_revision=j.source_revision
+      WHERE j.conversation_id=? AND j.source_sequence<? AND (
+        (j.state='empty' AND j.sol_decision='none' AND j.reason_code='SURFACE_SOL_NONE')
+        OR ${SOL_INPUT_OVERFLOW_JOB}
+        OR (j.state='retained' AND EXISTS (SELECT 1 FROM surfacing_deliveries d
+          WHERE d.job_id=j.id AND d.state='retained' AND d.retained=1
+            AND json_array_length(d.selected_refs_json, '$.items') > 0)))`
+    ).get(conversationId, beforeSequence) as { seq: number };
+    return row.seq;
+  }
+
+  /** 已完成需要来自现有作业与实际交付，不另存会话消费指针。 */
+  completedNeed(conversationId: string, need: { sources: Array<{ message_id: string; revision: number }> }): {
+    outcome: 'delivered' | 'no_match'; windowId: string | null; items: SurfaceItem[];
+    jobId: string | null; sourceMessageId: string | null; sourceSequence: number | null;
+  } | null {
+    const row = this.db.prepare(`SELECT j.id AS job_id, j.source_message_id, j.source_sequence,
+      json_extract(j.sol_plan_json, '$.need_outcome') AS outcome,
+      d.window_id, d.selected_refs_json
+      FROM surfacing_jobs j LEFT JOIN surfacing_deliveries d
+        ON d.job_id=j.id AND d.retained=1 AND d.state='retained'
+      WHERE j.conversation_id=? AND json_extract(j.sol_plan_json, '$.need')=?
+        AND json_extract(j.sol_plan_json, '$.need_outcome') IN ('delivered','no_match')
+        AND j.state IN ('retained','empty','rejected')
+      ORDER BY j.source_sequence DESC, j.created_at DESC LIMIT 1`)
+      .get(conversationId, JSON.stringify(need)) as { job_id: string; source_message_id: string | null; source_sequence: number | null; outcome: 'delivered' | 'no_match'; window_id: string | null; selected_refs_json: string | null } | undefined;
+    return row ? { outcome: row.outcome, windowId: row.window_id,
+      items: row.selected_refs_json ? (JSON.parse(row.selected_refs_json) as { items: SurfaceItem[] }).items : [],
+      jobId: row.job_id, sourceMessageId: row.source_message_id, sourceSequence: row.source_sequence } : null;
+  }
+
+  recordSolUsage(jobId: string, attempts: readonly (SolUsage | null)[]): void {
+    const totals: SolUsage = { input_tokens: null, output_tokens: null, cached_tokens: null,
+      cache_write_tokens: null, reasoning_tokens: null };
+    for (const usage of attempts) {
+      if (!usage) continue;
+      for (const key of Object.keys(totals) as Array<keyof SolUsage>) {
+        if (usage[key] != null) totals[key] = (totals[key] ?? 0) + usage[key];
+      }
+    }
+    this.db.prepare('UPDATE surfacing_jobs SET sol_usage_json=? WHERE id=?').run(JSON.stringify({
+      ...totals, request_count: attempts.length,
+      unknown_usage_count: attempts.filter(u => u?.input_tokens == null || u.output_tokens == null).length,
+      attempts,
+    }), jobId);
+  }
+
+  recordSolRetrievalOutcome(jobId: string, outcome: 'delivered' | 'incomplete' | 'no_match'): void {
+    this.db.prepare("UPDATE surfacing_jobs SET sol_plan_json=json_set(sol_plan_json, '$.need_outcome', ?) WHERE id=?")
+      .run(outcome, jobId);
+  }
+
+  /** R9（2026-11-03）：记录 M prepare 响应返回的真实执行版本（观测/对账列） */
+  recordMExecutionVersions(jobId: string, policyRevision: number | null, promptRevision: string | null): void {
+    this.db.prepare('UPDATE surfacing_jobs SET m_policy_revision=?, m_prompt_revision=? WHERE id=?')
+      .run(policyRevision, promptRevision, jobId);
+  }
+
+  // —— 设置覆盖（v35；与配置文件合并出同一生效值，预览/请求共用读者）——
+
+  getSetting(key: string): string | null {
+    const row = this.db.prepare('SELECT value FROM surfacing_settings WHERE key=?').get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  setSetting(key: string, value: string | null): void {
+    const now = new Date().toISOString();
+    if (value === null) this.db.prepare('DELETE FROM surfacing_settings WHERE key=?').run(key);
+    else this.db.prepare(
+      'INSERT INTO surfacing_settings(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at',
+    ).run(key, value, now);
+  }
+
   // —— 交付（attempt 级冻结；transport retry 复用同一冻结包）——
 
   freezeDelivery(o: {
     jobId: string; attemptId: string; windowId: string; text: string;
-    items: SurfaceItem[]; memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string }>;
+    items: SurfaceItem[]; memoryRefs: Array<{ ref: string; detail_ref: string; event_id: string | null }>;
+    missing: MissingQuote[];
   }): string | null {
     return tx(this.db, () => {
     const id = genId('sfd');
@@ -209,7 +296,8 @@ export class SurfacingRepository {
       `INSERT INTO surfacing_deliveries(id, job_id, attempt_id, window_id, state, payload_text,
          payload_hash, selected_refs_json, retained, created_at)
        VALUES (?,?,?,?, 'frozen', ?, ?, ?, 0, ?)`,
-    ).run(id, o.jobId, o.attemptId, o.windowId, o.text, payloadHash, JSON.stringify({ items: o.items, refs: o.memoryRefs }), now);
+    ).run(id, o.jobId, o.attemptId, o.windowId, o.text, payloadHash,
+      JSON.stringify({ items: o.items, refs: o.memoryRefs, missing: o.missing }), now);
     return id;
     });
   }
@@ -242,51 +330,29 @@ export class SurfacingRepository {
     return null;
   }
 
-  markRetained(jobId: string, deliveryId: string, items: SurfaceItem[]): void {
-    const now = new Date().toISOString();
-    const job = this.jobById(jobId);
-    if (!job || !['dispatch_started', 'retained'].includes(job.state)) return;
-    this.db.prepare(`UPDATE surfacing_deliveries SET state='retained', retained=1, retained_at=? WHERE id=?`).run(now, deliveryId);
-    this.transition(jobId, ['dispatch_started'], 'retained', {}, { delivery_id: deliveryId });
-    for (const it of items) {
-      this.db.prepare(
-        `INSERT INTO surfacing_coverage(conversation_id, window_id, memory_id, memory_version, body_hash, occurrence_key, detail_ref, confirmed_at)
-         VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(conversation_id, window_id, memory_id, body_hash) DO UPDATE SET
-           memory_version=excluded.memory_version, occurrence_key=excluded.occurrence_key,
-           detail_ref=excluded.detail_ref, confirmed_at=excluded.confirmed_at`,
-      ).run(
-        this.jobById(jobId)?.conversation_id ?? '', this.db.prepare('SELECT window_id FROM surfacing_deliveries WHERE id=?').get(deliveryId)?.window_id ?? '',
-        it.memory_id, it.memory_version, it.body_hash, it.event_id, it.detail_ref, now);
-    }
-  }
-
-  /** 覆盖去重（当前窗口上下文为准，非永久 seen）。 */
-  coveredInWindow(conversationId: string, windowId: string, items: SurfaceItem[]): Set<string> {
-    const covered = new Set<string>();
-    const trajectory = this.db.prepare('SELECT messages_json FROM window_trajectories WHERE window_id=?').get(windowId) as { messages_json: string } | undefined;
-    if (!trajectory) return covered;
-    const messages = JSON.parse(trajectory.messages_json) as Array<{ content: unknown }>;
-    const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
-      : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
-    const deliveries = this.db.prepare(`SELECT d.payload_text, d.selected_refs_json FROM surfacing_deliveries d
-      JOIN surfacing_jobs j ON j.id=d.job_id WHERE j.conversation_id=? AND d.window_id=? AND d.retained=1`)
-      .all(conversationId, windowId) as Array<{ payload_text: string; selected_refs_json: string }>;
-    const visible = deliveries.filter(d => texts.some(t => t.includes(d.payload_text)))
-      .flatMap(d => (JSON.parse(d.selected_refs_json) as { items: SurfaceItem[] }).items);
-    for (const it of items) {
-      const row = this.db.prepare(
-        `SELECT 1 FROM surfacing_coverage WHERE conversation_id=? AND window_id=? AND memory_id=? AND memory_version=? AND body_hash=?`,
-      ).get(conversationId, windowId, it.memory_id, it.memory_version, it.body_hash);
-      if (row && visible.some(v => v.memory_id === it.memory_id && v.memory_version === it.memory_version && v.body_hash === it.body_hash)) covered.add(it.event_id);
-    }
-    return covered;
+  markRetained(jobId: string, deliveryId: string): void {
+    tx(this.db, () => {
+      const job = this.jobById(jobId);
+      if (job?.state !== 'dispatch_started') return;
+      const delivery = this.db.prepare(`UPDATE surfacing_deliveries SET state='retained', retained=1, retained_at=?
+        WHERE id=? AND job_id=? AND state='dispatch_started' RETURNING selected_refs_json`)
+        .get(new Date().toISOString(), deliveryId, jobId) as { selected_refs_json: string } | undefined;
+      if (!delivery) return;
+      const { missing } = JSON.parse(delivery.selected_refs_json) as { missing?: MissingQuote[] };
+      // Older packets lack this field and retain their original completion rule.
+      if (missing !== undefined) {
+        this.recordSolRetrievalOutcome(jobId, missing.length ? 'incomplete' : 'delivered');
+      } else if (!readValidatedItems(job.items_json ?? '[]').missing.length) {
+        this.recordSolRetrievalOutcome(jobId, 'delivered');
+      }
+      this.transition(jobId, ['dispatch_started'], 'retained', {}, { delivery_id: deliveryId });
+    });
   }
 
   /** Owner UI projection. Handles stay outside model text and resolve only
    * through this turn's confirmed, actually sent provider request. */
-  visibleForTurn(conversationId: string, turnId: string): Array<{
-    memory_ref: string; date: string | null; text: string; windowId: string; requestId: string;
+  visibleForTurn(conversationId: string, turnId: string, labels?: SpeakerLabels): Array<ReturnType<typeof projectSurfacedMemory> & {
+    memory_ref: string; windowId: string; requestId: string;
   }> {
     const rows = this.db.prepare(`SELECT d.selected_refs_json, d.window_id, p.id AS request_id
       FROM surfacing_deliveries d JOIN attempts a ON a.id=d.attempt_id
@@ -299,20 +365,20 @@ export class SurfacingRepository {
     const out: ReturnType<SurfacingRepository['visibleForTurn']> = [];
     const seen = new Set<string>();
     for (const row of rows) {
-      let data: { items: import('./contracts.ts').SurfaceItem[]; refs: Array<{ ref: string; event_id: string }> };
+      let data: { items: import('./contracts.ts').SurfaceItem[]; refs: Array<{ ref: string; event_id: string | null; detail_ref?: string }> };
       try { data = JSON.parse(row.selected_refs_json); } catch { continue; }
       for (const ref of data.refs ?? []) {
         if (seen.has(ref.ref) || !this.refToDetail(ref.ref, { roomId: conversationId, windowId: row.window_id, requestId: row.request_id })) continue;
-        const item = data.items.find(i => i.event_id === ref.event_id);
+        const item = data.items.find(i => (ref.detail_ref ? i.detail_ref === ref.detail_ref : i.event_id === ref.event_id));
         if (!item) continue;
         seen.add(ref.ref);
-        out.push({ memory_ref: ref.ref, ...projectSurfacedMemory(item), windowId: row.window_id, requestId: row.request_id });
+        out.push({ memory_ref: ref.ref, ...projectSurfacedMemory(item, labels), windowId: row.window_id, requestId: row.request_id });
       }
     }
     return out;
   }
 
-  refToDetail(memoryRef: string, scope: { roomId: string; windowId: string; requestId: string }): { detail_ref: string } | null {
+  refToDetail(memoryRef: string, scope: { roomId: string; windowId: string; requestId: string }): { detail_ref: string; origin?: 'recall' } | null {
     // Only the exact confirmed provider request establishes visibility, including
     // the first tool loop before the successful trajectory is retained.
     const request = this.db.prepare(`SELECT p.payload_wire_json, p.payload_json FROM provider_requests p
@@ -321,10 +387,30 @@ export class SurfacingRepository {
         AND p.sent_at IS NOT NULL ORDER BY p.created_at DESC LIMIT 1`)
       .get(scope.requestId, scope.windowId, scope.roomId) as { payload_wire_json: string | null; payload_json: string } | undefined;
     if (!request) return null;
-    let messages: Array<{ content?: unknown }>;
+    let messages: Array<{ role?: string; content?: unknown; tool_calls?: any[]; tool_call_id?: string }>;
     try { messages = JSON.parse(request.payload_wire_json ?? request.payload_json).messages; }
     catch { return null; }
     if (!Array.isArray(messages)) return null;
+    const recallCalls = new Set<string>();
+    for (const message of messages) {
+      if (message.role === 'assistant') for (const call of message.tool_calls ?? []) {
+        let name = call.function?.name;
+        if (name === 'tool_invoke') {
+          try { name = JSON.parse(call.function.arguments).name; } catch { continue; }
+        }
+        if (name === 'memory_recall' || name === 'memory_recall_next') recallCalls.add(call.id);
+      }
+      if (message.role !== 'tool' || !recallCalls.has(message.tool_call_id ?? '')) continue;
+      const text = typeof message.content === 'string' ? message.content
+        : Array.isArray(message.content) ? message.content.filter(b => b?.type === 'text').map(b => b.text).join('') : '';
+      try {
+        const result = JSON.parse(text);
+        if (typeof result.recall_session_id === 'string' && Array.isArray(result.candidates)
+          && result.candidates.some((candidate: any) => candidate.memory_ref === memoryRef)) {
+          return { detail_ref: memoryRef, origin: 'recall' };
+        }
+      } catch { /* A malformed result cannot establish a delivered reference. */ }
+    }
     const texts = messages.flatMap(m => typeof m.content === 'string' ? [m.content]
       : Array.isArray(m.content) ? m.content.filter(b => b?.type === 'text' && typeof b.text === 'string').map(b => b.text as string) : []);
     const rows = this.db.prepare(`SELECT d.selected_refs_json, d.payload_text FROM surfacing_deliveries d

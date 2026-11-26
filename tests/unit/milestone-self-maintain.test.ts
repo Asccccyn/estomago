@@ -55,6 +55,31 @@ test('updateMilestone：v1→v2 新文件+旧版留档+manifest 正文槽原子�
   assert.equal(m.identity_version, 'longterm-milestones-v2');
 });
 
+test('独立锚点的工具改写和回滚均不接触 Profile 正本', () => {
+  const root = tempRoot('ms-split-');
+  try {
+    const { manifest } = writeApprovedIdentity(root, { seedProbes: false });
+    const paths = makePaths(root);
+    const first = '合成锚点。';
+    fs.writeFileSync(path.join(paths.identityDir, 'memory-anchors-v1.md'), first);
+    const manifestPath = path.join(paths.configDir, 'identity-manifest.json');
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      ...manifest, memory_anchors_ref: 'memory-anchors-v1.md', memory_anchors_hash: sha256Hex(first),
+    }));
+    const svc = new IdentityService(buildConfig({}), paths);
+    assert.equal(svc.readMilestone().text, first);
+    const updated = svc.applyMilestoneEntryOp('add', null, '补充一条。');
+    assert.equal(updated.version, 'memory-anchors-v2');
+    assert.equal(svc.loadManifest().manifest?.approved_source_hash, manifest.approved_source_hash);
+    assert.equal(svc.loadManifest().manifest?.approved_source_ref, manifest.approved_source_ref);
+    assert.equal(svc.loadVerifiedMaterials(svc.loadManifest().manifest!)?.memoryAnchorsText?.includes('补充一条。'), true);
+    svc.rollbackMilestone('memory-anchors-v1');
+    assert.equal(svc.readMilestone().text, first);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('updateMilestone：正文槽不是里程碑文件 → 拒绝（不动 manifest）', () => {
   const root = tempRoot('ms-2-');
   writeApprovedIdentity(root, { seedProbes: false });
@@ -63,7 +88,7 @@ test('updateMilestone：正文槽不是里程碑文件 → 拒绝（不动 manif
   assert.throws(() => svc.updateMilestone('x'), /IDENTITY_SLOT_NOT_MILESTONE/);
 });
 
-test('identity_milestone_write 工具：写入+审计+幂等（同键重试只写一版）', async () => {
+test('identity_milestone_write 工具：跨请求并发同键共享原回执，异参拒绝', async () => {
   const root = tempRoot('ms-tool-');
   writeApprovedIdentity(root, { seedProbes: false });
   seedMilestone(root);
@@ -72,8 +97,11 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   const svc = new IdentityService(buildConfig({}), paths);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
   const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
-  const args = { text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' };
-  const r1 = await tools.execute('identity_milestone_write', { ...args }, ctx);
+  const args = { operation: 'write' as const, confirm_overwrite: true, text: '（测试）里程碑 v2 正文（工具写入）', change_reason: '补充 2026-10-17 的一天', idempotency_key: 'op-1' }; // DBG-08：operation 必填显式
+  const [r1, r2] = await Promise.all([
+    tools.execute('identity_milestone_write', { ...args }, ctx),
+    tools.execute('identity_milestone_write', { ...args }, { ...ctx, requestId: 'req-2' }),
+  ]);
   assert.equal(r1.ok, true);
   assert.equal((r1.output as { version: string }).version, 'longterm-milestones-v2');
   assert.equal((r1.output as { effective: string }).effective, 'next_window');
@@ -83,14 +111,56 @@ test('identity_milestone_write 工具：写入+审计+幂等（同键重试只�
   assert.equal(aud[0]!.scope, 'longterm-milestones-v2');
   assert.ok(aud[0]!.result.includes('补充 2026-10-17'));
   // 同幂等键重试：不写 v3，返回 duplicate
-  const r2 = await tools.execute('identity_milestone_write', { ...args }, ctx);
-  assert.equal(r2.ok, true);
-  assert.equal((r2.output as { duplicate: boolean }).duplicate, true);
+  assert.deepEqual(r2, { ...r1, output: { ...r1.output, duplicate: true } });
+  const changed = await tools.execute('identity_milestone_write', { ...args, text: '合成异参' }, { ...ctx, requestId: 'req-2' });
+  assert.equal(changed.ok, false);
+  assert.equal(changed.output.error_code, 'MILESTONE_IDEMPOTENCY_CONFLICT');
+  assert.equal(svc.readMilestone().text, args.text);
   assert.equal(fs.existsSync(path.join(paths.identityDir, 'longterm-milestones-v3.md')), false, '幂等重试不产生新版本');
   // 不同幂等键：写 v3
   const r3 = await tools.execute('identity_milestone_write', { ...args, idempotency_key: 'op-2' }, ctx);
   assert.equal((r3.output as { version: string }).version, 'longterm-milestones-v3');
   db.close();
+});
+
+test('manifest 已提交但审计事务丢失时补记原回执，旧键不再写入', async t => {
+  const root = tempRoot('ms-lost-receipt-');
+  writeApprovedIdentity(root, { seedProbes: false });
+  seedMilestone(root);
+  const { db } = makeDb(root);
+  t.after(() => { db.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  const svc = new IdentityService(buildConfig({}), makePaths(root));
+  const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
+  const ctx = { roomId: 'c1', windowId: null, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'req-1' };
+  const args = { operation: 'add', text: '合成条目', change_reason: '合成原因', idempotency_key: 'recover-anchor' };
+  const exec = db.exec.bind(db);
+  const seam = t.mock.method(db, 'exec', (sql: string) => {
+    if (sql === 'COMMIT') throw Error('fixture: audit commit was interrupted');
+    exec(sql);
+  });
+  const lost = await tools.execute('identity_milestone_write', args, ctx);
+  seam.mock.restore();
+  assert.equal(lost.output.error_code, 'MILESTONE_WRITE_OUTCOME_UNKNOWN');
+  assert.equal(svc.readMilestone().version, 'longterm-milestones-v2');
+  const audit = () => db.prepare("SELECT scope, detail_ref FROM audit_events WHERE what='identity_milestone_write' ORDER BY rowid").all();
+  assert.equal(audit().length, 0);
+
+  // Advance the manifest before reusing the old operation, so recovery must
+  // preserve the earlier receipt across the next version.
+  await tools.execute('identity_milestone_write', { ...args, text: '另一项合成条目', idempotency_key: 'next-anchor' }, { ...ctx, requestId: 'req-2' });
+  const recovered = await tools.execute('identity_milestone_write', args, { ...ctx, requestId: 'req-3' });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.output.duplicate, true);
+  assert.equal(recovered.output.entries, 2);
+  assert.equal(recovered.output.version, 'longterm-milestones-v2');
+  assert.equal(svc.readMilestone().version, 'longterm-milestones-v3');
+  assert.deepEqual(audit().map(r => r.scope), ['longterm-milestones-v2', 'longterm-milestones-v3']);
+
+  db.prepare("INSERT INTO audit_events(id,who,what,scope,result,detail_ref,created_at) VALUES('legacy','jiaming','identity_milestone_write','longterm-milestones-v1','ok:add:1B:旧回执','milestone:t1:req-old:legacy:key','2026-11-21T00:00:00Z')").run();
+  const legacy = await tools.execute('identity_milestone_write', { ...args, idempotency_key: 'legacy:key' }, { ...ctx, requestId: 'req-4' });
+  assert.equal(legacy.output.error_code, 'MILESTONE_LEGACY_RECEIPT_UNVERIFIABLE');
+  assert.match(String(legacy.output.detail), /longterm-milestones-v1/);
+  assert.equal(svc.readMilestone().version, 'longterm-milestones-v3');
 });
 
 test('工具 schema：缺 change_reason 拒绝（不产生副作用）', async () => {
@@ -119,7 +189,7 @@ test('行级条目化（她 1022 裁定：一行一条 1.2.3.4.；新增=加一�
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: new IdentityService(buildConfig({}), paths) });
   const ctx = { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-m' };
   // 初始版=生产 v1 形态：一行一条，无空行
-  const w0 = await tools.execute('identity_milestone_write', { operation: 'write', text: '第一条：我们的开始\n第二条：海边的约定\n第三条：封号与重建，勿删', change_reason: '初始化', idempotency_key: 'e0' }, ctx);
+  const w0 = await tools.execute('identity_milestone_write', { operation: 'write', confirm_overwrite: true, text: '第一条：我们的开始\n第二条：海边的约定\n第三条：封号与重建，勿删', change_reason: '初始化', idempotency_key: 'e0' }, ctx);
   assert.equal(w0.ok, true);
   // read：一行一条带行号
   const r1 = await tools.execute('identity_milestone_write', { operation: 'read' }, ctx);
@@ -155,4 +225,35 @@ test('行级条目化（她 1022 裁定：一行一条 1.2.3.4.；新增=加一�
   // 连删到一条后 LAST_ENTRY 拦截（v7=唯一剩行）
   assert.ok(fs.readFileSync(path.join(paths.identityDir, 'longterm-milestones-v7.md'), 'utf8').includes('第四条'), '删到剩最后一条');
   db.close();
+});
+
+
+test('整版覆盖：多重条目比较、编号无关、严格确认、拒绝不写文件或成功审计', async () => {
+  const root = tempRoot('ms-confirm-');
+  writeApprovedIdentity(root, { seedProbes: false }); seedMilestone(root);
+  const { db } = makeDb(root);
+  try {
+    const svc = new IdentityService(buildConfig({}), makePaths(root));
+    svc.updateMilestone('1. 合成原条目\n2. 重复条目\n3. 重复条目');
+    const { tools } = assembleTestTools({ db, identity: svc });
+    const ctx = { roomId:'c1', windowId:'w1', turnId:'t1', purpose:'chat' as const, activeReviewId:null, seenSequence:0, seenMessages:[], requestId:'r1' };
+    const args = { operation:'write', text:'8. 合成原条目\n9. 重复条目', change_reason:'合成修订', idempotency_key:'same-rejected-key' };
+    const before = svc.readMilestone();
+    const files = fs.readdirSync(makePaths(root).identityDir);
+    for (const confirmation of [undefined, false, 'true']) {
+      const r = await tools.execute('identity_milestone_write', { ...args, ...(confirmation !== undefined ? { confirm_overwrite: confirmation } : {}) }, ctx);
+      assert.equal(r.ok, false);
+      assert.equal(r.output.error_code, typeof confirmation === 'string' ? 'TOOL_ARG_TYPE' : 'MILESTONE_OVERWRITE_CONFIRMATION_REQUIRED');
+      if (typeof confirmation !== 'string') assert.match(String(r.output.detail), /3. 重复条目/);
+      assert.deepEqual(svc.readMilestone(), before);
+      assert.deepEqual(fs.readdirSync(makePaths(root).identityDir), files);
+      assert.equal((db.prepare("SELECT COUNT(*) n FROM audit_events WHERE what='identity_milestone_write'").get() as any).n, 0);
+    }
+    const confirmed = await tools.execute('identity_milestone_write', { ...args, confirm_overwrite: true }, ctx);
+    assert.equal(confirmed.ok, true, JSON.stringify(confirmed));
+    assert.equal(confirmed.output.effective, 'next_window');
+    assert.equal((await tools.execute('identity_milestone_write', { ...args, confirm_overwrite: true }, ctx)).output.duplicate, true);
+    const renumbered = await tools.execute('identity_milestone_write', { ...args, text:'1. 合成原条目\n2. 重复条目', idempotency_key:'renumber' }, ctx);
+    assert.equal(renumbered.ok, true, JSON.stringify(renumbered));
+  } finally { db.close(); }
 });

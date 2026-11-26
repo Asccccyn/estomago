@@ -76,7 +76,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
     openrouter: { model: MODEL },
     archive: { enabled: true, source_scope: 'sync-test' },
     integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
-    windows: { soft_limit_tokens: 1500 + 12_500 },
+    windows: { soft_limit_tokens: 1500 + 16_150 /* /* 2026-11-23 聊天抽牌：普通聊天的工具目录多出 heartbeat_draw 一行 +103B≈+40 token，按 +60 平移留余量 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录底座 +572 token */ }, // 2026-11-09 R5：+content_album_entry_write 后目录底座 ≈13.66k（相册重构后曾 ≈13.2k）——同款底座+正文标定
     ...configOver,
   });
   const paths = buildPaths(root);
@@ -87,7 +87,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
@@ -112,9 +112,15 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
 test('F04：同批 complete+hold（complete 在前），hold 结果未知 → 不签发完成凭证、不换窗', async () => {
   // chat 首轮：一次性给出 complete(no_new_hold)+hold，complete 排在前面；hold 返回 503
   let reviewIdSeen = '';
+  // 工具轮上限撤销（2026-11-09 裁定）后 mock 不再依赖 8 轮截断收口——
+  // 发过一次 complete+hold 后续轮回文本，让循环自然结束（被测的是
+  // complete 核验失败路径，不是上限截断）
+  let fired = false;
   const orT = orTransportWith({
-    review: (_hasTool, reviewId) => {
+    review: (hasTool, reviewId) => {
       reviewIdSeen = reviewId;
+      if (hasTool || fired) return textBody('r2', 'done');
+      fired = true;
       // 审计 R2：complete 排在 hold 之前 + hold 返回 503——修复后必须先执行写、complete 最后核验失败
       return twoToolBody('r1', ['call-comp', 'context_review_complete', { review_id: reviewId, decision: 'no_new_hold' }], ['call-hold', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: 'y' }]);
     },
@@ -197,8 +203,9 @@ test('F07：停止后同批后续工具不再分派（内容 fence 不足以拦�
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '两个工具', clientMessageId: 's1', occurredAt: T0 });
   ctx.supervisor.enqueue(sub.turnId);
   await new Promise<void>((r) => setTimeout(r, 30));
-  const stopped = ctx.supervisor.stop(sub.turnId);
-  assert.ok(stopped.stopped, '停止生效');
+  // 她 2026-11-15 裁定后 stop() 对已派发回合拒绝（回复跑完）——fence 语义改经关机路径
+  // stopAll 验证（仍是真实可达路径：同批后续工具必须不再分派）
+  void ctx.supervisor.stopAll(2000);
   releaseHold();
   await ctx.supervisor.waitIdle();
   assert.equal(holdCalls.length, 1, '第二个工具未被分派（停止即停止派发）');

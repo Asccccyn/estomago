@@ -130,17 +130,17 @@ export function buildOrPayload(input: BuildOrPayloadInput): Record<string, unkno
   return out;
 }
 
-// 仅在本适配器边界断言（§7.1）：同窗内 profile 段不变、历史只追加不改写。
-export function assertAppendOnly(previous: Record<string, unknown>, current: Record<string, unknown>): boolean {
+// Execution selection can change; the frozen tool catalog and canonical history cannot.
+export function assertAppendOnly(previous: Record<string, unknown>, current: Record<string, unknown>, allowToolAppend = false): boolean {
   const p = withoutCacheMarkers(previous);
   const c = withoutCacheMarkers(current);
   // RRA-017（2026-10-09 复审）：reasoning 退出稳定前缀比较键——
   // effort 是逐请求生成参数（她裁定 2026-10-08：换思考深度不换窗、
   // reasoning 已退出 contextFingerprint），把每次请求可合法变化的
   // 参数钉进 append-only 比较会把合法换档请求整轮拒发（0 派发）
-  for (const key of ['model', 'session_id', 'provider', 'tools'] as const) {
-    requireThat(JSON.stringify(p[key] ?? null) === JSON.stringify(c[key] ?? null), `PREFIX_PROFILE_CHANGED:${key}`);
-  }
+  const comparable = allowToolAppend && Array.isArray(c.tools) && Array.isArray(p.tools)
+    ? c.tools.slice(0, p.tools.length) : c.tools;
+  requireThat(JSON.stringify(p.tools ?? null) === JSON.stringify(comparable ?? null), 'PREFIX_PROFILE_CHANGED:tools');
   const pm = p.messages as OrMessage[];
   const cm = c.messages as OrMessage[];
   // 她 2026-10-24 裁定④：历史篡改故障语义与组装期 wire 守卫统一为

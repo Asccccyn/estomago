@@ -13,8 +13,7 @@ export class RotationReviewService {
     this.db = db;
   }
 
-  create(windowId: string, roomId: string, epochRevision: number, range: ReviewRangeItem[]): ReviewRow {
-    const id = genId('rev');
+  create(windowId: string, roomId: string, epochRevision: number, range: ReviewRangeItem[], id = genId('rev')): ReviewRow {
     const now = new Date().toISOString();
     const rangeKeys = range.map(rawKey);
     tx(this.db, () => {
@@ -115,22 +114,24 @@ export class RotationReviewService {
   }
 
   // —— 工具副作用账本（§3.3：完成前未决写检查的数据源）——
-  openEffect(input: { reviewId: string | null; turnId: string | null; windowId: string; kind: 'hold' | 'source_bind' | 'review_complete'; operationId: string | null; toolCallId: string; seenSequence: number }): string {
+  openEffect(input: { reviewId: string | null; turnId: string | null; windowId: string; kind: 'hold' | 'source_bind' | 'review_complete' | 'i_write'; operationId: string | null; toolCallId: string; seenSequence: number; /** R2-M04：I 写的参数快照——恢复端用原身份原样重放（M 领域幂等回执恢复原结果） */ argsJson?: string | null }): string {
     const id = genId('eff');
     const now = new Date().toISOString();
     tx(this.db, () => {
       this.db.prepare(
-        `INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, operation_id, tool_call_id, seen_sequence, created_at, updated_at)
-         VALUES (?,?,?,?,?,'running',0,?,?,?,?,?)`,
-      ).run(id, input.reviewId, input.turnId, input.windowId, input.kind, input.operationId, input.toolCallId, input.seenSequence, now, now);
+        `INSERT INTO tool_side_effects(id, review_id, turn_id, window_id, kind, state, verified, operation_id, tool_call_id, seen_sequence, args_json, created_at, updated_at)
+         VALUES (?,?,?,?,?,'running',0,?,?,?,?,?,?)`,
+      ).run(id, input.reviewId, input.turnId, input.windowId, input.kind, input.operationId, input.toolCallId, input.seenSequence, input.argsJson ?? null, now, now);
     });
     return id;
   }
 
-  settleEffect(id: string, state: 'committed' | 'failed_resolved' | 'failed_unresolved' | 'unknown' | 'cancelled', verified: boolean, memoryId: string | null): void {
+  settleEffect(id: string, state: 'committed' | 'failed_resolved' | 'failed_unresolved' | 'unknown' | 'cancelled', verified: boolean, memoryId: string | null, commitObservedAt: string | null = null, afterSettlement?: () => void): void {
+    const committedAtUtc = commitObservedAt === null ? null : new Date(commitObservedAt).toISOString();
     tx(this.db, () => {
-      this.db.prepare('UPDATE tool_side_effects SET state = ?, verified = ?, memory_id = ?, updated_at = ? WHERE id = ?')
-        .run(state, verified ? 1 : 0, memoryId, new Date().toISOString(), id);
+      this.db.prepare('UPDATE tool_side_effects SET state = ?, verified = ?, memory_id = ?, hold_committed_at = ?, updated_at = ? WHERE id = ?')
+        .run(state, verified ? 1 : 0, memoryId, committedAtUtc, new Date().toISOString(), id);
+      afterSettlement?.();
     });
   }
 
@@ -142,9 +143,9 @@ export class RotationReviewService {
   }
 
   /** 供有界恢复探测枚举 unknown 写（审计 F08：按原 operation_id 查询） */
-  unknownEffectsForWindow(windowId: string): Array<{ id: string; operationId: string; seenSequence: number | null; memoryId: string | null }> {
+  unknownEffectsForWindow(windowId: string): Array<{ id: string; operationId: string; seenSequence: number | null; memoryId: string | null; kind: string; argsJson: string | null }> {
     return this.db.prepare(
-      "SELECT id, operation_id AS operationId, seen_sequence AS seenSequence, memory_id AS memoryId FROM tool_side_effects WHERE window_id = ? AND state = 'unknown' AND operation_id IS NOT NULL",
-    ).all(windowId) as Array<{ id: string; operationId: string; seenSequence: number | null; memoryId: string | null }>;
+      "SELECT id, operation_id AS operationId, seen_sequence AS seenSequence, memory_id AS memoryId, kind, args_json AS argsJson FROM tool_side_effects WHERE window_id = ? AND state = 'unknown' AND operation_id IS NOT NULL",
+    ).all(windowId) as Array<{ id: string; operationId: string; seenSequence: number | null; memoryId: string | null; kind: string; argsJson: string | null }>;
   }
 }

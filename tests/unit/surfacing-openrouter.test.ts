@@ -1,5 +1,6 @@
-import {memoryRefFor} from '../../apps/host/src/memory-surfacing/contracts.ts';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
+import { memoryRefFor, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
@@ -25,7 +26,7 @@ import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { OpenRouterRunner } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { withoutCacheMarkers, assertAppendOnly } from '../../apps/host/src/runtime/or-payload.ts';
-import { supportsSurfacingTransport, SURFACE_HOST_NOTICE } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { supportsSurfacingTransport, isRecollectionText } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
@@ -53,22 +54,23 @@ const ITEM = {
   body_hash: 'b'.repeat(64), detail_ref: 'sdr_seam1',
 };
 
-function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, log: Array<Record<string, unknown>>) {
+function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, log: Array<Record<string, unknown>>,
+  judge = fakeSolJudge([{ decision: "recall" }]).judge) {
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter' }, openrouter: { model: 'anthropic/claude-opus-4.6', provider_only: ['amazon-bedrock'] } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), {
-    enabled: true, transport_overhead_text: SURFACE_HOST_NOTICE, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), judge, {
+    enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
+    max_packet_bytes: 24576, worker_concurrency: 2, recent_user_messages: 3, recent_window_bytes: 24576,
   }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
@@ -95,6 +97,12 @@ const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : t
 test('JA-S08: owner can expand the same delivered bucket without exposing refs or retrieving again', async () => {
   const root = tempRoot('sf-full-wire-'); const log: Array<Record<string, unknown>> = [];
   const caps: string[] = [];
+  const words = [{speaker:'qiaosheng',text:'合成的保存原句'},{speaker:'jiaming',text:'同一记忆中的第二句'}];
+  const quote = { ...ITEM, kind: 'words', speaker: 'qiaosheng', quote_text: words[0].text,
+    matched_memory: {title:'记忆库建成',mood_tags:['开心','期待'],text:ITEM.event_text,our_words:words},
+    coverage_ranges: [{resource_ref:'memory:00001',content_version:'1',start_char:0,end_char:[...ITEM.event_text].length},
+      ...words.map((w,i)=>({resource_ref:'our_word:word'+i,content_version:'1:0',start_char:0,end_char:[...w.text].length}))] };
+  const expectedWords = [{speaker:'用户',text:words[0].text},{speaker:'助手',text:words[1].text}];
   const transport: OrTransport = async payload => {
     assert.ok(!JSON.stringify(payload.messages).includes(ITEM.detail_ref));
     return { status: 200, headers: new Map(), body: frameStream(textBody('g1','合成回复')) };
@@ -103,12 +111,15 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     caps.push(cap);
     if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
     if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_wire' } };
-    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_wire', items: [ITEM] } };
+    if (cap === 'memory.surfacing.validate') {
+      assert.equal(payload.words_view,'memory_with_words');
+      return { ok:true, result:{status:'ready',validation_receipt:'svr_wire',items:[quote]} };
+    }
     if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [ITEM.detail_ref] } };
     if (cap === 'memory.detail.read') {
       assert.equal(payload.detail_ref, ITEM.detail_ref); assert.equal(payload.view,'model');
       assert.equal(payload.section,caps.filter(x=>x==='memory.detail.read').length===1?'source':'memory');
-      return {ok:true,result:payload.section==='source'?{memory_id:'00001',source:[{text:'绑定的原文'}]}:{memory_id:'00001',text:'完整正文',next_cursor:payload.cursor?null:'memory:p1'}};
+      return {ok:true,result:payload.section==='source'?{memory_id:'00001',source:[{text:'绑定的原文'}]}:{memory_id:'00001',text:'完整正文',our_words:[{speaker:'qiaosheng',text:quote.quote_text},{speaker:'jiaming',text:'第二句'},{speaker:'第三人',text:'第三句'}],next_cursor:payload.cursor?null:'memory:p1'}};
     }
     throw Error('unexpected '+cap);
   };
@@ -117,11 +128,15 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     const a=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'还记得那次记忆库建成吗？',clientMessageId:'a'});
     ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
     const list=ctx.svc.visibleMemoriesForTurn('c1',a.turnId);
-    assert.equal(list.length,1);assert.equal(list[0].text,ITEM.event_text);
+    assert.equal(list.length,1);
+    assert.equal(list[0].context, undefined, 'saved quotes do not acquire chat context');
+    assert.deepEqual({kind:list[0].kind,words:list[0].our_words,text:list[0].text,title:list[0].title,moods:list[0].mood_tags},
+      {kind:'words',words:expectedWords,text:ITEM.event_text,title:'记忆库建成',moods:['开心','期待']});
     const before=caps.length;
     const req=ctx.db.prepare('SELECT id,window_id FROM provider_requests WHERE turn_id=? AND sent_at IS NOT NULL ORDER BY created_at DESC LIMIT 1').get(a.turnId) as {id:string;window_id:string};
-    const visibleRef=JSON.parse((log[0].full as any[]).flatMap(m=>toBlocks(m.content)).find(b=>b.text?.includes('{"memories":'))!.text!).memories[0].memory_ref;
-    assert.equal(visibleRef,list[0].memory_ref);
+    const packet = (log[0].full as any[]).flatMap(m => toBlocks(m.content)).find(b => b.text && isRecollectionText(b.text))!.text!;
+    const visibleRef = list[0].memory_ref;
+    assert.equal(packet, `你想起了一件事——记忆库建成，${ITEM.memory_date}。\n${ITEM.event_text}\n当时的心情：开心、期待。\n当时用户说过：「${words[0].text}」\n当时助手说过：「${words[1].text}」\n〔${visibleRef}〕`);
     const modelRead=await ctx.tools.execute('memory_read_full',{memory_ref:visibleRef,section:'source'},
       {roomId:'c1',windowId:req.window_id,turnId:a.turnId,requestId:req.id,purpose:'chat',activeReviewId:null,seenSequence:1,seenMessages:[]});
     assert.equal(modelRead.ok,true);assert.equal((modelRead.output.source as any[])[0].text,'绑定的原文');
@@ -130,7 +145,13 @@ test('JA-S08: owner can expand the same delivered bucket without exposing refs o
     assert.equal((await ctx.svc.readMemoryForTurn('other',a.turnId,list[0].memory_ref)).ok,false);
     assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,'sf_forged')).ok,false);
     assert.equal(caps.length,afterModel);
-    const first=await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);assert.equal(first.ok,true);
+    const detail = await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref);
+    assert.ok(detail.ok);
+    assert.deepEqual(detail.data.our_words,[
+      {speaker:'qiaosheng',display_speaker:'用户',text:quote.quote_text},
+      {speaker:'jiaming',display_speaker:'助手',text:'第二句'},
+      {speaker:'第三人',display_speaker:'第三人',text:'第三句'},
+    ]);
     assert.equal((await ctx.svc.readMemoryForTurn('c1',a.turnId,list[0].memory_ref,'memory:p1')).ok,true);
     assert.deepEqual(caps.slice(afterModel),['memory.detail.read','memory.detail.read']);
     assert.equal(log.length,1,'clicking detail never calls the main model');
@@ -167,15 +188,15 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   // 两个有来源边界的段（分段 manifest 在 surfacing_deliveries）。
   const memoryMessage = msgs2[msgs2.length - 2]!;
   assert.equal(memoryMessage.role, 'user', 'OR host data stays in the append-only conversation tail');
-  assert.equal(toBlocks(memoryMessage.content)[0]!.text, SURFACE_HOST_NOTICE);
+  assert.equal(toBlocks(memoryMessage.content).length, 1);
   assert.equal(msgs2.slice(msgs2.findIndex(m=>m.role!=='system')).some(m=>m.role==='system'), false, 'no mid-conversation system message can be hoisted into the cached prefix');
-  const memoryText = toBlocks(memoryMessage.content)[1]!.text!;
+  const memoryText = toBlocks(memoryMessage.content)[0]!.text!;
   const tail2Text = toBlocks(tail2.content).map(b => b.text ?? '').join('\n');
-  assert.deepEqual(JSON.parse(memoryText), { memories: [{ memory_ref: memoryRefFor(ITEM.detail_ref), date: '2026-07-09', text: ITEM.event_text }] });
+  assert.equal(memoryText, `你想起了一段往事。\n\n2026-07-09\n${ITEM.event_text}\n〔${memoryRefFor(ITEM.detail_ref)}〕`);
   assert.ok(memoryText.includes(memoryRefFor(ITEM.detail_ref)));
 
   assert.ok(tail2Text.includes('还记得去年那件事吗 a'));
-  assert.ok(!tail2Text.includes('{"memories":'), 'real user input is not rewritten with host memory');
+  assert.ok(!tail2Text.includes(ITEM.event_text), 'real user input is not rewritten with host memory');
   assert.ok(checkCalls >= 1, 'check 走过 M 本地校验');
   // retained 落账（真实 manifest 确认）
   assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_deliveries WHERE retained=1').get() as { n: number }).n, 1);
@@ -192,16 +213,17 @@ test('核心见证6：U1 同轮独立回忆块；U2 不删移旧包不重加；r
   assert.deepEqual(firstWire.provider,{only:['amazon-bedrock'],allow_fallbacks:false,require_parameters:true});
   assert.equal(ctx.db.prepare("SELECT count(*) n FROM message_revisions WHERE content LIKE '%memory_surfacing%'").get()?.n,0);
   // 旧回忆块仍在轨迹原位（未删除/未移动到新尾部）
-  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => b.text?.includes('{"memories":')));
+  const oldBlocks = msgs3.filter((m) => toBlocks(m.content).some((b) => isRecollectionText(b.text ?? '')));
   assert.equal(oldBlocks.length, 1, '旧回忆块仍在轨迹原位且仅一份');
   // 新尾部不再有回忆块（同事件已覆盖）
   const tail3 = msgs3[msgs3.length - 1]!;
-  assert.equal(toBlocks(tail3.content).filter((b) => b.text?.includes('{"memories":')).length, 0, 'U3 不重复追加');
-  // 覆盖表登记一次
-  assert.equal((ctx.db.prepare('SELECT COUNT(*) n FROM surfacing_coverage').get() as { n: number }).n, 1);
+  assert.equal(toBlocks(tail3.content).filter((b) => isRecollectionText(b.text ?? '')).length, 0, 'U3 不重复追加');
   const activeWindow = ctx.windows.activeWindow('c1')!.id;
-  assert.ok(ctx.svc.repo.coveredInWindow('c1', activeWindow, [ITEM]).has(ITEM.event_id), 'actual retained trajectory establishes visibility');
-  assert.equal(ctx.svc.repo.coveredInWindow('c1', 'new-window', [ITEM]).size, 0, 'a new window has no inherited visibility claim');
+  assert.deepEqual(windowCoverage(ctx.db, activeWindow).filter(range => range.resource_ref.startsWith('memory:')), [{
+    resource_ref: `memory:${ITEM.memory_id}`, content_version: ITEM.memory_version,
+    start_char: 0, end_char: [...ITEM.event_text].length,
+  }], 'actual retained trajectory establishes exact memory coverage');
+  assert.deepEqual(windowCoverage(ctx.db, 'new-window'), [], 'a new window has no inherited visibility claim');
 
   // 工具集：memory_read_full 进入冻结工具集（docs/06 E：不等首次出现才加）
   const tools1 = (log[0]!.tools as string[]);
@@ -238,7 +260,7 @@ test('JA-S16: stale receipt at final admission drops only the surfacing block �
     assert.equal(log.length, 1, 'current turn dispatches despite failed final admission');
     assert.equal(gen, 1);
     const msgs2 = log[0]!.full as Array<{ role: string; content: unknown }>;
-    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => b.text?.includes('{"memories":'))).length, 0, 'wire has no surfacing block');
+    assert.equal(msgs2.filter(m => toBlocks(m.content).some(b => isRecollectionText(b.text ?? ''))).length, 0, 'wire has no surfacing block');
     const tail2 = msgs2[msgs2.length - 1]!;
     assert.ok(toBlocks(tail2.content).some(b => b.text?.includes('你还记得那次7.9我们把记忆库做成了吗？')), 'real user input is intact');
     // 同一门两次：augmentFor 一次（valid）+ finalAdmit 一次（invalid）
@@ -247,7 +269,8 @@ test('JA-S16: stale receipt at final admission drops only the surfacing block �
     assert.equal(job.state, 'cancelled');
     assert.equal(job.reason_code, 'FINAL_ADMISSION_DROPPED');
     assert.equal((ctx.db.prepare("SELECT count(*) n FROM surfacing_deliveries WHERE state='dropped'").get() as { n: number }).n, 1);
-    assert.equal((ctx.db.prepare('SELECT count(*) n FROM surfacing_coverage').get() as { n: number }).n, 0, 'no coverage is claimed for a dropped block');
+    assert.equal(windowCoverage(ctx.db, ctx.windows.activeWindow('c1')!.id)
+      .some(range => range.resource_ref === `memory:${ITEM.memory_id}`), false, 'no coverage is claimed for a dropped block');
   } finally { await ctx.svc.stop(); ctx.db.close(); }
 });
 
@@ -273,8 +296,57 @@ test('existing OR cache trajectory gains its first memory only in the new tail',
     assertAppendOnly(old,next);
     const nextMessages=next.messages as any[];const oldMessages=old.messages as any[];
     assert.deepEqual(nextMessages.filter(m=>m.role==='system'),oldMessages.filter(m=>m.role==='system'));
-    assert.equal(nextMessages.at(-2).content[0].text,SURFACE_HOST_NOTICE);
-    assert.equal(JSON.parse(nextMessages.at(-2).content[1].text).memories[0].text,ITEM.event_text);
-    assert.equal(supportsSurfacingTransport('claude-agent-sdk'),false);
+    assert.ok(isRecollectionText(nextMessages.at(-2).content[0].text));
+    assert.ok(nextMessages.at(-2).content[0].text.includes(ITEM.event_text));
+    // SOL_RECALL_REFACTOR：SDK 现以 prompt 文本面承载同一冻结证据块
+    assert.equal(supportsSurfacingTransport('claude-agent-sdk'),true);
   } finally {await ctx.svc.stop();ctx.db.close();}
+});
+
+test('turn list shows the exact confirmed raw context with its speakers', async () => {
+  const log: Array<Record<string, unknown>> = [];
+  const caps: string[] = [];
+  const quote = '我们周末见。';
+  const neighbors = [
+    { speaker: '用户', date: '2026-07-09 08:02', text: '是说周六，不是周日。' },
+    { speaker: '助手', date: '2026-07-09 08:03', text: '好，我周六等你。' },
+  ];
+  const range = (id: string, text: string) => ({ resource_ref: `source_msg:${id}`, content_version: '1',
+    start_char: 0, end_char: [...text].length });
+  const selected: SurfaceItem = { ...ITEM, kind: 'words', speaker: 'jiaming', quote_text: quote,
+    event_text: quote, raw_context_needs: ['ev_1'], coverage_ranges: [range('center', quote)],
+    source_context_parts: neighbors.map((part, index) => ({ ...part, coverage_ranges: [range(`neighbor-${index}`, part.text)] })) };
+  const unconfirmed = '这句原文未获本次投递授权。';
+  const rejected: SurfaceItem = { ...selected, detail_ref: 'sdr_unconfirmed', coverage_ranges: [range('rejected', quote)],
+    source_context_parts: [{ speaker: '用户', date: '2026-07-09 08:04', text: unconfirmed, coverage_ranges: [range('rejected-neighbor', unconfirmed)] }] };
+  const mariposa: MariposaTransport = async cap => {
+    caps.push(cap);
+    if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
+    if (cap === 'memory.surfacing.prepare') return { ok: true, result: { status: 'prepared', candidate_snapshot_ref: 'sfr_raw' } };
+    if (cap === 'memory.surfacing.validate') return { ok: true, result: { status: 'ready', validation_receipt: 'svr_raw', items: [selected, rejected] } };
+    if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [selected.detail_ref] } };
+    throw Error(cap);
+  };
+  const judge = fakeSolJudge([{ decision: 'recall', plan: { purpose: '核对当时的聊天前后文', route: 'words', breadth: 'single',
+    queries: [{ need_kind: 'words', need: '核对周末见的原始聊天', semantic: '周末见', keywords: ['周末'], source_mode: 'raw_context' }],
+  } }]).judge;
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(textBody('raw', '合成回复')) });
+  const ctx = compose(tempRoot('sf-raw-list-'), transport, mariposa, log, judge);
+  try {
+    const { turnId } = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1',
+      content: '能核对一下周末见的原话和前后文吗？', clientMessageId: 'raw-list', occurredAt: T0 });
+    ctx.supervisor.enqueue(turnId);
+    await ctx.supervisor.waitIdle();
+    const packet = (log[0]!.full as Array<{ content: unknown }>).flatMap(message => toBlocks(message.content))
+      .find(block => isRecollectionText(block.text ?? ''))!.text!;
+    const context = neighbors.map(({ speaker, date, text }) => `${speaker}(${date})：${text}`).join('\n');
+    assert.ok(packet.includes(`助手当时说：“${quote}”`));
+    assert.ok(packet.includes(`那时前后还说过这些话：\n${context}`));
+    assert.ok(!packet.includes(unconfirmed));
+    const readCount = caps.length;
+    assert.deepEqual(ctx.svc.visibleMemoriesForTurn('c1', turnId), [{ memory_ref: memoryRefFor(selected.detail_ref),
+      kind: 'words', date: ITEM.memory_date, text: quote, speaker: '助手', context }]);
+    assert.deepEqual(ctx.svc.visibleMemoriesForTurn('other', turnId), []);
+    assert.equal(caps.length, readCount, 'reading the turn list never contacts Mariposa again');
+  } finally { await ctx.svc.stop(); ctx.db.close(); }
 });

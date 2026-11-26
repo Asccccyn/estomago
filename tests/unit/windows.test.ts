@@ -17,7 +17,7 @@ test('身份不通过 → 窗口 BLOCKED、指针不动，receipt 仍留证据�
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
 
@@ -38,7 +38,7 @@ test('READY → ACTIVE；轮转 prepare→原子切换；旧窗 CLOSED；receipt
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'hi', clientMessageId: 'w1' });
@@ -69,7 +69,7 @@ test('AUD-20 语义保留：prepare 阶段失败 → 轮转整体失败，旧窗
   const config = buildConfig(readyRuntimePatch());
   const identity = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   const gate = identity.evaluateGate(db);
@@ -97,7 +97,7 @@ test('身份退回 BLOCKED → 拒绝轮转，旧窗 ACTIVE（降级路径）', 
   const config = buildConfig(readyRuntimePatch());
   const identityGood = new IdentityService(config, paths);
   const events = new EventService(db);
-  const windows = new WindowManager(db, events, identityGood, config);
+  const windows = new WindowManager(db, identityGood, config);
   const messages = new MessageService(db);
   messages.ensureConversation('c1');
   const gate = identityGood.evaluateGate(db);

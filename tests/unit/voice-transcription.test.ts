@@ -150,3 +150,45 @@ test('unconfigured, unsupported contract, missing credential and unsafe URL are 
     await assert.rejects(() => f.voice.transcribe(foreign.id, 'primary', 'foreign'), (e: MediaError) => e.code === 'VOICE_ASSET_NOT_ALLOWED');
   } finally { f.close(); }
 });
+
+// RR1（复审 2026-11-09）：预派发失败（回源不可达）不再被外层 catch 改写 unknown——
+// 行落 failed/VOICE_MASTER_UNREACHABLE（可换键重试），M 恢复后新操作键真实走 ASR。
+test('RR1: M 回源失败=failed 可重试（非 unknown）；M 恢复后新键重试真实调 ASR 一次', async () => {
+  const uploaded = new Map<string, Uint8Array>();
+  let mDown = true;
+  const fakeStore = {
+    async uploadBytes(bytes: Uint8Array) { const hash = sha256Hex(Buffer.from(bytes)); uploaded.set(hash, bytes); return { content_hash: hash, mime: 'audio/webm', deduplicated: false }; },
+    async fetchBytes(hash: string) { if (mDown) throw new Error('M_UNREACHABLE'); const bytes = uploaded.get(hash); if (!bytes) throw new Error('NOT_FOUND'); return { bytes: Buffer.from(bytes), mime: 'audio/webm' }; },
+  } as never;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'est-voice-rr1-'));
+  const db = openDatabase(root);
+  migrate(db, sha256Hex);
+  const config = buildConfig({ integrations: { siren: { base_url: 'https://voice.example.invalid', credential_ref: credentialRef, contract_version: '1.1.1' } } });
+  const media = new MediaService(db, path.join(root, 'media'), config, fakeStore);
+  const messages = new MessageService(db);
+  messages.ensureConversation('primary');
+  let asrCalls = 0;
+  const voice = new VoiceService(db, media, config, async () => { asrCalls += 1; return Response.json({ text: '恢复后的转写', language: 'zh', duration_ms: 900 }); });
+  try {
+    const asset = await media.saveBuffer({ bytes: Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x01, 0x09]), purpose: 'chat_voice', operationId: 'rr1-upload', createdBy: 'qiaosheng', origin: 'upload' });
+    assert.equal(media.getAsset(asset.id).m_sync_state, 'synced', '前置：M 已落正');
+    // 逐出本地缓存（模拟 LRU）：读取必须回源
+    const row = db.prepare('SELECT storage_key FROM media_assets WHERE id = ?').get(asset.id) as { storage_key: string };
+    fs.rmSync(path.join(root, 'media', row.storage_key));
+    // 第一次：M 回源失败 → failed/VOICE_MASTER_UNREACHABLE（旧实现被改写 unknown 禁止重试）
+    const first = await voice.transcribe(asset.id, 'primary', 'op-rr1-a').catch((e: MediaError) => e);
+    assert.ok(first instanceof MediaError);
+    assert.equal(first.code, 'VOICE_MASTER_UNREACHABLE');
+    assert.equal(asrCalls, 0, 'ASR 从未派发');
+    const row1 = db.prepare('SELECT state, error_code FROM voice_transcripts WHERE asset_id = ?').get(asset.id) as { state: string; error_code: string };
+    assert.equal(row1.state, 'failed');
+    assert.equal(row1.error_code, 'VOICE_MASTER_UNREACHABLE');
+    // 同键重试：单飞门按 failed+同键 → 引导重开（502 failed 可重试语义），仍不派发
+    // M 恢复 + 新操作键：真实回源 + ASR 一次 → ready
+    mDown = false;
+    const second = await voice.transcribe(asset.id, 'primary', 'op-rr1-b');
+    assert.equal(second.state, 'ready');
+    assert.equal(second.derived_text, '恢复后的转写');
+    assert.equal(asrCalls, 1, '恢复后恰好一次真实 ASR');
+  } finally { db.close(); fs.rmSync(root, { recursive: true, force: true }); }
+});

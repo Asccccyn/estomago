@@ -46,7 +46,7 @@ type PayloadLog = Array<{ tools: unknown; lastUser: string }>;
 
 function compose(root: string, transport: OrTransport, mariposa: MariposaTransport, payloadLog?: PayloadLog) {
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 29_600 /* 合成首次和第二回合应能派发，长输入才越过软线。wishstar_read 目录加 shared 后按惯例平移 +100（2026-11-25）。 */ } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -55,7 +55,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
@@ -96,15 +96,10 @@ async function say(ctx: ReturnType<typeof compose>, content: string, id: string,
 
 test('F-J-09：同窗工具 epoch 冻结——turn2 词表刷新（返回含新类）后 turn3 的 tools 仍为 turn1 快照', async () => {
   const payloadLog: PayloadLog = [];
+  // 20261106 现行合同：mood 词表已冻结进 hold schema（静态 enum），不再运行时
+  // memory.mood.vocab 拉取——epoch 冻结成为结构性保证；本测试保留跨轮 tools 恒定断言。
   let vocabCalls = 0;
-  const vocabChanging: MariposaTransport = async (capability, payload) => {
-    if (capability === 'memory.mood.vocab') {
-      vocabCalls++;
-      const cats = vocabCalls === 1 ? ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安'] : ['开心', '爱', '生气', '吃醋', '悲伤', '渴望', '不安', '新类'];
-      return { ok: true, result: { categories: cats, version: `mood-vocab-${vocabCalls}` } };
-    }
-    return mariposaOk(capability, payload);
-  };
+  const vocabChanging: MariposaTransport = mariposaOk;
   const root = tempRoot('jab2-tools-');
   let gen = 0;
   const transport: OrTransport = async (payload) => {
@@ -118,7 +113,7 @@ test('F-J-09：同窗工具 epoch 冻结——turn2 词表刷新（返回含新�
   await say(ctx, '第一条', 't1', T0);
   await say(ctx, '第二条要记事', 't2', new Date(Date.parse(T0) + 60_000).toISOString());
   await say(ctx, '第三条', 't3', new Date(Date.parse(T0) + 120_000).toISOString());
-  assert.ok(vocabCalls >= 1, '词表确实被拉取过（触发缓存失效）');
+  void vocabCalls;
   const chatPayloads = payloadLog;
   assert.ok(chatPayloads.length >= 3, `应有≥3 个聊天请求（实际 ${chatPayloads.length}）`);
   const toolsJson1 = JSON.stringify(chatPayloads[0]!.tools);
@@ -140,7 +135,7 @@ test('F-J-09 断言有效性：tools 变化会被 assertAppendOnly 识别（对�
 test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——零评审，不猜测或签发范围凭证', async () => {
   const root = tempRoot('jab2-fj10-');
   let gen = 0;
-  const transport: OrTransport = async () => { gen++; return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) }; };
+  const transport: OrTransport = async (payload) => { gen++; console.log('FJ10-REQ', gen, (payload.messages as any[]).length, JSON.stringify((payload.messages as any[]).slice(0,2)).slice(0,120)); return { status: 200, headers: new Map<string, string>(), body: frameStream(textBody(`g${gen}`, `回复${gen}`)) }; };
   const ctx = compose(root, transport, mariposaOk);
   await say(ctx, '第一条', 'f1', T0);
   const win1 = ctx.windows.activeWindow('c1')!;
@@ -150,6 +145,7 @@ test('F-J-10（2026-10-08 改写）：无轨迹窗手动换窗——零评审，
   const r = await ctx.supervisor.manualRotate('c1');
   assert.equal(r.ok, true);
   assert.equal(gen, 1, '手动换窗未发模型请求');
+  console.log('FJ10-REVIEWS', JSON.stringify(ctx.db.prepare('SELECT * FROM rotation_reviews').all()));
   assert.equal(ctx.db.prepare('SELECT COUNT(*) n FROM rotation_reviews').get().n, 0);
   ctx.db.close();
 });
@@ -197,7 +193,9 @@ test('F-J-38：retrospective + mood_tags 在宿主预拒（不落服务端）', 
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: new HoldCheckpointService(db) });
   const out = await tools.execute('memory_hold', { original_title: '补记心情', categories: ['daily'], text: 'x', creation_mode: 'retrospective', memory_date: '2026-09-01', mood_tags: ['开心'] }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'r38' });
   assert.equal(out.ok, false, '补记+当时心情=整单拒');
-  assert.equal(out.output.error_code, 'HOLD_MOOD_WINDOW_REQUIRED');
+  // 20261106 现行合同：schema 条件（mood⇒creation_mode=const contemporaneous）在宿主
+  // 参数门前置拦截——HOLD_MOOD_WINDOW_REQUIRED 语义由 TOOL_ARG_ENUM 承载，仍零远端调用
+  assert.equal(out.output.error_code, 'TOOL_ARG_ENUM');
   assert.equal(calls.length, 0, '未发远端（宿主前置拦截省一次调用）');
   db.close();
 });

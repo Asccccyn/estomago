@@ -80,7 +80,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposa });
@@ -112,7 +112,7 @@ test('F01：无任何 SDK 前提（不装探针/不锁版本/不确认订阅）�
   ctx.db.close();
 });
 
-test('F02：已验证的当前 I 完整进入 OR 固定前缀（system 首块）', async () => {
+test('F02（DBG-05 后合同）：A 段=身份正本+运行规则正本——I 不再复制进 A 段（唯一注入点=B 段 bootstrap）', async () => {
   const log: PayloadLog = [];
   const t = loggingTransport(log, () => textBody('g1', '回'));
   const root = tempRoot('rm2-f02-');
@@ -120,20 +120,20 @@ test('F02：已验证的当前 I 完整进入 OR 固定前缀（system 首块）
   await say(ctx, '看 I', 'i1', T0);
   const msgs = log[0]!.messages as Array<{ role: string; content: Array<{ type: string; text: string }> }>;
   assert.equal(msgs[0]!.role, 'system');
-  assert.ok(msgs[0]!.content[0]!.text.includes('（测试）I 快照合成内容'), 'I 快照正文进入 A 前缀');
+  assert.ok(!msgs[0]!.content[0]!.text.includes('（测试）I 快照合成内容'), 'I 不再复制进 A 段（DBG-05：与 B 段真实 I 双注入的旧缺陷）');
   assert.ok(msgs[0]!.content[0]!.text.includes('（测试）经批准身份正文'), '身份正文在');
   assert.ok(msgs[0]!.content[0]!.text.includes('（测试）运行规则合成内容'), '批准规则在');
   ctx.db.close();
 });
 
 test('F03 尾：工具续请求每轮重算容量硬门——超界即停，不再发送', async () => {
-  // soft=800（首轮 ~300 不触发换窗）；safeInput=1000（工具参数膨胀后续轮 >1000 → 拦截）
+  // 只要求首请求已派发，工具回执之后的下一请求被容量硬门阻断。
   const log: PayloadLog = [];
-  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: '很长的记忆内容'.repeat(400) }));
+  const content = '很长的记忆内容'.repeat(1_000);
+  const t = loggingTransport(log, () => toolBody('g1', 'hc', 'memory_hold', { original_title: '测试记忆', creation_mode: 'contemporaneous', categories: ['daily'], text: content }));
   const root = tempRoot('rm2-f03-');
-  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 29192, soft_limit_tokens: 800 } } });
-  const sub = await say(ctx, '触发工具', 't1', T0);
-  assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
+  const ctx = compose(root, t, mariposaOk, { configOver: { windows: { model_context_capacity: 37_000 /* 首轮含原文；同一段原文作为工具参数进入续轮时超过输入预算。 */, soft_limit_tokens: 800 } } });
+  const sub = await say(ctx, '请把这段原文记下来：'+content, 't1', T0);  assert.equal(log.length, 1, '只有首轮请求——续轮被容量硬门拦截，未发出');
   const att = ctx.db.prepare('SELECT state, blocked_reason FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string; blocked_reason: string | null };
   assert.equal(att.state, 'failed');
   assert.ok(att.blocked_reason!.includes('CAPACITY_BLOCKED_HARD'), att.blocked_reason ?? '');

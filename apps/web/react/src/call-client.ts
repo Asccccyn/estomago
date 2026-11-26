@@ -1,16 +1,12 @@
-// B2/RE-04（2026-10-24）：正式通话面板的 Siren 实时协议 v2 客户端。
-// F-03（跨仓预审 2026-10-25）对齐服务端合同（packages/contracts/src/websocket.ts）：
-// - 每次开口=新输入代际：干净轮界发 start(新 input_id)；上轮未收尾（ending/thinking/
-//   speaking）时按协商 voice_interrupt 发 interrupt 换代（不再整通只发一次 start）；
-// - 下行 PCM16 按有符号小端解码（Int16），不再用无符号拼装；
-// - 静音=上行真停止（丢弃采集帧+收尾在途输入），不再拿未协商的 interrupt 冒充；
-// - notice 读 message 字段（服务端合约为 {t:'notice', code, message}）。
-// R-02（复审 2026-10-26）：下行按 stream_id 管理播放生命周期——打断（本地 interrupt
-//  或服务端 interrupted 帧）停止该流全部已调度节点并重置排程，新回复立即从头排；
-// 迟到的已作废流二进制块丢弃（P0-3）。未实现（如实声明）：回声参考通道、pre-roll
-// 精调——真机/真实 Siren 端到端属后续验收。
+// 正式通话面板使用 Siren WS v2。收音轮和下行语音分开收口：服务端重新接纳
+// 输入，且浏览器实际播完当前流后，才从新的麦克风样本开始判定下一句。
+import { microphoneEnvironmentIssue, microphoneErrorMessage } from '../../src/microphone-access.js';
+
+type CallClientState = 'connecting' | 'listening' | 'speaking' | 'ending' | 'processing' | 'ended' | 'error';
+
 export type CallClientEvents = {
-  onState: (state: 'connecting' | 'listening' | 'speaking' | 'ending' | 'ended' | 'error') => void;
+  onState: (state: CallClientState) => void;
+  onInputAvailable?: (available: boolean) => void;
   onPartial: (text: string) => void;
   onFinal: (text: string) => void;
   onReply: (text: string) => void;
@@ -20,56 +16,84 @@ export type CallClientEvents = {
 };
 
 const UPLINK_RATE = 16000;
-const END_SILENCE_MS = 700;
-const MIN_SPEECH_MS = 240;
+const SPEECH_RMS = 0.012;
+const DEFAULT_CONFIRM_MS = 200;
+const DEFAULT_END_SILENCE_MS = 700;
+// Siren v2 的 ACK 等待上限。音频在得到 input_started 之前留在本地。
+const ACK_TIMEOUT_MS = 5000;
+const MAX_ACK_SAMPLES = 256 * 1024 / Int16Array.BYTES_PER_ELEMENT;
+
+type MicFrame = { samples: Float32Array; capturedAt: number };
+type Input = {
+  id: string;
+  awaitingAck: Float32Array[] | null;
+  bufferedSamples: number;
+  silenceSamples: number;
+  endRequested: boolean;
+};
+type Playback = { nodes: Set<AudioBufferSourceNode>; receivedEnd: boolean };
 
 export class CallClient {
   private ws: WebSocket | null = null;
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private worklet: AudioWorkletNode | null = null;
-  private player: { ctx: AudioContext; nextTime: number } | null = null;
-  private pendingPcm: { streamId: string; rate: number; bytes: ArrayBuffer } | null = null;
+  private nextPlaybackTime = 0;
+  private pendingPcm: { streamId: string; rate: number; bytes: number } | null = null;
   private currentStreamId: string | null = null;
-  private readonly streamNodes = new Map<string, Set<{ stop(): void }>>();
-  private readonly cancelledStreams = new Set<string>();
-  private inputId = `in_${Date.now().toString(36)}`;
-  private inputLive = false;
-  private inputHasVoice = false;
-  private serverState = 'idle';
-  private interruptCapable = false;
+  private readonly playbacks = new Map<string, Playback>();
+  private readonly retiredStreams = new Set<string>();
+  private input: Input | null = null;
+  private serverState = 'connecting';
+  private micRequested = false;
+  private correlatedInput = false;
   private muted = false;
-  private inSpeech = false;
-  private speechStart = 0;
-  private lastVoice = 0;
   private ended = false;
-  private drainedStreams = new Set<string>();
+  private viewState: CallClientState = 'connecting';
+  private inputAvailable = false;
+  private acceptFramesFrom = 0;
+  private candidate: Float32Array[] = [];
+  private candidateSamples = 0;
+  private confirmSamples = UPLINK_RATE * DEFAULT_CONFIRM_MS / 1000;
+  private endSilenceSamples = UPLINK_RATE * DEFAULT_END_SILENCE_MS / 1000;
+  private ackTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectSettle: { resolve(): void; reject(err: Error): void } | null = null;
 
   private readonly url: string;
   private readonly token: string;
   private readonly events: CallClientEvents;
-  constructor(url: string, token: string, events: CallClientEvents) { this.url = url; this.token = token; this.events = events; }
+
+  constructor(url: string, token: string, events: CallClientEvents) {
+    this.url = url;
+    this.token = token;
+    this.events = events;
+  }
 
   async connect(): Promise<void> {
     this.events.onState('connecting');
+    this.events.onInputAvailable?.(false);
     const wsUrl = new URL(this.url);
     wsUrl.searchParams.set('token', this.token);
     this.ws = new WebSocket(wsUrl);
     this.ws.binaryType = 'arraybuffer';
     this.ws.onmessage = (ev) => this.onMessage(ev.data);
-    this.ws.onclose = (ev) => {
-      if (!this.ended) {
-        if (ev.code >= 4001 && ev.code <= 4007) this.events.onError(`通话被服务端关闭（${ev.code}）`);
-        this.events.onState('ended');
-      }
-      void this.stopMic();
+    this.ws.onclose = (event) => {
+      if (this.ended) return;
+      this.terminate('remote_close');
+      if (event.code >= 4001 && event.code <= 4007) this.events.onError(`通话被服务端关闭（${event.code}）`);
+      else if (event.code !== 1000) this.events.onError(`通话连接中断（${event.code}）`);
     };
-    this.ws.onerror = () => this.events.onError('通话连接失败');
+    this.ws.onerror = () => {
+      if (this.ended) return;
+      this.failCall('通话连接失败');
+    };
     await new Promise<void>((resolve, reject) => {
-      const w = this.ws!;
-      w.onopen = () => resolve();
-      w.onerror = () => reject(new Error('ws_connect_failed'));
+      const socket = this.ws!;
+      this.connectSettle = { resolve, reject };
+      socket.onopen = () => { this.connectSettle = null; resolve(); };
     });
+    if (this.ended) return;
+    // Siren v2 用这一能力绑定 input_id 和 input_started。本客户端始终按半双工收音。
     this.send({ t: 'ready', protocol: 2, capabilities: { playback_drain: true, voice_interrupt: true } });
   }
 
@@ -77,242 +101,359 @@ export class CallClient {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
   }
 
-  private onMessage(data: unknown): void {
-    if (typeof data === 'string') {
-      let msg: Record<string, unknown>;
-      try { msg = JSON.parse(data) as Record<string, unknown>; } catch { return; }
-      switch (msg['t']) {
-        case 'ready': {
-          // 服务端回报协商结果：voice_interrupt 决定能否在在途轮上换代
-          const caps = msg['capabilities'] as { voice_interrupt?: unknown } | undefined;
-          this.interruptCapable = caps?.voice_interrupt === true;
-          void this.startMic();
-          break;
-        }
-        case 'input_started': break; // 服务端已按本输入代际建轮（幂等 ACK）
-        case 'state': this.serverState = typeof msg['state'] === 'string' ? msg['state'] : this.serverState; this.events.onState(this.serverState === 'listening' ? 'listening' : this.serverState === 'speaking' ? 'speaking' : this.serverState === 'ending' ? 'ending' : 'listening'); break;
-        case 'partial': if (typeof msg['text'] === 'string') this.events.onPartial(msg['text']); break;
-        case 'final': case 'asr': if (typeof msg['text'] === 'string' && msg['text'].length > 0) this.events.onFinal(msg['text']); break;
-        case 'reply': if (typeof msg['text'] === 'string') this.events.onReply(msg['text']); break;
-        case 'notice': if (typeof msg['message'] === 'string' && msg['message'].length > 0) this.events.onNotice(msg['message']); break;
-        case 'pcm': {
-          const sid = typeof msg['stream_id'] === 'string' ? msg['stream_id'] : '';
-          this.pendingPcm = { streamId: sid, rate: Number(msg['rate'] ?? 24000), bytes: new ArrayBuffer(Number(msg['bytes'] ?? 0)) };
-          break;
-        }
-        case 'pcm_end': if (typeof msg['stream_id'] === 'string') this.scheduleDrain(String(msg['stream_id'])); break;
-        case 'interrupted': {
-          // R-02（复审 2026-10-26）：旧输出流永久失效（P0-3 合同）——停止该流全部
-          // 已调度节点并重置播放排程，新回复立即从头排，不再被旧队列拖住。
-          const sid = typeof msg['stream_id'] === 'string' ? msg['stream_id'] : this.currentStreamId;
-          if (sid) this.cancelStream(sid);
-          this.events.onNotice('（你打断了他）');
-          break;
-        }
-        case 'error': this.events.onError(typeof msg['message'] === 'string' ? msg['message'] : String(msg['code'] ?? 'call_error')); break;
-        default: break;
-      }
-      return;
+  private readyForInput(): boolean {
+    return this.serverState === 'idle' || this.serverState === 'listening';
+  }
+
+  private refreshState(): void {
+    const playing = this.serverState === 'speaking' || this.pendingPcm !== null || this.playbacks.size > 0;
+    const available = !!this.worklet && !this.ended && !this.muted && this.readyForInput() && !playing && !this.input?.endRequested;
+    if (available !== this.inputAvailable) {
+      this.inputAvailable = available;
+      this.clearCandidate();
+      if (available) this.acceptFramesFrom = this.ctx?.currentTime ?? 0;
+      else this.events.onMicLevel(0);
+      this.events.onInputAvailable?.(available);
     }
-    if (data instanceof ArrayBuffer && this.pendingPcm) {
+    const state = this.ended ? 'ended' : !this.worklet ? 'connecting' : playing ? 'speaking' :
+      this.serverState === 'ending' ? 'ending' : this.readyForInput() && !this.input?.endRequested ? 'listening' : 'processing';
+    if (state !== this.viewState) {
+      this.viewState = state;
+      this.events.onState(state);
+    }
+  }
+
+  private onMessage(data: unknown): void {
+    if (this.ended) return;
+    if (typeof data !== 'string') {
+      if (!(data instanceof ArrayBuffer) || !this.pendingPcm) return;
       const header = this.pendingPcm;
       this.pendingPcm = null;
-      if (this.cancelledStreams.has(header.streamId)) return; // 迟到旧流块：丢弃（P0-3）
-      this.playPcm(new Uint8Array(data), header.rate, header.streamId);
+      if (data.byteLength === header.bytes && !this.retiredStreams.has(header.streamId)) {
+        this.playPcm(new Uint8Array(data), header.rate, header.streamId);
+      }
+      this.refreshState();
+      return;
+    }
+
+    let msg: Record<string, unknown>;
+    try { msg = JSON.parse(data) as Record<string, unknown>; } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
+    if (this.input && typeof msg.input_id === 'string' && msg.input_id !== this.input.id) {
+      if (msg.t === 'pcm') { this.pendingPcm = null; this.refreshState(); }
+      return; // 旧输入的迟到状态、正文和音频不覆盖真实活动轮。
+    }
+    switch (msg.t) {
+      case 'ready': {
+        if (this.micRequested) return;
+        this.micRequested = true;
+        const caps = msg.capabilities as { voice_interrupt?: unknown } | undefined;
+        this.correlatedInput = caps?.voice_interrupt === true;
+        const vad = msg.vad as { confirm_ms?: unknown; end_silence_ms?: unknown } | undefined;
+        this.confirmSamples = this.samplesFor(vad?.confirm_ms, DEFAULT_CONFIRM_MS, 2000);
+        this.endSilenceSamples = this.samplesFor(vad?.end_silence_ms, DEFAULT_END_SILENCE_MS, 5000);
+        void this.startMic();
+        break;
+      }
+      case 'input_started': {
+        const input = this.input;
+        if (input && input.id === msg.input_id) this.acceptInput(input);
+        break;
+      }
+      case 'state': {
+        if (typeof msg.state !== 'string') break;
+        if (msg.state === 'ended') { this.terminate('remote_close'); return; }
+        const wasReady = this.readyForInput();
+        this.serverState = msg.state;
+        // start 也会伴随一条 listening。只有处理状态回到 listening 才完成收尾，
+        // 避免早到的 start/listening 在本地 end 后误打开下一轮。
+        if (!wasReady && this.readyForInput()) this.clearInput();
+        this.refreshState();
+        break;
+      }
+      case 'partial': if (typeof msg.text === 'string') this.events.onPartial(msg.text); break;
+      case 'final':
+      case 'asr': if (typeof msg.text === 'string' && msg.text.length > 0) this.events.onFinal(msg.text); break;
+      case 'reply': if (typeof msg.text === 'string') this.events.onReply(msg.text); break;
+      case 'notice': if (typeof msg.message === 'string' && msg.message) this.events.onNotice(msg.message); break;
+      case 'pcm': {
+        const streamId = typeof msg.stream_id === 'string' ? msg.stream_id : '';
+        const rate = Number(msg.rate ?? 24000);
+        const bytes = Number(msg.bytes);
+        this.pendingPcm = streamId && !this.retiredStreams.has(streamId) &&
+          Number.isFinite(rate) && rate > 0 && Number.isSafeInteger(bytes) && bytes > 0 && bytes % 2 === 0
+          ? { streamId, rate, bytes } : null;
+        this.refreshState();
+        break;
+      }
+      case 'pcm_end': {
+        if (typeof msg.stream_id !== 'string') break;
+        const playback = this.playbacks.get(msg.stream_id);
+        if (playback) { playback.receivedEnd = true; this.finishPlayback(msg.stream_id, playback); }
+        break;
+      }
+      case 'interrupted': {
+        const streamId = typeof msg.stream_id === 'string' ? msg.stream_id : this.currentStreamId;
+        if (streamId) this.cancelStream(streamId);
+        this.events.onNotice('当前回复已中断。');
+        break;
+      }
+      case 'error': {
+        // Siren 的识别、合成和 Core 错误属于一轮。后续 listening 照常重开收音；
+        // WS 关闭/本地设备错误另走通话终止路径。
+        const diagnostic = typeof msg.message === 'string' ? msg.message : String(msg.code ?? 'call_error');
+        if (this.input?.awaitingAck) { this.clearInput(); this.refreshState(); }
+        this.events.onNotice(`本轮语音处理失败：${diagnostic}`);
+        break;
+      }
     }
   }
 
-  /** R-02：取消一条下行输出流——停止已调度节点；若它撑着排程序列则把
-   *  nextTime 拉回当前时刻（新流不被已作废的旧队列拖延）。 */
-  private cancelStream(streamId: string): void {
-    if (this.cancelledStreams.has(streamId)) return;
-    this.cancelledStreams.add(streamId);
-    const nodes = this.streamNodes.get(streamId);
-    let stopped = 0;
-    if (nodes) {
-      for (const node of nodes) { try { node.stop(); stopped++; } catch { /* 已播完 */ } }
-      this.streamNodes.delete(streamId);
-    }
-    if (stopped > 0 && this.player && this.ctx && streamId === this.currentStreamId) {
-      this.player.nextTime = this.ctx.currentTime + 0.05;
-    }
+  private samplesFor(value: unknown, fallback: number, max: number): number {
+    const ms = typeof value === 'number' && Number.isFinite(value) ? Math.min(max, Math.max(0, value)) : fallback;
+    return Math.ceil(UPLINK_RATE * ms / 1000);
   }
 
-  // —— 上行：采集 + VAD 断句 + 输入代际 ——
   private async startMic(): Promise<void> {
     try {
+      const unavailable = microphoneEnvironmentIssue();
+      if (unavailable) { this.failCall(unavailable); return; }
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      // JV-15（联合审计 2026-10-26）：授权/设备初始化是真实异步边界——await 期间可能
-      // 已挂断。晚到资源立即释放，不再重建音频链（否则挂断后 mic track/context 泄漏）。
-      if (this.ended) { stream.getTracks().forEach((t) => t.stop()); return; }
+      if (this.ended) { stream.getTracks().forEach((track) => track.stop()); return; }
       this.stream = stream;
-      this.ctx = new AudioContext({ sampleRate: UPLINK_RATE });
-      await this.ctx.resume();
-      if (this.ended) { void this.stopMic(); return; }
-      const source = this.ctx.createMediaStreamSource(this.stream);
+      const ctx = new AudioContext({ sampleRate: UPLINK_RATE });
+      this.ctx = ctx;
+      await ctx.resume();
+      if (this.ended) return;
+      const source = ctx.createMediaStreamSource(stream);
       const workletCode = `
 class UplinkProcessor extends AudioWorkletProcessor {
   process(inputs) {
-    const ch = inputs[0]?.[0];
-    if (ch) this.port.postMessage(ch.slice(0));
+    const samples = inputs[0]?.[0];
+    if (samples) this.port.postMessage({ samples: samples.slice(0), capturedAt: currentTime });
     return true;
   }
 }
 registerProcessor('uplink', UplinkProcessor);`;
       const blobUrl = URL.createObjectURL(new Blob([workletCode], { type: 'application/javascript' }));
-      await this.ctx.audioWorklet.addModule(blobUrl);
-      URL.revokeObjectURL(blobUrl);
-      if (this.ended) { void this.stopMic(); return; }
-      this.worklet = new AudioWorkletNode(this.ctx, 'uplink');
-      this.worklet.port.onmessage = (ev) => this.onPcmFrame(ev.data as Float32Array);
+      try { await ctx.audioWorklet.addModule(blobUrl); } finally { URL.revokeObjectURL(blobUrl); }
+      if (this.ended) return;
+      this.worklet = new AudioWorkletNode(ctx, 'uplink');
+      this.worklet.port.onmessage = (event) => this.onPcmFrame(event.data as MicFrame);
       source.connect(this.worklet);
-      // 采集节点不连 destination（静音处理链，防本地回环）
-      // 首轮输入在开麦即开（保留话头 prebuffer）；后续每次开口由 VAD 换代
-      this.beginInput();
-      this.events.onState('listening');
+      this.refreshState();
     } catch (err) {
-      if (this.ended) return; // 已挂断：设备错误不再打扰结束态
-      this.events.onError(`麦克风不可用：${String((err as Error).message ?? err)}`);
+      if (this.ended) return;
+      this.failCall(microphoneErrorMessage(err));
     }
   }
 
-  private newInputId(): string {
-    return `in_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  private clearCandidate(): void {
+    this.candidate = [];
+    this.candidateSamples = 0;
   }
 
-  /** 新开口=新输入代际：开麦预开的空输入首次开口沿用（保留话头 prebuffer）；
-   *  已上行语音的在途输入、或服务端未回 listening（在途轮）时按协商 interrupt 换代 */
+  private clearAckTimer(): void {
+    if (this.ackTimer === null) return;
+    clearTimeout(this.ackTimer);
+    this.ackTimer = null;
+  }
+
+  private clearInput(): void {
+    this.clearAckTimer();
+    this.input = null;
+    this.clearCandidate();
+  }
+
   private beginInput(): void {
-    if (this.ended || this.muted) return;
-    const busy = this.serverState !== 'listening' && this.serverState !== 'idle';
-    if (this.inputLive && !this.inputHasVoice && !busy) {
-      this.inputHasVoice = true;
+    const frames = this.candidate;
+    const input: Input = {
+      id: `in_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+      awaitingAck: this.correlatedInput ? frames : null,
+      bufferedSamples: this.candidateSamples,
+      silenceSamples: 0,
+      endRequested: false,
+    };
+    this.clearCandidate();
+    this.input = input;
+    this.send({ t: 'start', input_id: input.id });
+    if (input.awaitingAck) {
+      this.ackTimer = setTimeout(() => this.dropAwaitingInput('未收到本轮收音确认，请再说一次。'), ACK_TIMEOUT_MS);
+    } else {
+      for (const frame of frames) this.sendPcm(frame);
+    }
+  }
+
+  private acceptInput(input: Input): void {
+    const frames = input.awaitingAck;
+    if (!frames) return;
+    if (!this.readyForInput() || this.playbacks.size || this.pendingPcm) {
+      this.clearInput();
+      this.refreshState();
       return;
     }
-    if (this.inputLive || busy) {
-      if (!this.interruptCapable) return; // 未获协商：换代请求会被拒，帧由服务端丢弃（如实降级）
-      const next = this.newInputId();
-      // R-02：本地打断先作废当前输出流（已排队旧话立即停，不等服务端确认帧）
-      if (this.currentStreamId) this.cancelStream(this.currentStreamId);
-      this.send({ t: 'interrupt', target_input_id: this.inputId, new_input_id: next });
-      this.inputId = next;
-      this.inputLive = true;
-      this.inputHasVoice = true;
-      return;
-    }
-    const next = this.newInputId();
-    this.send({ t: 'start', input_id: next });
-    this.inputId = next;
-    this.inputLive = true;
-    this.inputHasVoice = false;
+    this.clearAckTimer();
+    input.awaitingAck = null;
+    for (const frame of frames) this.sendPcm(frame);
+    if (input.endRequested) this.send({ t: 'end', input_id: input.id });
+  }
+
+  private dropAwaitingInput(notice?: string): void {
+    const input = this.input;
+    if (!input?.awaitingAck) return;
+    this.clearInput();
+    if (this.readyForInput() && !this.playbacks.size && !this.pendingPcm) this.send({ t: 'abort', input_id: input.id });
+    this.refreshState();
+    if (notice) this.events.onNotice(notice);
   }
 
   private endInput(): void {
-    if (!this.inputLive) return;
-    this.inputLive = false;
-    this.inputHasVoice = false;
-    this.send({ t: 'end', input_id: this.inputId });
+    const input = this.input;
+    if (!input || input.endRequested) return;
+    input.endRequested = true;
+    if (!input.awaitingAck) this.send({ t: 'end', input_id: input.id });
+    this.refreshState();
   }
 
-  private onPcmFrame(frame: Float32Array): void {
-    if (this.ended || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    // RMS 电平 + 简单能量 VAD（阈值可调）
-    let sum = 0;
-    for (let i = 0; i < frame.length; i++) sum += frame[i]! * frame[i]!;
-    const rms = Math.sqrt(sum / frame.length);
+  private onPcmFrame({ samples, capturedAt }: MicFrame): void {
+    if (!this.inputAvailable || !samples.length || capturedAt < this.acceptFramesFrom) return;
+    let energy = 0;
+    for (const value of samples) energy += value * value;
+    const rms = Math.sqrt(energy / samples.length);
     this.events.onMicLevel(rms);
-    // 真静音：不上行任何帧、不推进 VAD（解除后从下一次开口重新开代）
-    if (this.muted) return;
-    const now = performance.now();
-    if (rms > 0.012) {
-      if (!this.inSpeech) { this.inSpeech = true; this.speechStart = now; this.beginInput(); }
-      this.lastVoice = now;
-    } else if (this.inSpeech && now - this.lastVoice > END_SILENCE_MS) {
-      this.inSpeech = false;
-      if (now - this.speechStart >= MIN_SPEECH_MS) this.endInput();
+    const voiced = rms > SPEECH_RMS;
+    const input = this.input;
+    if (!input) {
+      if (!voiced) { this.clearCandidate(); return; }
+      this.candidate.push(samples);
+      this.candidateSamples += samples.length;
+      if (this.candidateSamples >= this.confirmSamples) this.beginInput();
+      return;
     }
-    // PCM16 小端上行
-    const pcm = new Int16Array(frame.length);
-    for (let i = 0; i < frame.length; i++) {
-      const v = Math.max(-1, Math.min(1, frame[i]!));
-      pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+    if (input.awaitingAck) {
+      input.bufferedSamples += samples.length;
+      if (input.bufferedSamples > MAX_ACK_SAMPLES) { this.dropAwaitingInput('本轮收音确认超时，请再说一次。'); return; }
+      input.awaitingAck.push(samples);
+    } else {
+      this.sendPcm(samples);
     }
-    this.ws.send(pcm.buffer);
+    input.silenceSamples = voiced ? 0 : input.silenceSamples + samples.length;
+    // 起声通过确认后，无论句子长短均交给 ASR 判断。最后一段静音帧先于 end。
+    if (!voiced && input.silenceSamples >= this.endSilenceSamples) this.endInput();
   }
 
-  // —— 下行：PCM 播放 + drain 回执 ——
+  private sendPcm(samples: Float32Array): void {
+    const socket = this.ws;
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const pcm = new Int16Array(samples.length);
+    for (let i = 0; i < samples.length; i++) {
+      const value = Math.max(-1, Math.min(1, samples[i]!));
+      pcm[i] = value < 0 ? value * 0x8000 : value * 0x7fff;
+    }
+    socket.send(pcm.buffer);
+  }
+
   private playPcm(bytes: Uint8Array, rate: number, streamId: string): void {
-    if (!this.ctx) return;
-    if (!this.player) this.player = { ctx: this.ctx, nextTime: this.ctx.currentTime + 0.05 };
-    const p = this.player;
+    const ctx = this.ctx;
+    if (!ctx) return;
+    let playback = this.playbacks.get(streamId);
+    if (!playback) {
+      playback = { nodes: new Set(), receivedEnd: false };
+      this.playbacks.set(streamId, playback);
+    }
+    if (playback.receivedEnd) return;
     this.currentStreamId = streamId;
     const frames = new Float32Array(bytes.length / 2);
     for (let i = 0; i < frames.length; i++) {
-      // PCM16 有符号小端：先按 Int16 符号扩展再归一（[-1,-0.5,0,0.5] 必须解回原值）
       const raw = bytes[i * 2]! | (bytes[i * 2 + 1]! << 8);
       frames[i] = ((raw << 16) >> 16) / 32768;
     }
-    const buf = p.ctx.createBuffer(1, frames.length, rate);
-    buf.copyToChannel(frames, 0);
-    const node = p.ctx.createBufferSource();
-    node.buffer = buf;
-    node.connect(p.ctx.destination);
-    // JV-02（联合审计 2026-10-26）：排程时刻已过（上轮播完后真实时钟已前进，
-    // 或打断/暂停后 nextTime 落在过去）——以当前音频时钟续接（小抖动），块保持
-    // 顺序；否则旧时刻的块会被浏览器立即同时播放（第二轮全部重叠）。
-    const now = p.ctx.currentTime;
-    if (p.nextTime < now) p.nextTime = now + 0.05;
-    node.start(p.nextTime);
-    p.nextTime += frames.length / rate;
-    // R-02：登记节点供打断时停止（流结束自然播完时在 onended 移除）
-    let nodes = this.streamNodes.get(streamId);
-    if (!nodes) { nodes = new Set(); this.streamNodes.set(streamId, nodes); }
-    const registered = node as AudioBufferSourceNode & { onended?: (() => void) | null };
-    nodes.add(node);
-    registered.onended = () => { nodes!.delete(node); };
+    const buffer = ctx.createBuffer(1, frames.length, rate);
+    buffer.copyToChannel(frames, 0);
+    const node = ctx.createBufferSource();
+    node.buffer = buffer;
+    node.connect(ctx.destination);
+    const stream = playback;
+    stream.nodes.add(node);
+    node.onended = () => {
+      stream.nodes.delete(node);
+      this.finishPlayback(streamId, stream);
+    };
+    if (this.nextPlaybackTime <= ctx.currentTime) this.nextPlaybackTime = ctx.currentTime + 0.05;
+    node.start(this.nextPlaybackTime);
+    this.nextPlaybackTime += frames.length / rate;
   }
 
-  private scheduleDrain(streamId: string): void {
-    if (this.drainedStreams.has(streamId)) return;
-    if (this.cancelledStreams.has(streamId)) return; // 已作废流不再宣称播完（服务端 interrupt 时已不等）
-    const p = this.player;
-    const ctx = this.ctx;
-    if (!p || !ctx) return;
-    const wait = Math.max(0, (p.nextTime - ctx.currentTime) * 1000 + 60);
-    setTimeout(() => {
-      if (this.ended || this.cancelledStreams.has(streamId)) return;
-      this.send({ t: 'playback_drained', stream_id: streamId });
-      this.drainedStreams.add(streamId);
-    }, wait);
+  private finishPlayback(streamId: string, playback: Playback): void {
+    if (this.ended || this.playbacks.get(streamId) !== playback || !playback.receivedEnd || playback.nodes.size > 0) return;
+    this.playbacks.delete(streamId);
+    this.retiredStreams.add(streamId);
+    if (this.currentStreamId === streamId) this.currentStreamId = null;
+    this.send({ t: 'playback_drained', stream_id: streamId });
+    this.refreshState();
   }
 
-  /** 真静音开关：静音即停上行并收尾在途输入（已上行部分如实成轮）、冻结 VAD；
-   *  解除后从下一次开口重新判定（必然开新代际，不接续静音前的旧话头） */
+  /** 只消费远端实际发出的流中断。麦克风无权停止下行。 */
+  private cancelStream(streamId: string): void {
+    this.retiredStreams.add(streamId);
+    const playback = this.playbacks.get(streamId);
+    this.playbacks.delete(streamId);
+    for (const node of playback?.nodes ?? []) { try { node.stop(); } catch { /* 已播完 */ } }
+    if (this.pendingPcm?.streamId === streamId) this.pendingPcm = null;
+    if (this.currentStreamId === streamId) {
+      this.currentStreamId = null;
+      this.nextPlaybackTime = 0;
+    }
+    this.refreshState();
+  }
+
   setMuted(muted: boolean): void {
     if (this.muted === muted) return;
     this.muted = muted;
-    if (muted) {
-      this.inSpeech = false;
-      this.endInput();
+    if (muted && this.readyForInput() && !this.playbacks.size && !this.pendingPcm) {
+      if (this.input?.awaitingAck) this.dropAwaitingInput();
+      else this.endInput();
     }
+    this.refreshState();
   }
 
   async hangup(): Promise<void> {
+    this.terminate('local_hangup');
+  }
+
+  private failCall(message: string): void {
+    this.terminate('local_error');
+    this.events.onError(message);
+  }
+
+  private terminate(reason: 'local_hangup' | 'remote_close' | 'local_error'): void {
     if (this.ended) return;
     this.ended = true;
-    try { this.send({ t: 'abort', input_id: this.inputId }); } catch { /* 已关 */ }
-    await this.stopMic();
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.close(1000, 'hangup');
-    this.events.onState('ended');
+    this.clearInput();
+    this.connectSettle?.reject(new Error(`call_terminated:${reason}`));
+    this.connectSettle = null;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) {
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onopen = null;
+      try { if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close(1000, reason); } catch { /* 已断 */ }
+    }
+    this.playbacks.clear();
+    this.pendingPcm = null;
+    this.refreshState();
+    void this.stopMic();
   }
 
   private async stopMic(): Promise<void> {
     try { this.worklet?.disconnect(); } catch { /* 已断 */ }
     this.worklet = null;
-    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
-    if (this.ctx && this.ctx.state !== 'closed') { try { await this.ctx.close(); } catch { /* 忽略 */ } }
+    const ctx = this.ctx;
     this.ctx = null;
-    this.player = null;
+    if (ctx && ctx.state !== 'closed') { try { await ctx.close(); } catch { /* 忽略 */ } }
   }
 }

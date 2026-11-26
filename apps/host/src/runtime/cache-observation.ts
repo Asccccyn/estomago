@@ -6,6 +6,8 @@
 import type { Db } from '../db/connection.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
 import { evaluateCacheMiss, type SystemAlertService } from '../observability/system-alerts.ts';
+import { toolsFingerprint } from './context-fingerprint.ts';
+import { modelToolsAfterBindingRetirement, storedToolset } from './tool-discovery.ts';
 
 export const CACHE_TTL_MS = 3_600_000; // 与 openrouter.cache_ttl='1h' 同一合同（不在此另设配置）
 
@@ -20,8 +22,14 @@ export type CacheEvidence = {
   writeTokens: number;
 };
 
+function mainToolProfile(db: Db, windowId: string): string | null {
+  const set = storedToolset(db, windowId);
+  return set?.protocol === 'direct' ? toolsFingerprint(modelToolsAfterBindingRetirement(set.tools)) : null;
+}
+
 /** 最近一次有非零缓存读写证据的请求（usage complete；按派发开始时间取最新）。无证据=null（≠0，≠命中）。 */
 export function lastCacheEvidence(db: Db, windowId: string): CacheEvidence | null {
+  const toolsHash = mainToolProfile(db, windowId);
   const row = db.prepare(
     `SELECT u.request_id AS request_id, pr.window_id AS window_id, u.model AS model,
             u.cache_read_input_tokens AS read_t, u.cache_creation_input_tokens AS write_t,
@@ -29,11 +37,12 @@ export function lastCacheEvidence(db: Db, windowId: string): CacheEvidence | nul
      FROM usage_observations u
      JOIN provider_requests pr ON pr.id = u.request_id
      WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+       AND (? IS NULL OR json_extract(pr.context_fingerprint_json, '$.tools_hash') = ?)
        AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
          OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
      ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
      LIMIT 1`,
-  ).get(windowId) as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
+  ).get(windowId, toolsHash, toolsHash) as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
   if (!row) return null;
   const startedAt = row.dispatch_at ?? row.sent_at ?? row.observed_at;
   return {
@@ -53,6 +62,154 @@ export function keepwarmTargetAtMs(evidence: CacheEvidence | null): number | nul
   return Number.isFinite(t) ? t + POLICY_CONSTANTS.background.keepwarm.idle_after_cache_ms : null;
 }
 
+function transportFamilyOf(source: string | null | undefined): string | null {
+  if (!source) return null;
+  if (source.startsWith('sdk')) return 'sdk';
+  if (source === 'or_stream') return 'openrouter';
+  if (source === 'ds_stream') return 'deepseek';
+  return source;
+}
+
+function hasExplicitOneHourCacheControl(payloadWireJson: string | null): boolean {
+  if (!payloadWireJson) return false;
+  try {
+    const parsed = JSON.parse(payloadWireJson) as {
+      cache_control?: { type?: unknown; ttl?: unknown };
+      messages?: Array<{
+        cache_control?: { type?: unknown; ttl?: unknown };
+        content?: unknown;
+      }>;
+    } | null;
+    if (!parsed || typeof parsed !== 'object') return false;
+    const is1h = (cc: unknown): boolean => Boolean(
+      cc && typeof cc === 'object' && (cc as { type?: unknown }).type === 'ephemeral' && (cc as { ttl?: unknown }).ttl === '1h',
+    );
+    if (is1h(parsed.cache_control)) return true;
+    if (Array.isArray(parsed.messages)) {
+      for (const m of parsed.messages) {
+        if (is1h(m?.cache_control)) return true;
+        if (Array.isArray(m?.content)) {
+          for (const block of m.content) {
+            if (is1h((block as { cache_control?: unknown })?.cache_control)) return true;
+          }
+        }
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function parseCacheCreationSplit(rawUsageJson: string | null): { ephemeral5m: number | null; ephemeral1h: number | null } {
+  if (!rawUsageJson) return { ephemeral5m: null, ephemeral1h: null };
+  try {
+    const parsed = JSON.parse(rawUsageJson) as {
+      cache_creation_split?: { ephemeral_5m_input_tokens?: unknown; ephemeral_1h_input_tokens?: unknown };
+    } | null;
+    const split = parsed?.cache_creation_split;
+    return {
+      ephemeral5m: typeof split?.ephemeral_5m_input_tokens === 'number' ? split.ephemeral_5m_input_tokens : null,
+      ephemeral1h: typeof split?.ephemeral_1h_input_tokens === 'number' ? split.ephemeral_1h_input_tokens : null,
+    };
+  } catch {
+    return { ephemeral5m: null, ephemeral1h: null };
+  }
+}
+
+/** Strict per-request proof for satisfied_by_request cache-postponement (2026-11-25 ruling):
+ *  Postponing an ordinary heartbeat due to another completed request (e.g. a quiet autonomous wake)
+ *  is ONLY permitted when the request proves it protected the SAME main chat's 1-hour cache:
+ *    1. Same window + matching main tool profile (`tools_hash`) + completed with complete usage.
+ *    2. Same model AND same transport family as the prior main-chat/heartbeat baseline on this window.
+ *    3. Protected prefix scale: non-zero cache read (`readTokens > 0`) and protected prefix
+ *       (`readTokens + writeTokens >= baselineProtected` and `readTokens >= 70%` of baseline).
+ *    4. Explicit 1-hour TTL coverage (API wire payload carries `cache_control: { type: 'ephemeral', ttl: '1h' }`
+ *       and is not 5m-only; SDK usage reports `ephemeral_1h_input_tokens > 0` and is not 5m-only).
+ *  When evidence is insufficient, return false so scheduling follows standard v2.1 timing. */
+export function provesMainChatOneHourCacheProtection(db: Db, input: {
+  windowId: string;
+  candidateRequestId: string;
+}): boolean {
+  const toolsHash = mainToolProfile(db, input.windowId);
+  type ObsRow = {
+    request_id: string;
+    purpose: string | null;
+    model: string | null;
+    source: string | null;
+    read_t: number | null;
+    write_t: number | null;
+    raw_usage_json: string | null;
+    payload_wire_json: string | null;
+    tools_hash: string | null;
+    started_at: string;
+  };
+  const candidate = db.prepare(`
+    SELECT u.request_id AS request_id, pr.purpose AS purpose, u.model AS model, u.source AS source,
+           u.cache_read_input_tokens AS read_t, u.cache_creation_input_tokens AS write_t,
+           u.raw_usage_json AS raw_usage_json, pr.payload_wire_json AS payload_wire_json,
+           json_extract(pr.context_fingerprint_json, '$.tools_hash') AS tools_hash,
+           COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) AS started_at
+    FROM usage_observations u
+    JOIN provider_requests pr ON pr.id = u.request_id
+    WHERE pr.id = ? AND pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+      AND (? IS NULL OR json_extract(pr.context_fingerprint_json, '$.tools_hash') = ?)
+    LIMIT 1
+  `).get(input.candidateRequestId, input.windowId, toolsHash, toolsHash) as ObsRow | undefined;
+  if (!candidate) return false;
+
+  const candRead = candidate.read_t ?? 0;
+  const candWrite = candidate.write_t ?? 0;
+  if (candRead <= 0) return false; // Must actually read existing main-chat cache (no cold miss).
+
+  const baseline = db.prepare(`
+    SELECT u.request_id AS request_id, pr.purpose AS purpose, u.model AS model, u.source AS source,
+           u.cache_read_input_tokens AS read_t, u.cache_creation_input_tokens AS write_t,
+           u.raw_usage_json AS raw_usage_json, pr.payload_wire_json AS payload_wire_json,
+           json_extract(pr.context_fingerprint_json, '$.tools_hash') AS tools_hash,
+           COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) AS started_at
+    FROM usage_observations u
+    JOIN provider_requests pr ON pr.id = u.request_id
+    WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+      AND pr.purpose IN ('chat', 'cache_keepalive')
+      AND pr.id != ?
+      AND COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) <= ?
+      AND (? IS NULL OR json_extract(pr.context_fingerprint_json, '$.tools_hash') = ?)
+      AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
+        OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
+    ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
+    LIMIT 1
+  `).get(input.windowId, candidate.request_id, candidate.started_at, toolsHash, toolsHash) as ObsRow | undefined;
+  if (!baseline) return false;
+
+  // 1. Same model, same transport family, same tools_hash (when present).
+  if (!candidate.model || !baseline.model || candidate.model !== baseline.model) return false;
+  const candTransport = transportFamilyOf(candidate.source);
+  const baseTransport = transportFamilyOf(baseline.source);
+  if (!candTransport || !baseTransport || candTransport !== baseTransport) return false;
+  if (candidate.tools_hash && baseline.tools_hash && candidate.tools_hash !== baseline.tools_hash) return false;
+
+  // 2. Protected prefix scale matches the main chat (not a tiny unrelated prompt).
+  const baseProtected = (baseline.read_t ?? 0) + (baseline.write_t ?? 0);
+  const candProtected = candRead + candWrite;
+  if (baseProtected <= 0) return false;
+  if (candProtected < baseProtected) return false;
+  if (candRead < Math.floor(baseProtected * 0.7)) return false;
+
+  // 3. Explicit 1-hour TTL coverage proof (never accept 5m-only or unverified TTL).
+  const split = parseCacheCreationSplit(candidate.raw_usage_json);
+  const proven5mOnly = split.ephemeral5m !== null && split.ephemeral5m > 0 && !(split.ephemeral1h !== null && split.ephemeral1h > 0);
+  if (proven5mOnly) return false;
+
+  if (candTransport === 'openrouter') {
+    return hasExplicitOneHourCacheControl(candidate.payload_wire_json);
+  }
+  if (candTransport === 'sdk') {
+    return split.ephemeral1h !== null && split.ephemeral1h > 0;
+  }
+  return false;
+}
+
 /** 缓存估计到期 = 证据请求开始 + 1h。始终是估计——路由黏性/上游空闲过期独立存在，不承诺物理命中。 */
 export function estimatedCacheExpiryAtMs(evidence: CacheEvidence | null): number | null {
   const t = Date.parse(evidence?.startedAt ?? '');
@@ -61,6 +218,7 @@ export function estimatedCacheExpiryAtMs(evidence: CacheEvidence | null): number
 
 /** 指定请求**之前**的最近证据（评估"本次 read=0 是否意外"的温态前提；不含本次自身）。 */
 function priorEvidenceBefore(db: Db, windowId: string, beforeRequestIds: string[], beforeStartedAt: string): CacheEvidence | null {
+  const toolsHash = mainToolProfile(db, windowId);
   const row = db.prepare(
     `SELECT u.request_id AS request_id, pr.window_id AS window_id, u.model AS model,
             u.cache_read_input_tokens AS read_t, u.cache_creation_input_tokens AS write_t,
@@ -68,13 +226,14 @@ function priorEvidenceBefore(db: Db, windowId: string, beforeRequestIds: string[
      FROM usage_observations u
      JOIN provider_requests pr ON pr.id = u.request_id
      WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+       AND (? IS NULL OR json_extract(pr.context_fingerprint_json, '$.tools_hash') = ?)
        AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0)
          OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
        AND COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) < ?
        AND u.request_id != ?
      ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC
      LIMIT 1`,
-  ).get(windowId, beforeStartedAt, beforeRequestIds[0] ?? '') as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
+  ).get(windowId, toolsHash, toolsHash, beforeStartedAt, beforeRequestIds[0] ?? '') as { request_id: string; window_id: string; model: string | null; read_t: number | null; write_t: number | null; dispatch_at: string | null; sent_at: string | null; observed_at: string } | undefined;
   if (!row) return null;
   return {
     requestId: row.request_id, windowId: row.window_id,

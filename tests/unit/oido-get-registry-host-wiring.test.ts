@@ -67,7 +67,7 @@ test('A01/P02.7: 真实 Host 经 tool_define/invoke 调用已迁 oido_get——�
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
+  const windows = new WindowManager(db, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const oido = new OidoAdapter(config.integrations.oido);

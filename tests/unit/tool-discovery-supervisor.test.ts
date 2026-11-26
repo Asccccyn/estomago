@@ -1,9 +1,9 @@
+import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity, fakeSolJudge } from '../helpers.ts';
 // 自动浮现 · supervisor 接缝与缓存边界（EST_MARIPOSA_AUTO_SURFACING_V1）。
 // 核心见证 6（真实缓存）：U1 wire 在旧历史之后追加一次；U2 不删移旧包、
 // 不再重复追加；失败不假标 coverage。OR/DS 信封面=独立 host-origin text
 // block 置于真实 user_input block 之前（docs/04）。
 import { test } from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import { assertAppendOnly } from '../../apps/host/src/runtime/or-payload.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -58,15 +58,15 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
   const events = new EventService(db);
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), {
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), fakeSolJudge([{ decision: "recall" }]).judge, {
     enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
     delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
+    max_packet_bytes: 24576, worker_concurrency: 2, recent_user_messages: 3, recent_window_bytes: 24576,
   }, null);
   const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
@@ -93,14 +93,26 @@ const toBlocks = (c: unknown): Block[] => (Array.isArray(c) ? (c as Block[]) : t
 for(const provider of ['deepseek','openrouter'] as const) test(provider+': deferred discovery→definition→invocation preserves tools prefix',async()=>{
  const root=tempRoot('deferred-wire-');const log:Array<Record<string,unknown>>=[];let n=0;let holds=0;
  const args={original_title:'合成记忆',categories:['daily'],text:'完整原文',creation_mode:'contemporaneous',date_confidence:'exact'};
- const call=(name:string,args:unknown)=>sse({id:'g'+n,choices:[{delta:{tool_calls:[{index:0,id:'call'+n,type:'function',function:{name,arguments:JSON.stringify(args)}}]}}]})+sse({choices:[{delta:{},finish_reason:'tool_calls'}]})+DONE;
+ let holdDefinitionId: string;
+ const call=(name:string,args:unknown,raw=JSON.stringify(args))=>sse({id:'g'+n,choices:[{delta:{tool_calls:[{index:0,id:'call'+n,type:'function',function:{name,arguments:raw}}]}}]})+sse({choices:[{delta:{},finish_reason:'tool_calls'}]})+DONE;
  const transport:OrTransport=async payload=>{
   n++;assert.deepEqual((payload.tools as any[]).map(t=>t.function.name),['tool_catalog','tool_define','tool_invoke']);
   let body:string;
   if(n===1)body=call('tool_catalog',{});
   else if(n===2){const catalog=JSON.parse((payload.messages.at(-1) as any).content);assert.ok(!JSON.stringify(catalog).includes('parameters'));body=call('tool_define',{name:'memory_hold'});}
-  else if(n===3){const definition=JSON.parse((payload.messages.at(-1) as any).content);assert.equal(definition.name,'memory_hold');body=call('tool_invoke',{name:'memory_hold',definition_id:definition.definition_id,arguments:args});}
-  else {if(n===4)assert.deepEqual(JSON.parse((payload.messages.at(-1) as any).content),{saved:true,memory_id:'m1',source_status:'unbound'});/*R1′(1023):60c6998 无 source_ranges 时如实 source_status:'unbound'*/body=textBody('g'+n,'回复');}
+  else if(n===3){
+    const definition=JSON.parse((payload.messages.at(-1) as any).content);assert.equal(definition.name,'memory_hold');holdDefinitionId=definition.definition_id;
+    const invocation={name:'memory_hold',definition_id:holdDefinitionId,arguments:args};
+    body=call('tool_invoke',invocation,JSON.stringify(invocation).replace('完整原文','\\u5b8c整原文'));
+  }
+  else if(n===4){
+    const failure=JSON.parse((payload.messages.at(-1) as any).content);
+    assert.equal(failure.error_code,'TOOL_ARG_LITERAL_HAN_REQUIRED');
+    assert.equal(failure.field,'text');
+    assert.equal(holds,0,'the escaped request must not write before retry');
+    body=call('tool_invoke',{name:'memory_hold',definition_id:holdDefinitionId,arguments:args});
+  }
+  else {if(n===5)assert.deepEqual(JSON.parse((payload.messages.at(-1) as any).content),{saved:true,memory_id:'m1',version:1,source_status:'unbound'});/*R1′(1023):60c6998 无 source_ranges 时如实 source_status:'unbound'*/body=textBody('g'+n,'回复');}
   return {status:200,headers:new Map(),body:frameStream(body)};
  };
  const mariposa:MariposaTransport=async(cap,payload)=>{
@@ -111,10 +123,10 @@ for(const provider of ['deepseek','openrouter'] as const) test(provider+': defer
  const ctx=compose(root,transport,mariposa,log,provider);
  try {
   const a=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成测试输入',clientMessageId:'one'});ctx.supervisor.enqueue(a.turnId);await ctx.supervisor.waitIdle();
-  assert.equal(holds,1);assert.equal(n,4);
-  const before=log[3].full as any[];
-  const b=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'第二条合成输入',clientMessageId:'two'});ctx.supervisor.enqueue(b.turnId);await ctx.supervisor.waitIdle();
-  assert.equal(assertAppendOnly({messages:before},{messages:log[4].full}),true);
   assert.equal(holds,1);assert.equal(n,5);
+  const before=log[4].full as any[];
+  const b=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'第二条合成输入',clientMessageId:'two'});ctx.supervisor.enqueue(b.turnId);await ctx.supervisor.waitIdle();
+  assert.equal(assertAppendOnly({messages:before},{messages:log[5].full}),true);
+  assert.equal(holds,1);assert.equal(n,6);
  }finally{await ctx.svc.stop();ctx.db.close();}
 });

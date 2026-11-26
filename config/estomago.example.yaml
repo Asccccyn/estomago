@@ -16,9 +16,14 @@ deployment:
   public_enabled: false
   supervisor: launchagent
 runtime:
-  # 新窗口按需读取详细工具定义；既有窗口沿用已发送的冻结工具集。
-  tool_schema_mode: deferred
+  # 新窗口直接调用原生工具；既有窗口沿用冻结协议。legacy 和 deferred 供兼容使用。
+  tool_schema_mode: direct
   provider: claude-agent-sdk
+  # configured 保留当前入口；subscription-first 仅在官方订阅额度明确拒绝时回退现有 OR。
+  access_policy: configured
+  # 填既有代理的本机 HTTP 端口；先核实其唯一出口是获准家宽节点。
+  # SDK 子进程只能连接这个回环端口，代理失效不会尝试直连。
+  subscription_proxy_url: null
   language: typescript
   node_version: null
   sdk_version: null
@@ -136,9 +141,9 @@ integrations:
     base_url: null
     # credential_ref=主模型能力凭据（memory.hold 等）；archive_credential_ref=归档 worker 的
     # 受限 stream 凭据（审计 F11/LC-050：生产必须分离——归档不得持业务写凭据）
+    # R9（2026-11-03）：contract_version 已退役——transport 从未发送/消费（F15）
     credential_ref: null
     archive_credential_ref: null
-    contract_version: null
   # oído 深听（JOINT-VOICE-20261022）：未配置=听觉不可用，无转写语音保持阻断语义
   oido:
     base_url: null
@@ -212,6 +217,9 @@ reasoning:
 # 禁止），不是无限。保温间隔50min与分页上限等固定策略在policy-constants.ts。
 # 自主60min冷却、心跳单请求/禁工具等旧限制已退役。工具沿用现有授权；费用由可信报价和金额cap约束。
 background:
+  free_activity: # 非自设预约的额外自主任务；不创建任何新任务
+    enabled: false
+    daily_cost_cap_usd: null # 正数或 unlimited；null=未配置
   autonomous:
     enabled: false
     max_model_requests_per_run: 4
@@ -250,4 +258,34 @@ media:
   max_attachments_per_message: 8
   import_timeout_ms: 30000
   max_redirects: 3
-  auto_physical_gc_enabled: false
+
+# 自动记忆浮现（SOL_RECALL_REFACTOR 2026-10-30）：Sol 三态判断（独立 OpenAI key）
+# + Mariposa 检索/JEV + 同轮注入。默认关闭（零作业/零网络/零凭据读取）。
+memory_surfacing:
+  enabled: false
+  # Mariposa 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
+  surfacing_credential_ref: null
+  # 同轮总预算（Sol 判断 + M 检索/JEV + 复核 + check 的总和）
+  delivery_deadline_ms: 25000
+  max_added_tokens_per_turn: 4096
+  # R4/R8（2026-11-03）：max_retained_tokens_per_window 已删除（从未接入执行；
+  # 窗口级抑制由 coverage 去重承担）
+  max_packet_bytes: 24576
+  worker_concurrency: 2
+  # 近文窗口：当前消息之外的先前用户消息条数（窗口按用户消息计数）
+  recent_user_messages: 3
+  recent_window_bytes: 24576
+  sol:
+    # OpenAI Responses 独立凭据（环境变量名；不与主模型/M/JEV 复用）
+    api_key_env: null
+    base_url: 'https://api.openai.com/v1'
+    model: 'gpt-6.1-sol'
+    reasoning_effort: low
+    verbosity: low
+    max_output_tokens: 2048
+    # 固定判断前缀的显式缓存期限（12h | 30m）
+    cache_ttl: '12h'
+    # 判断模板覆盖（null=内置默认模板；设置面可在线覆盖）
+    decision_template: null
+    user_display_name: '用户'
+    assistant_display_name: '助手'

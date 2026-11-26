@@ -10,6 +10,8 @@ import type { SdkNormalizedEvent, RawStreamEvent } from '../../../../packages/co
 import type { AssembledSdkOptions } from './build-options.ts';
 import type { OrBoundary, OrMessage, OrTool } from './or-payload.ts';
 import { MockRunner } from './runner-mock.ts';
+import type { SDKRateLimitInfo } from '@anthropic-ai/claude-agent-sdk';
+import type { ToolExecResult } from '../capabilities/contracts.ts';
 
 export type RunnerPurpose = 'chat' | 'pre_rotate_review' | 'proactive_turn' | 'cache_keepalive'; // §12：keepalive 默认禁用
 
@@ -22,6 +24,30 @@ export type SdkRunRequest = {
   abortController: AbortController; // 宿主持有；runner 原样传给 SDK（真实 AbortController）
   onEvent: (ev: SdkNormalizedEvent) => void;
   onBeforeDispatch?: (info: { attemptIndex: number; payloadWireJson: string }) => Promise<void>;
+  host?: {
+    purpose?: RunnerPurpose;
+    windowId: string;
+    /** Scoped task tools must not consume or replace the main SDK session anchor. */
+    isolatedSession?: boolean;
+    envelope: OrRequestEnvelope;
+    executeTool: (name: string, args: Record<string, unknown>, toolCallId: string, round: number, messages?: OrMessage[], argumentSource?: string, completionBatch?: () => import('./turn-completion-checkpoint.ts').CompletionBatch) => Promise<ToolExecResult>;
+    captureCompletionBatch?: boolean;
+    /** Preserve observed heartbeat tool packets before any business admission. */
+    captureHeartbeatBatch?: boolean;
+    /** Record complete heartbeat text and recovery evidence before native MCP execution. */
+    observeHeartbeatBatch?: (tail: OrMessage[], sent: OrMessage[]) => void;
+    beforeModel: (messages: OrMessage[], round: number) => Promise<void>;
+    completionRequested?: () => boolean;
+    recordToolDelivery?: (toolCallId: string, result: ToolExecResult) => void;
+    modelStarted: (generationId: string | null, round: number, model?: string | null) => void;
+    /** 2026-11-09 撤销 §8.2 工具轮上限后可选：未设=SDK maxTurns 不传（无限制）；
+     *  后台回合仍由 background.maxModelRequests（账本预算）独立约束。 */
+    maxModelRequests?: number;
+    /** 2026-10-31 她批：SDK 原生媒体投影（官方文档核实 Streaming Input 支持图片块）——
+     *  发送边界把 asset_image 引用物化为 SDK image 块；仅进 prompt 流，
+     *  messages 账本/持久化保持引用形态（§6.2 Base64 不入库）。 */
+    readImage?: import('../media/model-input.ts').ReadModelImage;
+  };
 };
 
 // —— OR 形状请求（ESTOMAGO_OR_SELF_HOLD §6.3；DS 直连驱动复用同一信封形状）——
@@ -35,18 +61,19 @@ export type OrRequestEnvelope = {
   reasoning: Record<string, unknown> | null;
 };
 export type OrRunRequest = {
-  driver: 'openrouter' | 'deepseek';
+  driver: 'openrouter' | 'deepseek' | 'mock'; // R2（2026-11-07）：mock 测试替身同走信封；SDK runner 仍以自身早退守卫排除信封请求
   purpose: RunnerPurpose;
   envelope: OrRequestEnvelope;
+  allowToolAppend?: boolean;
   previousPayload: Record<string, unknown> | null; // 同窗上一请求 payload（append-only 断言；轨迹正本由调用方提供）
   abortController: AbortController;
   onEvent: (ev: SdkNormalizedEvent) => void;
   // F-J-31（typecheck 基线）：以下为运行时真实使用的可选字段——
   //  - onDispatch：supervisor 工具循环每次真实发送逐笔留证（F17），OR/DS 驱动实际接收；
-  //  - prompt/resumeSessionId/options：SDK 形状字段。SDK/mock runner 以 driver 早退守卫排除
-  //    信封请求后访问（守卫的联合判别收窄对多值 driver 不生效，TS 层需经此可选声明到达），
-  //    信封请求运行时不携带这些字段。
+  //  - resumeSessionId：R2 起 mock 信封请求携带（会话连续性断言）；prompt/options 仅 SDK 形状。
+  //    SDK runner 以自身守卫排除信封请求；TS 层经此可选声明到达联合分支。
   onDispatch?: (info: { attemptIndex: number; generationId: string | null }) => void;
+  onResponseMetadata?: (info: { model: string | null; provider: string | null }) => void;
   // EXEC_V1 02 §4.2：每次 transport 前（含 429/网络/首字节前重试）异步准入——宿主在此落
   // dispatch_started_at 与逐尝试账（旧 onDispatch 在响应后，漏掉全部"发出但无响应"的尝试）。
   // 抛错=本次尝试被拒（不 transport）。payloadWireJson=最终发包体证据（wire_v1）。
@@ -68,6 +95,20 @@ export type RunnerRunResult = {
   attempts?: number; // §9.2：真实发出的模型请求次数（含重试）；1=未重试
   reasoningFrames?: unknown[]; // OR §10：opaque reasoning 片段（按接收顺序；协议继续态保真用，非 UI 思考）
   reasoningContent?: string; // DS opaque协议继续态：带tools的后续请求按当前合同原样保留，不进入UI正文
+  subscriptionLimit?: SDKRateLimitInfo;
+  activityStarted?: boolean;
+  finalMessages?: OrMessage[];
+  lastSentMessages?: OrMessage[];
+  /** B3（2026-11-04）：SDK 会话衔接诊断——resume 决策原因 + 锚生命周期（日志专用，不进协议） */
+  resumeDiagnosis?: {
+    decision: 'resume_hit' | 'resume_checkpoint' | 'checkpoint_unavailable' | 'anchor_missing' | 'prefix_changed' | 'history_mismatch' | 'isolated';
+    anchorSessionId: string | null;
+    anchorMessageCount: number | null;
+    sentMessageCount: number;
+    anchorOutcome?: 'saved' | 'kept' | 'checkpoint_kept' | 'deleted' | null;
+  };
+  /** B3：错误事件的脱敏安全字段（HTTP status/供应商请求 ID/SDK 错误类型；不含正文） */
+  errorEvidence?: Record<string, unknown> | null;
 };
 
 export interface AgentRunner {

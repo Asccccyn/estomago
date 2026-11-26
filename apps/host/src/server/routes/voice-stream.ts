@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson, ClientBodyError } from '../http-leaf.ts';
 import type { RequestDeps } from '../http.ts';
 import { sha256Hex } from '../../util/id.ts';
+import { stripLegacySequenceMarker } from '../../runtime/legacy-sequence-markers.ts';
 import { toSseDto } from './events.ts';
 
 // ── R4（2026-10-23）：voice ingress——Siren CoreBridge 的同窗电话入口（NDJSON）──────────
@@ -45,6 +46,10 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   const turnKey: string = input.turn_id;
   const conv = d.db.prepare('SELECT id FROM conversations WHERE id = ?').get(conversationId) as { id: string } | undefined;
   if (!conv) return ndjsonError(404, 'conversation not found');
+  // P3（四仓审计 20261106，V03）：已结束通话拒收新话轮——结束是权威事实（S 终态/est
+  // 收口），旧回调/迟到客户端不能凭旧 call 开新轮（旧实现照常接纳并入队模型）
+  const endedCall = d.db.prepare("SELECT 1 FROM voice_calls WHERE call_id=? AND state='ended'").get(callId);
+  if (endedCall) return ndjsonError(410, 'call ended');
 
   // —— RE-03：幂等接纳（同窗提交仍走文字轮同一串行链/窗口工具/轨迹/计量）——
   const nowIso = new Date().toISOString();
@@ -65,7 +70,12 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   // 通话登记：未显式 POST /v1/calls 时按首个电话轮自动立册（memory_only 以此为准；挂断由 DELETE /v1/calls 收口）
   if (!d.db.prepare('SELECT 1 FROM voice_calls WHERE call_id=?').get(callId)) {
     d.db.prepare("INSERT OR IGNORE INTO voice_calls(call_id,conversation_id,state,started_at) VALUES (?,?,'active',?)").run(callId, conversationId, nowIso);
+    // P3（U05）：未显式建呼的首个话轮自动立册=接通事实——同样取消在途浮现作业
+    d.surfacing?.cancelForActiveCall?.(conversationId);
   }
+  // 生命周期重构（R3，20261104）：真实话轮经通话 WS 抵达=会话确已建立的本地硬证据
+  // （register 通知可丢，不能作唯一凭证）——回填 connected_at，供结束事实统一判定。
+  d.db.prepare('UPDATE voice_calls SET connected_at=COALESCE(connected_at, ?) WHERE call_id=?').run(nowIso, callId);
   if (input.interrupted_turn !== undefined && (typeof input.interrupted_turn !== 'object' || input.interrupted_turn === null)) {
     return ndjsonError(422, 'interrupted_turn must be an object');
   }
@@ -160,6 +170,7 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
     occurredAt: new Date().toISOString(),
     ...(attachment ? { attachments: [attachment] } : {}),
   });
+  if (!sub.duplicate) d.scheduler?.notePendingUserChat();
   // JV-08（联合审计 2026-10-26）：语音接纳行统一发布普通消息入口的既有合同
   // （message.persisted/turn.started，防重判据与 conversations.ts 相同：kind+turn_id）
   // ——SDK driver 不触发 dispatch 补发时，用户语音消息不再"落库但页面刷新才可见"。
@@ -189,7 +200,8 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
   let pending = '';
   let atLineStart = true;
   const SENTENCE_END = new Set(['。', '！', '？', '!', '?', '…']);
-  const stripMarker = (t: string): string => t.replace(/^(\[seq ?\d+\]|\[\d+\])\s*/, '');
+  let legacySequenceMarkers = false;
+  const stripMarker = (text: string): string => legacySequenceMarkers ? stripLegacySequenceMarker(text) : text;
   const emitSentences = (flush: boolean): void => {
     for (;;) {
       const chars = [...pending];
@@ -200,19 +212,23 @@ export async function handleVoiceChatStream(req: IncomingMessage, res: ServerRes
       if (cut <= 0) break;
       let chunk = chars.slice(0, cut).join('');
       pending = chars.slice(cut).join('');
-      if (atLineStart) chunk = stripMarker(chunk);
+      // 2026-11-02 生产实测修复：模型学舌的 [seq] 标记可能出现在**首句之后**（如
+      // "嗯。[1051]…"）——按句成帧后该块不处行首，旧行首剥离漏剥→TTS 把序号念出来。
+      // 只为含旧编号的窗口保留句首剥离；无编号窗口保留实际生成正文。
+      chunk = stripMarker(chunk);
       atLineStart = chunk.endsWith('\n');
       if (chunk.length > 0) send({ type: 'delta', text: chunk });
     }
     if (flush && pending.length > 0) {
       let chunk = pending;
       pending = '';
-      if (atLineStart) chunk = stripMarker(chunk);
+      chunk = stripMarker(chunk);
       atLineStart = chunk.endsWith('\n');
       if (chunk.length > 0) send({ type: 'delta', text: chunk });
     }
   };
-  const detachTap = d.supervisor.registerVoiceTap(sub.turnId, (tail) => {
+  const detachTap = d.supervisor.registerVoiceTap(sub.turnId, (tail, fromLegacyWindow) => {
+    legacySequenceMarkers = fromLegacyWindow;
     // 行边界维护：换行符原样保留（拼接与正本逐字一致）；行首标记按聊天发布层同规则剥离
     const lines = tail.split('\n');
     for (let i = 0; i < lines.length; i++) {

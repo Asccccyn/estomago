@@ -7,6 +7,7 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
+import { backgroundControl } from './background-policy.ts';
 import type { BackgroundSettingsService } from './background-settings.ts';
 
 const RFC3339_TZ = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -41,6 +42,7 @@ type TaskRow = {
   schedule_kind: string; scheduled_at: string | null; next_due_at: string | null; payload_json: string;
   created_by_actor_id: string; created_at: string; origin: string; control_reason: string | null;
 };
+type TaskMutationReceipt = (task: TaskSummary) => void;
 
 function toSummary(r: TaskRow): TaskSummary {
   let note: unknown = null;
@@ -83,32 +85,47 @@ export class BackgroundTaskService {
     return null;
   }
 
-  private once<T>(scope: { actorId: string; conversationId: string; action: string; operationId: string }, params: Record<string, unknown>, business: () => T): { result: T; duplicate: boolean } | { conflict: true } {
+  private once<T>(scope: { actorId: string; conversationId: string; action: string; operationId: string }, params: Record<string, unknown>, business: () => T,
+    onAcceptedReceipt?: TaskMutationReceipt): { result: T; duplicate: boolean } | { conflict: true } {
     return tx(this.db, () => {
       const prior = this.replay<T>(scope, params);
-      if (prior) return prior;
+      if (prior) {
+        if (onAcceptedReceipt) this.receipt(prior, onAcceptedReceipt);
+        return prior;
+      }
       const result = business();
       this.db.prepare('INSERT INTO background_operations(actor_id, conversation_id, action, operation_id, request_hash, response_json, created_at) VALUES (?,?,?,?,?,?,?)')
         .run(scope.actorId, scope.conversationId, scope.action, scope.operationId, JSON.stringify({ action: scope.action, params }), JSON.stringify(result), this.nowIso());
-      return { result, duplicate: false };
+      const saved = { result, duplicate: false };
+      // Original task mutation and idempotent owner receipt are durable in
+      // this same transaction; a registered Host reader may bind that fact.
+      if (onAcceptedReceipt) this.receipt(saved, onAcceptedReceipt);
+      return saved;
     });
   }
 
-  private receipt(saved: { result: unknown; duplicate: boolean } | { conflict: true }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
+  private receipt(saved: { result: unknown; duplicate: boolean } | { conflict: true }, onAcceptedReceipt?: TaskMutationReceipt): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
     if ('conflict' in saved) return { ok: false, code: 'IDEMPOTENCY_CONFLICT', httpStatus: 409, detail: '同幂等键对应不同参数' };
     const result = saved.result as { task_id?: string; task?: TaskSummary; code?: string };
     if (result.code) return { ...result, ok: false } as TaskServiceError;
-    if (result.task) return { ok: true, task: result.task, duplicate: saved.duplicate };
+    if (result.task) {
+      onAcceptedReceipt?.(result.task);
+      return { ok: true, task: result.task, duplicate: saved.duplicate };
+    }
     // 历史回执没有快照，保留读取兼容；不改写已经保存的旧回执。
     const row = this.db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(result.task_id ?? '') as TaskRow | undefined;
-    return row ? { ok: true, task: toSummary(row), duplicate: saved.duplicate } : { ok: false, code: 'INTERNAL_TASK_MISSING', httpStatus: 500 };
+    if (!row) return { ok: false, code: 'INTERNAL_TASK_MISSING', httpStatus: 500 };
+    const task = toSummary(row);
+    onAcceptedReceipt?.(task);
+    return { ok: true, task, duplicate: saved.duplicate };
   }
 
   /** 04 schedule：一次性预约（可多个并存；无 60 分钟冷却、无每日配额）。 */
   schedule(opts: {
     actorId: string; conversationId: string; operationId: string; note: string;
-    at?: unknown; delaySeconds?: unknown; createdBy: 'jiaming' | 'qiaosheng';
+    at?: unknown; delaySeconds?: unknown; createdBy: 'jiaming' | 'qiaosheng'; onAcceptedReceipt?: TaskMutationReceipt;
   }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
+    if (opts.actorId !== 'jiaming' || opts.createdBy !== 'jiaming') return { ok: false, code: 'SELF_WAKE_OWNER_ONLY', httpStatus: 403, detail: '自主预约只能由char自己安排' };
     if (!opts.operationId || opts.operationId.length > OPERATION_ID_MAX) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400, detail: 'operation_id 必填（≤128 字符）' };
     if (typeof opts.note !== 'string' || opts.note.length === 0 || opts.note.length > NOTE_MAX_CHARS) return { ok: false, code: 'WAKE_NOTE_INVALID', httpStatus: 400, detail: `note 必填（1..${NOTE_MAX_CHARS} 字符，不截断）` };
     const hasAt = opts.at !== undefined && opts.at !== null;
@@ -117,7 +134,7 @@ export class BackgroundTaskService {
     const params: Record<string, unknown> = { note: opts.note, ...(hasAt ? { at: opts.at as string } : { delay_seconds: opts.delaySeconds as number }) };
     const scope = { actorId: opts.actorId, conversationId: opts.conversationId, action: 'wake_schedule', operationId: opts.operationId };
     const prior = this.replay(scope, params);
-    if (prior) return this.receipt(prior);
+    if (prior) return this.receipt(prior, opts.onAcceptedReceipt);
     const nowMs = this.now();
     let dueMs: number;
     if (hasAt) {
@@ -143,7 +160,7 @@ export class BackgroundTaskService {
          VALUES (?,?,?,'autonomous',1,1,'once',?,?,'Asia/Shanghai',NULL,NULL,?,?,'self_schedule',?,?)`,
       ).run(id, opts.conversationId, opts.actorId, dueIso, dueIso, JSON.stringify({ note: opts.note, source: 'self_schedule' }), opts.createdBy, nowIso, nowIso);
       return { task_id: id, scheduled_at: dueIso, task: toSummary(this.db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(id) as TaskRow) };
-    });
+    }, opts.onAcceptedReceipt);
     return this.receipt(idem);
   }
 
@@ -169,13 +186,15 @@ export class BackgroundTaskService {
   /** 04 update：expected_revision CAS（changes=1 才算数）；旧 revision 零派发排队 run 失效。 */
   update(opts: {
     actorId: string; conversationId: string; operationId: string; taskId: string; expectedRevision: number;
-    note?: unknown; at?: unknown; delaySeconds?: unknown; selfScheduledOnly?: boolean;
+    note?: unknown; at?: unknown; delaySeconds?: unknown; selfScheduledOnly?: boolean; updatedBy?: 'jiaming' | 'qiaosheng'; onAcceptedReceipt?: TaskMutationReceipt;
   }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
     if (!opts.operationId || opts.operationId.length > OPERATION_ID_MAX) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400 };
     if (!Number.isSafeInteger(opts.expectedRevision) || opts.expectedRevision < 1) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400, detail: 'expected_revision 必须为正整数' };
     const row = this.db.prepare('SELECT * FROM background_tasks WHERE id = ? AND conversation_id = ? AND actor_id = ?').get(opts.taskId, opts.conversationId, opts.actorId) as TaskRow | undefined;
     if (!row) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404, detail: '任务不存在或不属于当前会话（跨 actor/会话隔离）' };
+    if (row.kind === 'heartbeat_memory') return { ok:false,code:'SYSTEM_TASK_MANAGED',httpStatus:403,detail:'每日记忆任务由心跳设置与北京时间日界管理' };
     if (opts.selfScheduledOnly && (row.kind !== 'autonomous' || row.origin !== 'self_schedule')) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404 };
+    if (row.origin === 'self_schedule' && (opts.updatedBy ?? opts.actorId) !== 'jiaming') return { ok: false, code: 'SELF_WAKE_OWNER_ONLY', httpStatus: 403, detail: '自主预约只能由char自己修改' };
     const hasNote = opts.note !== undefined && opts.note !== null;
     const hasAt = opts.at !== undefined && opts.at !== null;
     const hasDelay = opts.delaySeconds !== undefined && opts.delaySeconds !== null;
@@ -185,8 +204,8 @@ export class BackgroundTaskService {
     const params: Record<string, unknown> = { task_id: opts.taskId, expected_revision: opts.expectedRevision, ...(hasNote ? { note: opts.note as string } : {}), ...(hasAt ? { at: opts.at as string } : {}), ...(hasDelay ? { delay_seconds: opts.delaySeconds as number } : {}) };
     const scope = { actorId: opts.actorId, conversationId: opts.conversationId, action: 'wake_update', operationId: opts.operationId };
     const prior = this.replay(scope, params);
-    if (prior) return this.receipt(prior);
-    if (row.kind === 'autonomous' && !this.settings.effective().autonomous.enabled) return { ok: false, code: 'SELF_WAKE_DISABLED', httpStatus: 422 };
+    if (prior) return this.receipt(prior, opts.onAcceptedReceipt);
+    if (row.kind === 'autonomous' && !this.settings.effective()[backgroundControl('autonomous',row.origin)].enabled) return { ok: false, code: row.origin==='self_schedule'?'SELF_WAKE_DISABLED':'FREE_ACTIVITY_DISABLED', httpStatus: 422 };
     const nowMs = this.now();
     let dueIso: string | null = null;
     if (hasAt) {
@@ -201,7 +220,7 @@ export class BackgroundTaskService {
       dueIso = new Date(relative).toISOString();
     }
     const idem = this.once(scope, params, () => {
-      if (row.kind === 'autonomous' && !this.settings.effective().autonomous.enabled) return { code: 'SELF_WAKE_DISABLED', httpStatus: 422 };
+      if (row.kind === 'autonomous' && !this.settings.effective()[backgroundControl('autonomous',row.origin)].enabled) return { code: row.origin==='self_schedule'?'SELF_WAKE_DISABLED':'FREE_ACTIVITY_DISABLED', httpStatus: 422 };
       const nowIso = this.nowIso();
       let sets = 'revision = revision + 1, updated_at = ?';
       const args: Array<string | number | null> = [nowIso];
@@ -217,16 +236,17 @@ export class BackgroundTaskService {
       if (c !== 1) return { code: 'REVISION_CONFLICT', httpStatus: 409, currentRevision: this.currentRevisionOf(opts.taskId), detail: '任务版本不匹配——刷新后重试' };
       this.supersedeOpenRuns(opts.taskId, 'TASK_SUPERSEDED', nowIso);
       return { task_id: opts.taskId, revision: opts.expectedRevision + 1, task: toSummary(this.db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(opts.taskId) as TaskRow) };
-    });
+    }, opts.onAcceptedReceipt);
     return this.receipt(idem);
   }
 
   /** 04 cancel：CAS + revision 递增（不只是 enabled=0）；零派发排队 run 失效。 */
-  cancel(opts: { actorId: string; conversationId: string; operationId: string; taskId: string; expectedRevision: number; selfScheduledOnly?: boolean }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
+  cancel(opts: { actorId: string; conversationId: string; operationId: string; taskId: string; expectedRevision: number; selfScheduledOnly?: boolean; onAcceptedReceipt?: TaskMutationReceipt }): { ok: true; task: TaskSummary; duplicate: boolean } | TaskServiceError {
     if (!opts.operationId || opts.operationId.length > OPERATION_ID_MAX) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400 };
     if (!Number.isSafeInteger(opts.expectedRevision) || opts.expectedRevision < 1) return { ok: false, code: 'WAKE_REQUEST_INVALID', httpStatus: 400, detail: 'expected_revision 必须为正整数' };
     const row = this.db.prepare('SELECT * FROM background_tasks WHERE id = ? AND conversation_id = ? AND actor_id = ?').get(opts.taskId, opts.conversationId, opts.actorId) as TaskRow | undefined;
     if (!row) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404, detail: '任务不存在或不属于当前会话' };
+    if (row.kind === 'heartbeat_memory') return { ok:false,code:'SYSTEM_TASK_MANAGED',httpStatus:403,detail:'每日记忆任务由心跳设置管理' };
     if (opts.selfScheduledOnly && (row.kind !== 'autonomous' || row.origin !== 'self_schedule')) return { ok: false, code: 'TASK_NOT_FOUND', httpStatus: 404 };
     const params: Record<string, unknown> = { task_id: opts.taskId, expected_revision: opts.expectedRevision };
     const idem = this.once({ actorId: opts.actorId, conversationId: opts.conversationId, action: 'wake_cancel', operationId: opts.operationId }, params, () => {
@@ -235,7 +255,7 @@ export class BackgroundTaskService {
       if (c !== 1) return { code: 'REVISION_CONFLICT', httpStatus: 409, currentRevision: this.currentRevisionOf(opts.taskId), detail: '任务版本不匹配——刷新后重试' };
       this.supersedeOpenRuns(opts.taskId, 'TASK_CANCELLED', nowIso);
       return { task_id: opts.taskId, revision: opts.expectedRevision + 1, cancelled: true, task: toSummary(this.db.prepare('SELECT * FROM background_tasks WHERE id = ?').get(opts.taskId) as TaskRow) };
-    });
+    }, opts.onAcceptedReceipt);
     return this.receipt(idem);
   }
 

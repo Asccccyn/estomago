@@ -20,7 +20,7 @@ import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import type { AgentRunner } from '../../apps/host/src/runtime/runner.ts';
-import {writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
+import {writeApprovedIdentity, readyRuntimePatch, tempRoot, assembleTestTools } from '../helpers.ts';
 
 function compose(root: string, runner: AgentRunner) {
   writeApprovedIdentity(root);
@@ -33,8 +33,8 @@ function compose(root: string, runner: AgentRunner) {
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger });
+  const windows = new WindowManager(db, identity, config);
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger, tools: assembleTestTools({ db }).tools });
   messages.ensureConversation('c1');
   return { db, config, paths, messages, events, routing, supervisor };
 }
@@ -85,7 +85,7 @@ test('fallback 已发生：事实落账+route.observed 事件+实际模型记账
   ctx.db.close();
 });
 
-test('no_fallback：记录为"拒绝未切换"，不打断回合', async () => {
+test('no_fallback：记录拒绝未切换，并进入既有用户路由决议', async () => {
   const noFallbackRunner: AgentRunner = {
     kind: 'mock', interruptSupport: 'claimed',
     async run(req) {
@@ -104,7 +104,8 @@ test('no_fallback：记录为"拒绝未切换"，不打断回合', async () => {
   assert.equal(evt.subtype, 'model_refusal_no_fallback');
   assert.equal(evt.actual_model, null, 'no_fallback 不得伪造成已切换');
   const turn = ctx.db.prepare('SELECT state FROM turns WHERE id = ?').get(t.turnId) as { state: string };
-  assert.equal(turn.state, 'failed', '拒绝按回合失败自然收口（不是 interrupted）');
+  assert.equal(turn.state, 'route_owner_pending');
+  assert.equal(ctx.routing.pendingForTurn(t.turnId)?.source_evidence, 'SDK_FLAGGED');
   ctx.db.close();
 });
 

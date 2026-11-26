@@ -6,7 +6,9 @@
 //    append-only 断言在物化形态上执行（§6.2：不拿未含图旧对象与新多模态对象比较后忽略失败）。
 // 视觉能力门：所选型号未核实支持图片 → MODEL_VISION_UNAVAILABLE（消息保存、回复明确阻断，
 // 不静默丢图、不切模型）。语音：无转写不空输入唤起模型（MEDIA_TRANSCRIPTION_FAILED）。
+import type { ToolExecResult } from '../capabilities/contracts.ts';
 import type { MediaService } from './assets.ts';
+import { modelImageView } from './model-view.ts';
 
 /** 内部引用块（不直接传给 Provider；持久形态） */
 export type AssetImageRefBlock = { type: 'asset_image'; asset_id: string; projection_version: 'v1' };
@@ -16,9 +18,8 @@ export const PROJECTION_VERSION = 'v1' as const;
 export type RevisionAttachment = { asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null };
 
 /** 消息修订 → 内部投影块。语音带转写→标注来源的文本块；图片/表情→asset_image 引用块。
- *  textOnly（2026-10-18 她的裁定：多选只带文本）——人工选集装配专用：图片/表情不产出
- *  视觉引用块，以如实占位文本替代（模型知道此处有图、图未携带，不静默消失）；
- *  语音转写本就是文本，照常携带。
+ *  相册重构 P5（2026-11-08 宿主用户裁定，撤销 2026-10-18 textOnly）：图片/表情一律产出
+ *  真实视觉引用块（发送边界物化）；语音转写本就是文本，照常携带。
  *  JOINT-VOICE-20261022（04 voice_model_view）：当前输入语音块带 audio_ref+时长；
  *  转写未就绪且 oído 可听→结构化语音引用消息进入（可调 oido_analyze，非空输入）；
  *  无听觉能力→保持阻断语义。历史消息投影形状零变化（缓存前缀不可变）。 */
@@ -61,10 +62,9 @@ export function sliceByByteBudget(text: string, offsetChars: number, budgetBytes
 
 // R3″b（2026-10-24）：续读可用性默认 false——能力未经窗口核实时不宣传（诚实默认）；
 // 生产装配（supervisor）一律显式传入 windowHasTool 实值，默认只影响无窗口上下文的直接调用。
-export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; textOnly?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; voiceObservations?: ReadonlyMap<string, string>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
+export function projectRevisionBlocks(content: string, attachments: RevisionAttachment[], opts: { isCurrentInput?: boolean; hearing?: { available: boolean }; voiceDurations?: Map<string, number | null>; voiceObservations?: ReadonlyMap<string, string>; transcriptContinuationAvailable?: boolean } = {}): { blocks: ProjectedBlock[]; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
   const withDefaults = { transcriptContinuationAvailable: false, ...opts };
   const isCurrentInput = opts.isCurrentInput === true;
-  const textOnly = opts.textOnly === true;
   const hearing = opts.hearing?.available === true;
   const blocks: ProjectedBlock[] = [];
   if (content.length > 0) blocks.push({ type: 'text', text: content });
@@ -72,7 +72,6 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
   let hasVoiceWithoutTranscript = false;
   for (const a of attachments) {
     if (a.presentation === 'voice') {
-      const audioRef = `est:${a.asset_id}`;
       const durMs = opts.voiceDurations?.get(a.asset_id);
       const durText = typeof durMs === 'number' ? `${Math.round(durMs)}ms` : '时长未知';
       // §3.3/§8.1：转写是派生文字——带来源标记进入模型；原音频不再另计模型音频 token。
@@ -81,11 +80,14 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       // 4 字节/转义字符同样受 8192B 预算约束；续读提示只在本窗工具确有 transcript_read 时
       // 给出（旧冻结窗无此工具=如实受限提示，不宣传不存在的读取能力、不静默丢正文）。
       if (a.derived_text && a.derived_text.trim().length > 0) {
-        const sourceLine = `[语音消息转写（来源：${a.derived_source ?? 'unspecified'}，派生文字非亲笔正文）]`;
-        const tailLine = hearing && isCurrentInput ? `\n[原声引用 audio_ref: ${audioRef} | ${durText} | 语气须用 oido_analyze 查询，转写不含语气]` : '';
+        // B4（2026-11-04）：标记精简——"转写/来源/非亲笔"三信息保留，长度减半；
+        // "派生文字非亲笔"的解释收进 HOST_BOUNDARY_RULES 固定边界（[语音转写] 行一次声明）。
+        const sourceLine = `[语音转写|${a.derived_source ?? 'unspecified'}|非亲笔]`;
+        // P2 §6.5：audio_ref 不再入默认投影（宿主保管；oido_analyze/transcript_read 缺省即本条）
+        const tailLine = hearing && isCurrentInput ? `\n[原声 ${durText} 已保留；语气/声音证据须用 oido_analyze 查询（不带编号即默认本条），转写不含语气]` : '';
         if (withDefaults.transcriptContinuationAvailable === true) {
           const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
-          const moreHint = sliced.done ? '' : `\n[转写第 1/? 页（共 ${[...a.derived_text].length} 字，字节预算分页）；续读用 transcript_read（audio_ref="${audioRef}"，无 cursor 从头，翻页传上页 next_cursor）]`;
+          const moreHint = sliced.done ? '' : `\n[转写第 1/? 页（共 ${[...a.derived_text].length} 字，字节预算分页）；续读用 transcript_read（缺省即本条语音；无 cursor 从头，翻页传上页 next_cursor）]`;
           blocks.push({ type: 'text', text: `${sourceLine}\n${sliced.pageText}${moreHint}${tailLine}` });
         } else {
           const sliced = sliceByByteBudget(a.derived_text, 0, TRANSCRIPT_PAGE_BUDGET_BYTES, jsonEscapedByteLength(sourceLine) + jsonEscapedByteLength(tailLine) + 640);
@@ -94,7 +96,7 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
         }
       } else if (isCurrentInput === true && hearing) {
         // 转写未就绪但听觉可用：有意义的结构化语音引用消息（非空输入），模型可按需深听
-        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| audio_ref: ${audioRef} | ${durText}]\n仅有原声；需声音证据时用 oido_analyze，取得证据前不推断内容或语气。` });
+        blocks.push({ type: 'text', text: `[语音消息（转写未就绪）| 原声已保留 | ${durText}]\n仅有原声；需声音证据时用 oido_analyze（不带编号即默认本条），取得证据前不推断内容或语气。` });
       } else if (isCurrentInput === true) {
         hasVoiceWithoutTranscript = true; // 当前输入无转写且无听觉能力→不空输入唤起模型（门阻断）
       } else {
@@ -105,12 +107,17 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
       if (observation) blocks.push({ type: 'text', text: observation });
       continue;
     }
-    if (textOnly) {
-      blocks.push({ type: 'text', text: '[图片消息：按多选裁定不带入本窗，图片未随文本携带]' });
+    // M02（包1 2026-11-15）：work=SVG/HTML 代码作品——模型视觉通道只收位图，作品以引用
+    // 文本进投影（沙箱预览归前端 /api/v1/assets/:id/preview），不投 asset_image。
+    if (a.presentation === 'work') {
+      blocks.push({ type: 'text', text: `[代码作品 | est:${a.asset_id} | 沙箱预览 /api/v1/assets/${a.asset_id}/preview]（内容为 SVG/HTML，模型不直接看图；引用真实可回看）` });
       if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });
       continue;
     }
-    // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——一期即原件位图）
+    // image / sticker：内部引用块（sticker 按 §8.2 以固定视觉派生版本送模型——位图在
+    // 像素预算内即原件，超出时为缩小视图；GIF 不改）。
+    // 相册重构 P5（宿主用户 2026-11-08 裁定，撤销 2026-10-18 textOnly）：选集/历史图片一律
+    // 真实携带（asset_image 块）；携带上限由装配层合并规划（context/carry-images.ts）。
     hasImage = true;
     blocks.push({ type: 'asset_image', asset_id: a.asset_id, projection_version: PROJECTION_VERSION });
     if (a.caption && a.caption.trim().length > 0) blocks.push({ type: 'text', text: `[附件说明] ${a.caption}` });
@@ -118,29 +125,41 @@ export function projectRevisionBlocks(content: string, attachments: RevisionAtta
   return { blocks, hasImage, hasVoiceWithoutTranscript };
 }
 
-/** 发送物化：asset_image → Provider（Anthropic 族）图像块。确定性：同资产同字节同输出。 */
-export function materializeBlocks(blocks: ProjectedBlock[], media: MediaService): Array<Record<string, unknown>> {
+export type ReadModelImage = (assetId: string) => { bytes: Buffer; mime: string } | Promise<{ bytes: Buffer; mime: string }>;
+export type ModelImageBlock = { type: 'image'; source: { type:'base64'; media_type:'image/png'|'image/jpeg'|'image/gif'|'image/webp'; data:string } };
+
+export async function materializeImage(assetId: string, readImage: ReadModelImage): Promise<ModelImageBlock> {
+  const { bytes, mime } = await readImage(assetId);
+  if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/gif' && mime !== 'image/webp') throw Error('ASSET_TYPE_UNSUPPORTED');
+  // The stored original stays the record; the model sees it within the pixel budget.
+  const view = await modelImageView(assetId, { bytes, mime });
+  return { type:'image', source:{type:'base64',media_type:view.mime as ModelImageBlock['source']['media_type'],data:view.bytes.toString('base64')} };
+}
+
+/** Persist only references; image bytes belong to SDK/API send boundaries. */
+export function toolResultContent(result: ToolExecResult): string | ProjectedBlock[] {
+  const text = JSON.stringify(result.output);
+  return result.ok && result.imageRefs?.length
+    ? [{ type:'text', text }, ...result.imageRefs.map(asset_id => ({type:'asset_image' as const,asset_id,projection_version:PROJECTION_VERSION}))]
+    : text;
+}
+
+export async function materializeBlocks(blocks: ProjectedBlock[], media: MediaService, readImage: ReadModelImage = id => media.readContentResolvingMaster(id, { modelImage: true })): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = [];
-  for (const b of blocks) {
-    if (b.type === 'text') { out.push({ type: 'text', text: b.text }); continue; }
-    const { bytes, mime } = media.readContent(b.asset_id);
-    out.push({ type: 'image', source: { type: 'base64', media_type: mime, data: bytes.toString('base64') } });
+  for (const block of blocks) {
+    if (block.type === 'text') out.push({type:'text',text:block.text});
+    else out.push(await materializeImage(block.asset_id, readImage));
   }
   return out;
 }
 
-/** 物化整个信封消息（深替换 content 数组中的 asset_image）。 */
-export function materializeEnvelope<T extends { messages: Array<{ role: string; content: unknown }> }>(envelope: T, media: MediaService): T {
-  return {
-    ...envelope,
-    messages: envelope.messages.map((m) => {
-      if (!Array.isArray(m.content)) return m;
-      const needs = (m.content as Array<Record<string, unknown>>).some((b) => b && b.type === 'asset_image');
-      if (!needs) return m;
-      const blocks = (m.content as Array<Record<string, unknown>>).map((b) => (b && b.type === 'asset_image' ? { type: 'asset_image', asset_id: b.asset_id, projection_version: b.projection_version } as AssetImageRefBlock : b as unknown as ProjectedBlock));
-      return { ...m, content: materializeBlocks(blocks, media) };
-    }),
-  };
+export async function materializeEnvelope<T extends { messages: Array<{ role: string; content: unknown }> }>(envelope: T, media: MediaService, readImage?: ReadModelImage): Promise<T> {
+  const messages = [];
+  for (const message of envelope.messages) {
+    if (!Array.isArray(message.content) || !message.content.some(b => b?.type === 'asset_image')) messages.push(message);
+    else messages.push({...message, content: await materializeBlocks(message.content as ProjectedBlock[],media,readImage)});
+  }
+  return {...envelope,messages};
 }
 
 /** 存储脱敏（§6.2 不把 Base64 复制进数据库）：wire 证据里 image source.data → sha256 指纹。 */

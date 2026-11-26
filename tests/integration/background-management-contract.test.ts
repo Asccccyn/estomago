@@ -6,6 +6,8 @@ import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
+import { BackgroundTaskService } from '../../apps/host/src/runtime/background-task-service.ts';
+import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 
 // Actual HTTP management service; model dispatch is not part of this read/control contract.
 test('后台管理HTTP：严验设置、同键重放、任务与运行完整分页、按冻结目录报告能力', async t => {
@@ -25,11 +27,31 @@ test('后台管理HTTP：严验设置、同键重放、任务与运行完整分�
   const replay=await request('/background/settings','PUT',{autonomous:{enabled:true,daily_cost_cap_usd:2}},'enable');
   assert.equal(replay.status,200);assert.equal(replay.body.duplicate,true);assert.equal(replay.body.revision,1);
   assert.equal((await request('/background/settings','PUT',{autonomous:{enabled:false}},'enable')).status,409);
+  const original=(await request('/background/settings')).body;
+  const patch={autonomous:{enabled:true,daily_cost_cap_usd:'unlimited'},keepwarm:{enabled:true,daily_cost_cap_usd:'unlimited'},free_activity:{enabled:false}};
+  assert.equal((await request('/background/settings','PUT',patch,'separate',1)).status,200);
+  assert.equal((await request('/background/settings','PUT',patch,'separate',1)).body.duplicate,true);
+  const separate=(await request('/background/settings')).body;
+  assert.equal(separate.autonomous.enabled,true);assert.equal(separate.keepwarm.enabled,true);assert.equal(separate.free_activity.enabled,false);
+  assert.equal(separate.autonomous.daily_cost_cap_usd,'unlimited');assert.equal(separate.keepwarm.daily_cost_cap_usd,'unlimited');
+  assert.deepEqual(separate.reminders,original.reminders);
+  assert.deepEqual(separate.keepwarm.sleep_window,original.keepwarm.sleep_window);
+  for(const invalid of ['true','Infinity',0,-1]){
+    assert.equal((await request('/background/settings','PUT',{autonomous:{daily_cost_cap_usd:invalid}},`bad-cap-${invalid}`,2)).status,422);
+  }
+  assert.equal((await request('/background/settings')).body.revision,2);
   const ids:string[]=[];
-  for(let i=0;i<23;i++){const r=await request('/background/tasks','POST',{note:`合成预约${i}`,delay_seconds:3600+i},`create-${i}`);assert.equal(r.status,201);ids.push(r.body.task_id);}
+  assert.equal((await request('/background/tasks','POST',{note:'代设',delay_seconds:3600},'no-delegate')).status,403);
+  // This management-only pagination fixture uses the same owning service as
+  // wake_manage; C07 covers creation through the real model tool loop.
+  const ownTasks = new BackgroundTaskService(host.db, new BackgroundSettingsService(host.db, host.config));
+  for(let i=0;i<23;i++){const r=ownTasks.schedule({actorId:'jiaming', createdBy:'jiaming', conversationId:'primary', note:`合成预约${i}`,delaySeconds:3600+i,operationId:`create-${i}`});assert.ok(r.ok);if(r.ok)ids.push(r.task.task_id);}
   const first=(await request('/background/tasks')).body;assert.equal(first.tasks.length,20);assert.ok(first.next_cursor);
   const second=(await request('/background/tasks?cursor='+encodeURIComponent(first.next_cursor))).body;
-  assert.equal(second.tasks.length,3);assert.equal(second.next_cursor,null);assert.equal(new Set([...first.tasks,...second.tasks].map((r:any)=>r.task_id)).size,23);
+  assert.equal(second.tasks.length,4);assert.equal(second.next_cursor,null);
+  const listed=[...first.tasks,...second.tasks];
+  assert.equal(new Set(listed.map((r:any)=>r.task_id)).size,24,'23 appointments plus the enabled keepwarm task');
+  assert.deepEqual(listed.filter((r:any)=>r.origin==='self_schedule').map((r:any)=>r.task_id).sort(),[...ids].sort());
   const stamp=new Date().toISOString();
   for(let i=0;i<23;i++)host.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,scheduled_for,state,settings_revision,created_at,updated_at) VALUES (?,?,'primary','jiaming','autonomous',1,?,?,'completed',1,?,?)").run(`run-${String(i).padStart(2,'0')}`,ids[i],`occ-${i}`,stamp,stamp,stamp);
   const runs1=(await request('/background/runs')).body;assert.equal(runs1.runs.length,20);assert.ok(runs1.next_cursor);

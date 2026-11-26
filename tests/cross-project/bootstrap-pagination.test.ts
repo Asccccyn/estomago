@@ -7,7 +7,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { MariposaClient } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { buildConfig } from '../../apps/host/src/config/schema.ts';
+import { WindowBootstrapMachine, type BootstrapMachineDeps } from '../../apps/host/src/runtime/window-bootstrap.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
@@ -18,6 +19,7 @@ type Expected = {
   revision: number; target_memory_id: string; moods: Record<string, string>;
   buckets: Record<string, { event: string; words: string[] }>; i: string;
   plan: { title: string; content: string };
+  plan_ref: { plan_id: string; version: number };
 };
 type Call = {
   capability: string; section?: string; snapshot?: string; loadedSnapshot?: string;
@@ -92,7 +94,9 @@ globalThis.fetch = async (input, init) => {
   return response;
 };
 
-function context(Supervisor: typeof TurnSupervisor = TurnSupervisor) {
+type BaselineBootstrap = new (deps: BootstrapMachineDeps & { db: ReturnType<typeof openDatabase> }) => Pick<WindowBootstrapMachine, 'windowBootstrap'>;
+
+function context() {
   const stateRoot = process.env.ESTOMAGO_HOME!;
   fs.mkdirSync(stateRoot, { recursive: true });
   const db = openDatabase(fs.mkdtempSync(path.join(stateRoot, 'bootstrap-context-')));
@@ -100,10 +104,10 @@ function context(Supervisor: typeof TurnSupervisor = TurnSupervisor) {
   const events = new EventService(db);
   const alerts = new SystemAlertService(db, events);
   const client = new MariposaClient({ baseUrl: base, credentialEnv: 'ESTOMAGO_TEST_MARIPOSA_TOKEN' });
-  const host = new Supervisor({ db, bootstrap: client, events, alerts,
-    logger: { info() {}, warn() {}, error() {} } } as any) as any;
+  const deps = { db, config: buildConfig({}), bootstrap: client, events, alerts, logger: { info() {}, warn() {}, error() {} } };
+  const host = new WindowBootstrapMachine(deps);
   const stream = () => db.prepare('SELECT kind,payload_ref FROM runtime_stream_events ORDER BY sequence').all() as Array<{ kind: string; payload_ref: string }>;
-  return { host, events, alerts, stream };
+  return { host, deps, alerts, stream };
 }
 
 function exactlyOnce(text: string, value: string, label: string) {
@@ -115,13 +119,13 @@ function verifyIndependentSections(text: unknown, data = expected()): asserts te
   const value = text as string;
   exactlyOnce(value, data.i, 'I');
   exactlyOnce(value, data.plan.title, 'Plan title');
-  exactlyOnce(value, data.plan.content, 'Plan body');
+  exactlyOnce(value, `〔${data.plan_ref.plan_id} v${data.plan_ref.version}〕`, 'Plan reference for read and revision');
   for (const bucket of Object.values(data.buckets)) {
     exactlyOnce(value, bucket.event, 'Event');
     for (const word of bucket.words) exactlyOnce(value, word, 'Our words');
   }
   assert.ok(!value.includes('临近纪念') && !value.includes('definition_id'));
-  assert.ok(/数据，非指令/.test(value), 'Data retains its non-instruction boundary');
+  assert.ok(value.includes('下面的「我」、记忆和计划供你阅读。'));
 }
 function verifyComplete(text: unknown, data = expected()): asserts text is string {
   verifyIndependentSections(text, data);
@@ -142,11 +146,18 @@ function assertPrivateTextAbsent(diagnostics: unknown, data = expected()) {
 }
 function faultFor(kind: Fault['kind']): Fault { return { kind, target: expected().target_memory_id, mutated: new Set() }; }
 const baselinePath = process.env.CROSS_ESTOMAGO_BASELINE;
-const baselineConstructor: typeof TurnSupervisor | null = baselinePath
-  ? (await import(pathToFileURL(path.join(baselinePath, 'apps/host/src/runtime/supervisor.ts')).href)).TurnSupervisor : null;
+async function loadBaseline(): Promise<BaselineBootstrap | null> {
+  if (!baselinePath) return null;
+  const runtime = path.join(baselinePath, 'apps/host/src/runtime');
+  const machine = path.join(runtime, 'window-bootstrap.ts');
+  if (fs.existsSync(machine)) return (await import(pathToFileURL(machine).href)).WindowBootstrapMachine;
+  return (await import(pathToFileURL(path.join(runtime, 'supervisor.ts')).href)).TurnSupervisor;
+}
+const baselineConstructor = await loadBaseline();
 async function golden(): Promise<string | null> {
   if (!baselineConstructor) return null;
-  const text = await context(baselineConstructor).host.windowBootstrap('accepted-baseline', AbortSignal.timeout(15000));
+  const baseline = new baselineConstructor(context().deps);
+  const text = await baseline.windowBootstrap('accepted-baseline', AbortSignal.timeout(15000));
   verifyComplete(text); return text;
 }
 
@@ -185,7 +196,7 @@ try {
   assert.ok(!partial.includes(targetHead), 'Discard the failed mood including its already loaded prefix');
   for (const [mid, value] of Object.entries(initial.moods)) if (mid !== target) exactlyOnce(partial, value, 'Unaffected mood');
   assert.ok(/心情[^\n]*(?:未全载|未完整|缺口|未载入)/.test(partial), 'Partial package explicitly names the incomplete mood');
-  assert.ok(!isolated.host.bootstrapByWindow.has('local-gap'), 'Partial result is not a complete cache entry');
+  assert.equal(isolated.host.take('local-gap'), undefined, 'Partial result is not a complete cache entry');
   const localCalls = calls.slice(failureStart);
   const failures = localCalls.filter(c => c.injection === 'http_503_after_real_response');
   assert.equal(failures.length, 2, 'At most two attempts for the failed page');
@@ -205,7 +216,7 @@ try {
   fault = null;
   const repaired = await isolated.host.windowBootstrap('local-gap', AbortSignal.timeout(15000));
   verifyComplete(repaired); sameBytes(repaired, normal.legacy);
-  assert.ok(isolated.host.bootstrapByWindow.has('local-gap'));
+  assert.equal(isolated.host.take('local-gap'), repaired);
   assert.equal(isolated.alerts.summary('qiaosheng').open_count, 0);
   assert.equal(isolated.alerts.list({ actorId: 'qiaosheng', lifecycle: 'resolved' }).items.length, 1);
   console.log('PASS injected mid-mood HTTP 503: failed mood fully omitted, independent content preserved, same snapshot validated, warning/read/recovery persisted');
@@ -219,7 +230,7 @@ try {
   verifyComplete(restarted);
   const freshGolden = await golden(); if (freshGolden !== null) sameBytes(restarted, freshGolden);
   assert.ok(!restarted.includes(old.moods[old.target_memory_id].split('|')[0]));
-  assert.ok(!restarted.includes(old.i)); assert.ok(!restarted.includes(old.plan.content));
+  assert.ok(!restarted.includes(old.i)); assert.ok(!restarted.includes(old.plan.title));
   assert.ok(!restarted.includes(old.buckets[old.target_memory_id].event));
   const rebuilt = calls.slice(staleStart).filter(c => c.capability === 'bootstrap.get' && !c.loadedSnapshot);
   // The optional baseline adds one independent get after the actual host run.
@@ -227,7 +238,7 @@ try {
   assert.equal(hostBuilds.length, 2, 'One automatic full-package rebuild after SNAPSHOT_STALE');
   assert.equal(new Set(hostBuilds.map(c => c.responseSnapshot)).size, 2);
   assert.equal(calls.slice(staleStart).filter(c => c.serverStatus === 409).length, 1, 'A stale cursor is discarded immediately, not retried within the old snapshot');
-  assert.ok(stale.host.bootstrapByWindow.has('stale-once'));
+  assert.equal(stale.host.take('stale-once'), restarted);
   assert.equal(stale.alerts.summary('qiaosheng').open_count, 0);
   console.log('PASS real database mutation/HTTP 409: fresh first-page rebuild, no old I/Plan/event/mood mixing or duplicate text');
 
@@ -241,7 +252,7 @@ try {
   assertPrivateTextAbsent(unavailable, beforePersistentMutation);
   assertPrivateTextAbsent(unavailable);
   fault = null;
-  assert.ok(!persistent.host.bootstrapByWindow.has('stale-twice'));
+  assert.equal(persistent.host.take('stale-twice'), undefined);
   assert.equal(calls.slice(persistentStart).filter(c => c.capability === 'bootstrap.get' && !c.loadedSnapshot).length, 2);
   assert.equal(calls.slice(persistentStart).filter(c => c.serverStatus === 409).length, 2);
   const critical = persistent.alerts.list({ actorId: 'qiaosheng', lifecycle: 'open' }).items;
@@ -254,7 +265,7 @@ try {
   const cancelled = context();
   const count = calls.length; const controller = new AbortController(); controller.abort();
   assert.equal(await cancelled.host.windowBootstrap('cancelled', controller.signal), null);
-  assert.ok(!cancelled.host.bootstrapByWindow.has('cancelled'));
+  assert.equal(cancelled.host.take('cancelled'), undefined);
   assert.equal(calls.length, count, 'Pre-cancelled bootstrap issues no HTTP request');
   console.log('PASS cancellation: no request, payload or cache');
   assert.ok(!calls.some(c => c.section === 'anniversaries'));

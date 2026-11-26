@@ -37,7 +37,7 @@ test('I写①：create → i.item.create（change_reason 透传）', async () =>
   const calls: Array<{ cap: string; payload: Record<string, unknown> }> = [];
   const mariposa: MariposaTransport = async (cap, payload) => { calls.push({ cap, payload: payload as Record<string, unknown> }); return { ok: true, result: { item_id: 'it9', revision: 1 } }; };
   const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_i_write', { action: 'create', content: '新的一条', change_reason: '补充自我认知' }, CTX);
+  const out = await tools.execute('memory_i_write', { action: 'create', text: '新的一条', change_reason: '补充自我认知' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'i.item.create');
   assert.equal(calls[0]!.payload.content, '新的一条');
@@ -49,7 +49,7 @@ test('I写①：create → i.item.create（change_reason 透传）', async () =>
 test('I写②：revise 缺 item_id/expected_revision/content 明确拒', async () => {
   const mariposa: MariposaTransport = async () => ({ ok: true, result: {} });
   const { tools, db } = makeTools(mariposa);
-  const a = await tools.execute('memory_i_write', { action: 'revise', content: 'x' }, CTX);
+  const a = await tools.execute('memory_i_write', { action: 'revise', text: 'x' }, CTX);
   assert.equal(a.ok, false);
   assert.equal(a.output.error_code, 'TOOL_ARG_REQUIRED');
   assert.ok(String(a.output.error).includes('item_id'));
@@ -63,11 +63,21 @@ test('I写③：revise 全参 → i.item.revise（CAS+informed_by 透传）；re
   const calls: Array<{ cap: string; payload: Record<string, unknown> }> = [];
   const mariposa: MariposaTransport = async (cap, payload) => { calls.push({ cap, payload: payload as Record<string, unknown> }); return { ok: true, result: { item_id: 'it1', revision: 3 } }; };
   const { tools, db } = makeTools(mariposa);
-  const rv = await tools.execute('memory_i_write', { action: 'revise', item_id: 'it1', content: '改后', expected_revision: 2, informed_by_revision: 1 }, CTX);
+  const relations = [{ memory_id: 'm1', relation_type: 'clarified_by' }];
+  const revise = { action: 'revise', item_id: 'it1', text: '改后', expected_revision: 2, relations };
+  const invalid = await tools.execute('memory_i_write', { ...revise, informed_by_revision: 2 }, CTX);
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.output.error_code, 'I_INVALID_ARGUMENT');
+  assert.equal(invalid.output.field, 'informed_by_revision');
+  assert.match(String(invalid.output.detail), /小于 expected_revision/);
+  assert.equal(calls.length, 0);
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM tool_side_effects').get() as { n: number }).n, 0);
+  const rv = await tools.execute('memory_i_write', { ...revise, informed_by_revision: 1 }, CTX);
   assert.equal(rv.ok, true);
   assert.equal(calls[0]!.cap, 'i.item.revise');
   assert.equal(calls[0]!.payload.expected_revision, 2);
   assert.equal(calls[0]!.payload.informed_by_revision, 1);
+  assert.deepEqual(calls[0]!.payload.relations, relations);
   const bad = await tools.execute('memory_i_write', { action: 'restore', item_id: 'it1', expected_revision: 3 }, CTX);
   assert.equal(bad.ok, false);
   assert.ok(String(bad.output.error).includes('restore_revision'));
@@ -85,7 +95,7 @@ test('计划写①：create → plan.create（宿主幂等 op）；缺 title 拒
   const bad = await tools.execute('plans_write', { action: 'create' }, CTX);
   assert.equal(bad.ok, false);
   assert.ok(String(bad.output.error).includes('title'));
-  const out = await tools.execute('plans_write', { action: 'create', title: '十月看海', content: '秋天去', due_at: '2026-10-30' }, CTX);
+  const out = await tools.execute('plans_write', { action: 'create', title: '十月看海', text: '秋天去', due_at: '2026-10-30' }, CTX);
   assert.equal(out.ok, true);
   assert.equal(calls[0]!.cap, 'plan.create');
   assert.equal(calls[0]!.payload.title, '十月看海');
@@ -114,7 +124,11 @@ test('计划写②：update → plan.update（CAS+字段透传）；冲突码如
 
 test('计划写③：complete/cancel → 薄实现入口（plan_id+expected_version）', async () => {
   const calls: string[] = [];
-  const mariposa: MariposaTransport = async (cap) => { calls.push(cap); return { ok: true, result: { plan_id: 'p1', state: 'done' } }; };
+  const mariposa: MariposaTransport = async (cap, payload) => {
+    calls.push(cap);
+    return { ok: true, result: { plan_id: payload.plan_id, version: Number(payload.expected_version) + 1,
+      state: cap === 'plan.complete' ? 'done' : 'cancelled' } };
+  };
   const { tools, db } = makeTools(mariposa);
   const a = await tools.execute('plans_write', { action: 'complete', plan_id: 'p1', expected_version: 3 }, CTX);
   assert.equal(a.ok, true);

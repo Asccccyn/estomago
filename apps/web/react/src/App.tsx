@@ -1,20 +1,26 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { shouldSendOnKeydown } from '../../src/composer-logic.js'
 import { useEstomago } from './useEstomago'
+import { secureMicrophoneUrl } from '../../src/microphone-access.js'
 import { useChatScroll, useMobileViewport } from './useMobileChat'
 import { IntegrationControls } from './IntegrationControls'
 import { BackgroundControls } from './BackgroundControls'
+import { AccessControls } from './AccessControls'
+import { AccountSettings } from './AccountSettings'
 import { SelectionCheck, SelectionMediaText, SelectionBar } from './SelectionControls'
+import AlbumPanel from './AlbumPanel'
 import { SystemAlertsButton, SystemAlertsPanel } from './SystemAlerts'
 import { CallPanel } from './CallPanel'
 import { CallInvites } from './CallInvites'
 import { SurfacedMemories } from './SurfacedMemories'
+import { SurfacingSettings } from './SurfacingSettings'
 import { InlineMessageEditor } from './InlineMessageEditor'
 import { BackToLatestDot, HistoryBoundary, HistoryDatePicker } from './ChatHistoryControls'
-import type { ChatMessage as Msg, WorkItem, ActivityItem } from './chat-client'
+import { chatRows, replyContent } from './chat-rows'
+import type { ChatMessage as Msg, WorkItem, ActivityItem, EstomagoClient } from './chat-client'
 import {
-  Phone, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
-  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock,
+  Phone, AudioLines, MoreHorizontal, ChevronDown, ChevronLeft, Check, Heart, ListChecks, Copy, Pencil,
+  Plus, Image, Camera, FileText, Archive, Mic, ArrowUp, Wrench, Sparkle, Play, Pause, LayoutGrid, Footprints, RotateCcw, X, AlarmClock, Square, Star,
 } from 'lucide-react'
 
 function DotSpinner() {
@@ -49,26 +55,30 @@ function Thinking({ m, onStop, onExpand }: { m: Msg; onStop?: () => void; onExpa
     setOpen(!open)
     if (!open) readDetails()
   }
+  const tool = (m.pending || m.streaming) && m.steps?.find(s => s.kind === 'tool' && s.state === 'running')
+  const label = tool ? `正在${tool.label ?? '执行工具'}` : m.pending && m.thinking ? '思考中'
+    : m.pending && !m.steps?.length ? '等待回复'
+    : m.thinkSecs == null ? '思考过程' : `思考 · ${m.thinkSecs} 秒`
   return (
     <div className="mb-2 -ml-[13px]">
       <button onClick={toggle} aria-expanded={open} className="flex items-center gap-1.5 text-[13px] text-[#8a8780] hover:text-[#3d3929]">
-        {m.pending ? <DotSpinner /> : <Sparkle size={14} />}
-        <span>{m.pending ? 'thinking · 思考中' : m.thinkSecs == null ? '思考过程' : `thinking · ${m.thinkSecs}s`}</span>
+        {tool || (m.pending && m.thinking) ? <DotSpinner /> : <Sparkle size={14} />}
+        <span>{label}</span>
         <ChevronLeft size={14} className={`transition-transform ${open ? '-rotate-90' : ''}`} />
       </button>
       {open && (
         <div className="mt-2 ml-[6px]">
-          {loading && <p role="status" className="mb-2 text-[12px] text-[#8a8780]">正在读取思考过程…</p>}
+          {loading && !m.steps?.length && <p role="status" className="mb-2 text-[12px] text-[#8a8780]">正在读取思考过程…</p>}
           {!loading && loadError && <button type="button" onClick={readDetails} className="mb-2 text-[12px] text-[#a54b35]">思考过程读取失败 · 点击重试</button>}
-          {!loading && !loadError && !m.steps?.length && <p className="mb-2 text-[12px] text-[#8a8780]">暂无可读摘要</p>}
+          {!m.pending && !loading && !loadError && !m.steps?.length && <p className="mb-2 text-[12px] text-[#8a8780]">暂无可读摘要</p>}
           {m.steps?.map((s, i) => (
-            <div key={i} className="relative flex gap-3 pb-3">
+            <div key={s.id ?? i} className="relative flex gap-3 pb-3">
               {i < m.steps!.length - 1 && <span className="absolute left-[5px] top-4 bottom-0 w-px bg-[#dcd8cc]" />}
               <span className="mt-[5px] flex h-[11px] w-[11px] shrink-0 items-center justify-center rounded-full border border-[#c9c4b6] bg-[#faf9f5]">
-                {s.kind === 'tool' && <span className="h-[5px] w-[5px] rounded-full bg-[#c96442]" />}
+                {s.kind === 'tool' && <span className={`h-[5px] w-[5px] rounded-full ${s.state === 'failed' ? 'bg-[#a54b35]' : s.state === 'completed' ? 'bg-[#788269]' : 'bg-[#c96442]'}`} />}
               </span>
-              <p className={`text-[13.5px] leading-[1.55] text-[#8a8780] ${s.kind === 'tool' ? 'flex items-center gap-1 font-mono text-[12.5px]' : 'font-claude'}`}>
-                {s.kind === 'tool' && <Wrench size={12} />}{s.text}
+              <p className={`min-w-0 break-words text-[13.5px] leading-[1.55] text-[#8a8780] ${s.kind === 'tool' ? 'text-[12.5px]' : 'font-claude'}`}>
+                {s.kind === 'tool' && <Wrench size={12} className="mr-1 inline-block" />}{s.text}
               </p>
             </div>
           ))}
@@ -171,7 +181,7 @@ function ProsodyPages({ analysisId }: { analysisId: string }): React.JSX.Element
 }
 
 const BARS = [4, 9, 14, 8, 16, 11, 6, 13, 18, 10, 7, 15, 12, 5, 9, 14, 8, 11, 6, 4]
-function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string; ai?: boolean; src?: string; assetId?: string }) {
+function VoiceBar({ text, ai, src, assetId, instant }: { text: string; ai?: boolean; src?: string; assetId?: string; instant?: boolean }) {
   // RE-15（2026-10-24 返修）：深听 UI 状态隔离——queued/409 不再显示成成功空卡；
   // 概览响应绑定发起时的 asset（消息修订换 v2 后，迟到的 v1 响应作废不挂新源）；
   // 收起再展开复用已有分析（查询），不重复发起新分析；卸载中止在途请求。
@@ -227,7 +237,7 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
   }
   const [play, setPlay] = useState(false)
   const [t, setT] = useState(0)
-  const [duration, setDuration] = useState<number | null>(dur ?? null)
+  const [duration, setDuration] = useState<number | null>(null)
   const [failed, setFailed] = useState(false)
   const audioRef = useRef<HTMLAudioElement>(null)
   useEffect(() => { const audio = audioRef.current; return () => { audio?.pause() } }, [src])
@@ -235,11 +245,17 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
     const audio = audioRef.current
     if (!audio) return
     if (!audio.paused) audio.pause()
-    else { try { await audio.play() } catch { setFailed(true) } }
+    else {
+      // 元素此前加载失败（隧道一次断流等瞬态）：error 态下 play() 不会重新拉源、
+      // 永远被拒——先 load() 重取；成功后 loadedmetadata/onPlay 会清 failed
+      if (audio.error) audio.load()
+      try { await audio.play() } catch { setFailed(true) }
+    }
   }
   const prog = duration ? t / duration : 0
   const bars = Array.from({ length: Math.min(28, 8 + Math.round((duration ?? 6) * 0.7)) }, (_, i) => BARS[i % BARS.length])
-  const [shown, setShown] = useState(0)
+  // B2：晚到音频把文字气泡翻成语音条时，正文此前已完整显示——不再从零重放打字动画
+  const [shown, setShown] = useState(instant ? text.length : 0)
   useEffect(() => {
     if (shown >= text.length) return
     const id = setTimeout(() => setShown((v) => v + 1), 35)
@@ -248,8 +264,8 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
     <audio hidden ref={audioRef} src={src} preload="metadata"
-      onLoadedMetadata={(e) => setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : null)}
-      onTimeUpdate={(e) => setT(e.currentTarget.currentTime)} onPlay={() => setPlay(true)} onPause={() => setPlay(false)}
+      onLoadedMetadata={(e) => { setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : null); setFailed(false) }}
+      onTimeUpdate={(e) => setT(e.currentTarget.currentTime)} onPlay={() => { setPlay(true); setFailed(false) }} onPause={() => setPlay(false)}
       onEnded={() => { setPlay(false); setT(0) }} onError={() => setFailed(true)} />
     <button onClick={() => void togglePlay()} className="flex max-w-full shrink-0 items-center gap-2.5 rounded-full bg-[#f0ede5] py-1.5 pl-1.5 pr-4">
       <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-white ${ai ? 'bg-[#3d3929]' : 'bg-[#c96442]'}`}>
@@ -263,11 +279,12 @@ function VoiceBar({ dur, text, ai, src, assetId }: { dur?: number; text: string;
       <span className="shrink-0 whitespace-nowrap text-[12px] tabular-nums text-[#5e5d59]">{failed ? '暂不可用' : duration == null ? '…' : `${Math.ceil(duration)}″`}</span>
     </button>
     {text && (
-      <p className={`max-w-full break-words text-[13.5px] leading-[1.55] text-[#8a8780] ${ai ? 'pl-1' : 'pr-1 text-right'}`}>
+      <p className={`max-w-full whitespace-pre-wrap break-words text-[13.5px] leading-[1.55] text-[#8a8780] ${ai ? 'pl-1' : 'pr-1 text-right'}`}>
         {text.slice(0, shown)}{shown < text.length && <span className="ml-0.5 inline-block h-3 w-px animate-pulse bg-[#8a8780] align-middle" />}
       </p>
     )}
-    {assetId && (
+    {/* 2026-11-02 她裁定：深听只对自己的语音有意义（听自己的声音模式）；char的语音不放深听入口 */}
+    {assetId && !ai && (
       <div className={`flex max-w-full flex-col gap-1 ${ai ? 'items-start' : 'items-end'}`}>
         <button onClick={() => void startListen()} className="shrink-0 rounded-full bg-[#f0ede5] px-3 py-1 text-[12px] text-[#5e5d59]">
           {listen.state === 'loading' ? '深听中…' : listen.state === 'ok' ? '收起深听' : listen.state === 'pending' ? '收起（分析中）' : '深听'}
@@ -335,14 +352,70 @@ function Sheet({ kind, onClose, workbench, activity, note }: { kind: 'bench' | '
   )
 }
 
-function Media({ m, ai, showText = true }: { m: Msg; ai?: boolean; showText?: boolean }) {
-  if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} m={{...m, media: undefined, kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
+function Media({ m, ai, showText = true, onFavorite }: { m: Msg; ai?: boolean; showText?: boolean; onFavorite?: (assetId: string) => void }) {
+  if (m.media && m.media.length > 1) return <div className="flex flex-col gap-1.5">{m.media.map((item, i) => <Media key={item.src} ai={ai} showText={showText} onFavorite={onFavorite} m={{...m, media: [item], kind: item.kind, src: item.src, text: i === 0 ? m.text : item.text || ''}} />)}</div>
+  const imageAssetId = m.media?.[0]?.assetId
   const voiceAssetId = m.src?.startsWith('/api/v1/assets/') ? decodeURIComponent(m.src.split('/')[4] ?? '') : ''
-  if (m.kind === 'voice') return <VoiceBar dur={m.dur} text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} />
+  if (m.kind === 'voice') return <VoiceBar text={showText ? m.text : ''} ai={ai} src={m.src} assetId={voiceAssetId} instant={m.lateMedia} />
+  // M02（包1 2026-11-15）：SVG/HTML 代码作品走沙箱 /preview（同服务端 CSP：脚本
+  // 仅在隔离 iframe 内执行，主站不引入其来源）——不作为 <img> 渲染。
+  if (m.kind === 'work') return (
+    <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
+      <iframe src={m.src} title={m.text || '代码作品'} sandbox="allow-scripts" className="h-64 w-full max-w-60 rounded-2xl bg-white ring-1 ring-black/5" />
+      <p className="text-xs text-[#8a8580]">代码作品（沙箱预览）</p>
+      {showText && m.text && <p className={`text-[15px] leading-[1.6] text-[#1f1e1d] ${ai ? 'font-claude' : ''}`}>{m.text}</p>}
+    </div>
+  )
   return (
     <div className={`flex max-w-full flex-col gap-1.5 ${ai ? 'items-start' : 'items-end'}`}>
       <img src={m.src} alt={m.text || '图片'} className="max-h-64 w-full max-w-60 rounded-2xl object-cover ring-1 ring-black/5" />
+      {onFavorite && imageAssetId && <IconBtn title="收藏到我们的相册" onClick={() => onFavorite(imageAssetId)}><Star size={15} /></IconBtn>}
       {showText && m.text && <p className={`text-[15px] leading-[1.6] text-[#1f1e1d] ${ai ? 'font-claude' : ''}`}>{m.text}</p>}
+    </div>
+  )
+}
+
+function AssistantReply({ parts, client, copy, selectionMode, selected }: {
+  parts: Msg[]; client: EstomagoClient; copy: (text: string) => Promise<void>; selectionMode: boolean; selected: Set<string>
+}) {
+  const first = parts[0]!
+  const last = parts[parts.length - 1]!
+  const running = last.pending || last.streaming
+  const content = selectionMode ? parts.map(part => ({ part, key: part.id, anchor: part.id })) : replyContent(parts)
+  const tokens = parts.reduce((total, part) => total + (part.tokens ?? 0), 0)
+  return (
+    <div className="mb-8 w-[75%] pl-[2em]" data-reply-turn={first.turnId}>
+      {!first.heartbeat && (!selectionMode || first.pending) && (first.turnId || running || first.steps?.length) ? <Thinking m={last}
+        onExpand={first.turnId ? () => client.loadTurnDetails(first.turnId!) : undefined}
+        onStop={running && first.turnId ? () => void client.stopTurn(first.turnId!) : undefined} /> : null}
+      {!first.pending && <>
+        <div className="flex min-w-0 flex-col gap-3">
+          {content.map(({part, key, anchor}) => {
+            const text = <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
+              {part.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
+            </div>
+            return <div key={key} data-message-id={anchor}>
+              {selectionMode ? <button type="button" onClick={() => client.select(part.id)} aria-pressed={selected.has(part.id)}
+                aria-label={selected.has(part.id) ? '取消选择这条' : '选择这条'} className="flex w-full items-start gap-3 text-left">
+                <SelectionCheck checked={selected.has(part.id)} />
+                <span className="min-w-0">{part.kind ? <SelectionMediaText kind={part.kind} text={part.text} /> : text}
+                  <span className="mt-1 block text-[12px] tabular-nums text-[#a3a099]">{part.time}</span>
+                </span>
+              </button> : part.kind ? <Media m={part} ai onFavorite={id => void client.favoriteImages([id])} /> : text}
+            </div>
+          })}
+        </div>
+        {!selectionMode && <>
+          {first.turnId && !first.heartbeat && <SurfacedMemories turnId={first.turnId} client={client} />}
+          <div className="mt-2 -ml-1.5 flex items-center">
+            <span className="mx-1.5 text-[12px] tabular-nums text-[#a3a099]">{last.time}</span>
+            {tokens > 0 && <span className="mr-1 text-[12px] tabular-nums text-[#a3a099]">约 {tokens.toLocaleString()}</span>}
+            <IconBtn title="多选" onClick={() => client.select(parts.map(p => p.id))}><ListChecks size={15} /></IconBtn>
+            <IconBtn title="复制" onClick={() => void copy(content.map(({part}) => part.text).filter(Boolean).join('\n\n'))}><Copy size={15} /></IconBtn>
+            <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
+          </div>
+        </>}
+      </>}
     </div>
   )
 }
@@ -378,19 +451,22 @@ export default function App() {
     void el.play().catch(() => client.notify('试听失败，请稍后再试'))
   }
   const msgs = state.messages
+  const rows = chatRows(msgs)
   const model = state.model
   const effort = state.effort
   const MODELS = state.models
   const EFFORTS = state.efforts.map((e) => e === 'medium' ? 'med' : e)
-  const setModel = (i: number) => { if (i !== model && window.confirm('切换模型后，下一次发送前可选择携带的历史。确认切换？')) void client.setModel(i) }
+  const setModel = (i: number) => { if (i !== model) void client.setModel(i) }
   const setEffort = (i: number) => { void client.setEffort(i) }
   const [menu, setMenu] = useState(false)
   const [plus, setPlus] = useState(false)
+  const [albumOpen, setAlbumOpen] = useState(false)
   const [ctxOpen, setCtxOpen] = useState(false)
   const [more, setMore] = useState(false)
   const [callOpen, setCallOpen] = useState(false)
+  const [callMode, setCallMode] = useState<'ordinary' | 'deep_listen'>('ordinary') // P6/V02：专属深听电话入口
   const [incomingCall, setIncomingCall] = useState<{ ws_url: string; token: string; call_id: string } | null>(null)
-  const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake'>(null)
+  const [sheet, setSheet] = useState<null | 'bench' | 'log' | 'wake' | 'memory'>(null)
   const [alertsOpen, setAlertsOpen] = useState(false)
   const [editing, setEditing] = useState<{ id: string; text: string; revision?: number; resend: boolean } | null>(null)
   const [historyAction, setHistoryAction] = useState<'earlier' | 'later' | 'date' | 'latest' | null>(null)
@@ -453,7 +529,7 @@ export default function App() {
     return saved
   }
   useEffect(() => {
-    if (sheet && sheet !== 'wake') void client.loadPanel(sheet)
+    if (sheet && (sheet === 'bench' || sheet === 'log')) void client.loadPanel(sheet)
   }, [sheet, client])
   useEffect(() => {client.setAlertsOpen(alertsOpen);return ()=>client.setAlertsOpen(false)}, [alertsOpen, client])
   useEffect(() => {
@@ -465,8 +541,16 @@ export default function App() {
     el.style.height = '24px'
     el.style.height = Math.min(120, el.scrollHeight) + 'px'
   }, [input])
+  if (['/settings/model-access', '/settings/account'].includes(window.location.pathname) && !state.ready) {
+    return <main className="min-h-screen bg-[#faf9f5] p-8 text-[#3d3929]"><p role="status">{state.notice || '正在连接…'}</p>{state.notice && <button onClick={() => void client.start()}>重新连接</button>}</main>
+  }
+  if (window.location.pathname === '/settings/model-access') {
+    return <AccessControls client={client} onClose={() => window.location.assign('/chat')} />
+  }
+  if (window.location.pathname === '/settings/account') return <AccountSettings client={client} />
   return (
     <div ref={appRef} className="chat-app flex w-full overflow-hidden flex-col bg-[#faf9f5]">
+      {globalThis.isSecureContext === false && secureMicrophoneUrl() && <div role="status" className="shrink-0 border-b border-black/5 px-4 py-2 text-[12px] text-[#a54b35]">录音和电话需要安全连接。<a className="ml-2 underline" href={secureMicrophoneUrl()!} target="_blank" rel="noopener noreferrer">使用 HTTPS 打开</a></div>}
       {/* Header */}
       <header className="relative z-20 shrink-0 border-b border-black/5 pb-2">
         <div className="flex items-center justify-between pl-5 pr-3">
@@ -483,15 +567,16 @@ export default function App() {
               disabled={editing !== null || state.selectionMode} onPick={jumpToDate} />
             <SystemAlertsButton unread={state.unreadAlerts} open={state.openAlerts}
               onClick={()=>{setAlertsOpen(true);setMore(false);setSheet(null)}} />
-            <IconBtn title="电话" onClick={() => setCallOpen(true)}><Phone size={18} /></IconBtn>
+            <IconBtn title="电话" onClick={() => { setCallMode('ordinary'); setCallOpen(true); }}><Phone size={18} /></IconBtn>
+            <IconBtn title="深听电话（他的话会做同轮声音观察）" onClick={() => { setCallMode('deep_listen'); setCallOpen(true); }}><AudioLines size={18} /></IconBtn>
             <div className="relative">
               <IconBtn title="更多" onClick={() => setMore(!more)}><MoreHorizontal size={18} /></IconBtn>
               {more && (
                 <>
                   <div className="fixed inset-0 z-30" onClick={() => setMore(false)} />
                   <div className="pop-in absolute right-0 top-9 z-40 w-52 rounded-2xl border border-black/10 bg-white p-1 shadow-xl">
-                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温']] as const).map(([k, I, t, d]) => (
-                      <button key={k} onClick={() => { setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
+                    {([['bench', LayoutGrid, '工作台', 'char给我做的小东西'], ['log', Footprints, '活动日志', '自动唤醒后的足迹'], ['wake', AlarmClock, '自主预约与保温', '他的自设唤醒和心跳保温'], ['memory', Sparkle, '自动记忆浮现', '回忆判断模型与模板设置'], ['access', Wrench, 'SDK / API key', '自主切换模型入口'], ['account', Wrench, '账号与密码', '自己设置网页登录凭据']] as const).map(([k, I, t, d]) => (
+                      <button key={k} onClick={() => { if (k === 'access') window.location.assign('/settings/model-access'); else if (k === 'account') window.location.assign('/settings/account'); else setSheet(k); setMore(false) }} className="flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left hover:bg-[#f3f1ea]">
                         <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#f3e6df] text-[#c96442]"><I size={16} /></span>
                         <span><span className="block text-[14px]">{t}</span><span className="block text-[11.5px] text-[#8a8780]">{d}</span></span>
                       </button>
@@ -504,7 +589,7 @@ export default function App() {
         </div>
         <div className="relative flex justify-center">
           {state.selectionMode ? (
-            <span className="py-1 text-[12px] text-[#8a8780]">已选 {state.selected.size} 条 · 只带文本，图片不带入新窗</span>
+            <span className="py-1 text-[12px] text-[#8a8780]">已选 {state.selected.size} 条 · 所选图片随新窗真实携带（计入每次滚窗 10 张上限）</span>
           ) : (
           <button onClick={() => setMenu(!menu)} className="relative rounded-lg px-2 py-1 text-[13px] text-[#5e5d59] hover:bg-black/5">
             char · {MODELS[model]} · {EFFORTS[effort] ?? '默认'}
@@ -546,10 +631,13 @@ export default function App() {
           error={historyAction === 'earlier' ? state.historyError : undefined} disabled={editing !== null || state.selectionMode || state.historyLoading}
           onLoad={() => void loadEarlier()} />}
         {state.historyMode === 'date' && !state.historyLoading && msgs.length === 0 && <p role="status" className="px-5 py-12 text-center text-[14px] text-[#8a8780]">这一天没有聊天记录，可以选择其他日期或回到最新。</p>}
-        {msgs.map((m, index) => <Fragment key={m.id}>
-          {m.dateKey && (index === 0 || msgs[index - 1]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
-          <div data-message-id={m.id} className="flow-root">
-          {m.system ? <p role="status" className="mx-5 mb-4 text-center text-[12px] text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
+        {rows.map((row, index) => {
+          const m = row.parts[0]!
+          return <Fragment key={row.key}>
+          {m.dateKey && (index === 0 || rows[index - 1]?.parts[0]?.dateKey !== m.dateKey) && <p className="mb-5 text-center text-[11px] text-[#a3a099]">{m.dateLabel ?? m.dateKey}</p>}
+          <div data-message-id={m.system || m.role === 'user' ? m.id : undefined} className="flow-root">
+          {m.system
+            ? <p role="status" aria-label="系统消息" className="mx-5 mb-4 whitespace-pre-wrap break-words text-center text-[12px] leading-relaxed text-[#8a8780]">{m.text}</p> : m.role === 'user' ? (
           state.selectionMode ? (
             <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
               aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
@@ -574,6 +662,9 @@ export default function App() {
               <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
               <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
               <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
+              {m.kind === 'image' && m.media?.some((x) => x.assetId) && (
+                <IconBtn title="收藏到我们的相册" onClick={() => void client.favoriteImages(m.media!.filter((x) => x.kind === 'image' && x.assetId).map((x) => x.assetId!))}><Star size={15} /></IconBtn>
+              )}
               <IconBtn title={m.canEdit ? '编辑' : '已派发或编辑资格尚未确认'} disabled={editing !== null || m.editPending || !m.canEdit} onClick={() => editMessage(m)}><Pencil size={15} /></IconBtn>
               <span className="ml-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
             </div>
@@ -587,44 +678,10 @@ export default function App() {
             </button>}
           </div>
           )
-        ) : state.selectionMode && !m.pending ? (
-            <button key={m.id} onClick={() => selectMessage(m.id)} aria-pressed={state.selected.has(m.id)}
-              aria-label={state.selected.has(m.id) ? '取消选择这条' : '选择这条'}
-              className="mb-8 flex w-full items-start gap-3 pl-5 text-left">
-              <SelectionCheck checked={state.selected.has(m.id)} />
-              <span className="min-w-0 w-[75%]">
-                {m.kind ? <SelectionMediaText kind={m.kind} text={m.text} /> : (
-                <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
-                  {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
-                </div>
-                )}
-                <span className="mt-1 block text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
-              </span>
-            </button>
         ) : (
-          <div key={m.id} className="mb-8 w-[75%] pl-[2em]">
-            {(m.turnId || m.pending || m.streaming || (m.steps && m.steps.length > 0)) && <Thinking m={m}
-              onExpand={m.turnId ? () => client.loadTurnDetails(m.turnId!) : undefined}
-              onStop={(m.pending || m.streaming) && m.turnId ? () => void client.stopTurn(m.turnId!) : undefined} />}
-            {!m.pending && (
-              <>
-                {m.kind ? <Media m={m} ai /> : (
-                <div className="font-claude break-words space-y-3 text-[15.5px] leading-[1.6] tracking-[-0.003em] text-[#1f1e1d]">
-                  {m.text.split('\n\n').map((p, i) => <p key={i}>{p}</p>)}
-                </div>
-                )}
-                {m.turnId && <SurfacedMemories key={m.turnId} turnId={m.turnId} client={client} />}
-                <div className="mt-2 -ml-1.5 flex items-center">
-                  <span className="mx-1.5 text-[12px] tabular-nums text-[#a3a099]">{m.time}</span>
-                  <span className="mr-1 text-[12px] tabular-nums text-[#a3a099]">{m.tokens == null ? '' : `约 ${m.tokens.toLocaleString()}`}</span>
-                  <IconBtn title={state.selected.has(m.id) ? '已选择' : '多选'} onClick={() => selectMessage(m.id)}><ListChecks size={15} /></IconBtn>
-                  <IconBtn title="复制" onClick={() => void copy(m.text)}><Copy size={15} /></IconBtn>
-                  <IconBtn title="戳一戳" onClick={() => client.notify('戳一戳服务暂未接入')}><Heart size={15} /></IconBtn>
-                </div>
-              </>
-            )}
-          </div>
-        )}</div></Fragment>)}
+          <AssistantReply parts={row.parts} client={client} copy={copy} selectionMode={state.selectionMode} selected={state.selected} />
+        )}</div></Fragment>
+        })}
         {(state.hasLater || state.loadingLater || state.historyMode === 'date' && msgs.length > 0 || historyAction === 'later' && state.historyError) && <HistoryBoundary
           direction="later" loading={state.loadingLater} hasMore={state.hasLater} error={historyAction === 'later' ? state.historyError : undefined}
           disabled={editing !== null || state.selectionMode || state.historyLoading} onLoad={() => void loadLater()} />}
@@ -632,6 +689,7 @@ export default function App() {
       </main>
 
       <IntegrationControls client={client} state={state} />
+      {albumOpen && <AlbumPanel onClose={() => setAlbumOpen(false)} />}
       {/* Composer */}
       <footer className="relative shrink-0 px-3 pt-2">
         <BackToLatestDot visible={state.historyMode === 'date' || state.hasLater || state.newMessages || awayFromLatest}
@@ -639,15 +697,20 @@ export default function App() {
           disabled={editing !== null || state.selectionMode} onLatest={() => void returnToLatest()} />
         {state.selectionMode ? (
         <SelectionBar count={state.selected.size}
-          onConfirm={() => { if (confirm(`携带所选 ${state.selected.size} 条文本历史换窗？`)) void client.confirmSelection() }}
+          onArchive={(kind) => void client.archiveSelection(kind)}
+          onConfirm={() => { if (confirm(`携带所选 ${state.selected.size} 条历史（含图片）换窗？`)) void client.confirmSelection() }}
           onEmpty={() => { if (confirm('确认不携带历史换窗？')) void client.confirmSelection(true) }}
           onCancel={client.cancelSelection} />
         ) : (<>
-        {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => <div key={a.id} className="flex items-center gap-1">
-          <button onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
-          {a.kind === 'voice' && a.assetId && <button aria-label="试听录音" onClick={() => togglePreview(a.assetId!)} className="text-[#8a8780]">试听</button>}
-          <button aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
-        </div>)}</div>}
+        {state.attachments.length > 0 && <div className="mb-2 flex flex-wrap gap-2 text-[12px] text-[#8a8780]">{state.attachments.map(a => {
+          const locked = client.isAttachmentLocked(a.id)
+          return <div key={a.id} className="flex items-center gap-1">
+            <button disabled={locked} onClick={() => { if (a.status === 'failed') void client.retryAttachment(a.id) }}>{a.name} · {{ready:'待发送',uploading:'上传中',transcribing:'转写中',failed:'失败，点击重试',uncertain:'结果未确认'}[a.status]}</button>
+            {a.kind === 'voice' && <button disabled={locked} aria-label="重新录制" onClick={() => { client.removeAttachment(a.id); void startRec() }} className="text-[#8a8780]">重录</button>}
+            {a.kind === 'voice' && a.assetId && <button aria-label="试听录音" onClick={() => togglePreview(a.assetId!)} className="text-[#8a8780]">试听</button>}
+            <button disabled={locked} aria-label="移除附件" onClick={() => client.removeAttachment(a.id)}>×</button>
+          </div>
+        })}</div>}
         <div className="flex items-center gap-2">
           <div className="relative shrink-0">
           {plus && (
@@ -655,7 +718,7 @@ export default function App() {
               <div className="fixed inset-0 z-30" onClick={() => setPlus(false)} />
               <div className="pop-up absolute bottom-[54px] left-0 z-40 flex gap-1 rounded-2xl border border-black/10 bg-white p-1.5 shadow-xl">
                 {([[Image, '相册'], [Camera, '拍照'], [FileText, '文件'], [Archive, '存档读取']] as const).map(([I, l]) => (
-                  <button key={l} aria-label={l} onClick={() => (l === '相册' || l === '文件' ? fileRef.current?.click() : l === '拍照' ? camRef.current?.click() : (setPlus(false), client.beginSelection()))} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#3d3929] hover:bg-[#f3f1ea]">
+                  <button key={l} aria-label={l} onClick={() => (l === '相册' ? (setPlus(false), setAlbumOpen(true)) : l === '文件' ? fileRef.current?.click() : l === '拍照' ? camRef.current?.click() : (setPlus(false), client.beginSelection()))} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#3d3929] hover:bg-[#f3f1ea]">
                     <I size={20} />
                   </button>
                 ))}
@@ -692,8 +755,8 @@ export default function App() {
                 </div>
               </>
             )}
-            <button aria-label="语音" onClick={() => (rec === null ? (pauseAllVoice(), startRec()) : stopRec(true))}
-              className={`p-1 ${rec === null ? 'text-[#5e5d59]' : 'text-[#c96442]'}`}><Mic size={18} /></button>
+            <button aria-label="语音" aria-disabled={rec !== null} onClick={() => { if (rec === null) (pauseAllVoice(), startRec()) }}
+              className={`p-1 ${rec === null ? 'text-[#5e5d59]' : 'text-[#c96442] opacity-50'}`}><Mic size={18} /></button>
             {rec !== null ? (
               <div className="flex min-w-0 flex-1 items-center gap-2 px-1 text-[14px] text-[#5e5d59]">
                 <span className="h-2 w-2 animate-pulse rounded-full bg-[#d94a3a]" />
@@ -709,20 +772,28 @@ export default function App() {
               onKeyDown={(e) => { if (shouldSendOnKeydown(e)) { e.preventDefault(); send(); } }}
               placeholder="回复…" className="min-w-0 flex-1 resize-none bg-transparent px-1 text-[16px] outline-none placeholder:text-[#a3a099]" />}
             {msgs.some(m=>m.pending||m.streaming) && <button aria-label="停止回复" onClick={() => {const running=msgs.filter(m=>m.pending||m.streaming).at(-1);if(running?.turnId)void client.stopTurn(running.turnId)}} className="shrink-0 rounded-lg px-2 py-1 text-[13px] text-[#8a8780]">停止</button>}
-            <button onClick={() => (rec !== null ? stopRec(true) : send())} aria-label="发送" title="发送（⌘/Ctrl+Enter）" disabled={rec === null && !client.canSend} onPointerDown={(e) => e.preventDefault()}
+            {rec !== null ? (
+              <button onClick={() => stopRec(true)} aria-label="结束录音" title="结束录音（进入试听）"
+                className="flex h-[42px] shrink-0 items-center gap-1.5 rounded-full bg-[#c96442] px-3.5 text-[14px] font-medium text-white shadow-sm">
+                <Square size={11} strokeWidth={0} fill="currentColor" />结束录音
+              </button>
+            ) : (
+            <button onClick={() => send()} aria-label="发送" title="发送（⌘/Ctrl+Enter）" disabled={!client.canSend} onPointerDown={(e) => e.preventDefault()}
               className="group flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-full text-white">
               <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#c96442] transition group-disabled:bg-[#e6c2b4]"><ArrowUp size={17} /></span>
             </button>
+            )}
           </div>
         </div>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { setPlus(false); onPick(e.target.files?.[0]); e.target.value = '' }} />
         <input ref={camRef} type="file" accept="image/*" capture="environment" hidden onChange={(e) => { onPick(e.target.files?.[0]); e.target.value = '' }} />
         </>)}
       </footer>
-      {sheet && sheet !== 'wake' && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
+      {(sheet === 'bench' || sheet === 'log') && <Sheet kind={sheet} onClose={() => setSheet(null)} workbench={state.workbench} activity={state.activity} note={state.panelNote} />}
       {sheet === 'wake' && <BackgroundControls client={client} onClose={() => setSheet(null)} />}
       <CallInvites onAccept={(conn) => { setIncomingCall(conn); setCallOpen(true); }} />
-      {callOpen && <CallPanel conversationId="primary" incoming={incomingCall ?? undefined} onExit={() => { setCallOpen(false); setIncomingCall(null); }} />}
+      {callOpen && <CallPanel conversationId="primary" incoming={incomingCall ?? undefined} mode={callMode} onExit={() => { setCallOpen(false); setIncomingCall(null); }} />}
+      {sheet === 'memory' && <SurfacingSettings client={client} onClose={() => setSheet(null)} />}
       {alertsOpen && <SystemAlertsPanel alerts={state.alerts} unread={state.unreadAlerts} open={state.openAlerts}
         error={state.alertsError} hasMore={state.alertsHasMore} onClose={()=>setAlertsOpen(false)}
         onRefresh={()=>void client.loadAlerts()} onRead={()=>void client.markAlertsRead()} onMore={()=>void client.loadMoreAlerts()} />}

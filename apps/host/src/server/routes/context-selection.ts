@@ -100,7 +100,7 @@ if (runtime) {
     runner: d.runnerSelection.status === 'ok' ? { kind: d.runnerSelection.runner.kind } : { blocked: d.runnerSelection.reasons },
     openrouter: orStatus,
     deepseek: dsStatus,
-    capabilities: d.capabilities.describe(),
+    capabilities: d.capabilities.describe(gate.observed.probes),
     active_window: active ? { id: active.id, status: active.status, sdk_session_bound: Boolean(active.sdk_session_id) } : null,
     // WP-07（CX-10）：无活动窗时附 awaiting 选集引用——UI 锚定确认
     // 入口（preview/confirm 以 source_window_id 为目标，含哨兵源）
@@ -156,7 +156,7 @@ if (ctxRecords) {
   const conversationId = decodeURIComponent(ctxRecords[1]!);
   const lastSeq = (d.db.prepare('SELECT MAX(sequence) AS m FROM runtime_stream_events WHERE conversation_id = ?').get(conversationId) as { m: number | null }).m;
   const snapshot = buildRecordSnapshot(
-    { db: d.db, config: d.config, windows: d.windows, runnerSelection: d.runnerSelection, rawSyncState: d.archiveSync?.rawSyncState?.(conversationId) ?? null },
+    { db: d.db, config: d.config, settings: d.settings, windows: d.windows, runnerSelection: d.runnerSelection, rawSyncState: d.archiveSync?.rawSyncState?.(conversationId) ?? null },
     conversationId,
     lastSeq,
   );

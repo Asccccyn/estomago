@@ -3,22 +3,27 @@
 // UNCONFIGURED → 绑定（analysis+roomId）→ 源授权 → 取消检查 → overview/prosody_page 分支
 // → 调用后取消/权限重检 → analysis_id 一致性 → 唯一模型投影（oidoModelView 在原 try 内
 // 恰一次执行，错误映射不变；条目 toModel 为正式边界透传）。abort→CANCELLED，其余沿现行截短错误码。
+import { sha256Hex } from '../../util/id.ts';
 import type { Db } from '../../db/connection.ts';
 import type { OidoAdapter } from '../../integrations/oido/adapter.ts';
 import { oidoModelView } from '../../integrations/oido/model-view.ts';
 import type { CapabilityOutcome, ToolExecContext } from '../../capabilities/contracts.ts';
 import { OidoSourceRepository } from './source-repository.ts';
+import { analysisRoundClosed, audioAnalysesAllDiscarded } from './observations.ts';
+import { resolveCurrentVoice, candidateLocator } from '../../media/voice-refs.ts';
 
 export type OidoGetInput = { analysis_id: string; detail?: string; cursor?: string };
 /** 内部结果：模型投影在 service 内恰一次完成；view 不再二次投影。 */
 export type OidoGetEvidence = { view: Record<string, unknown> };
 
-export type OidoAnalyzeInput = { audio_ref: string; range_ms?: [number, number] };
+// P2 §6.5：audio_ref 可省略——省略时由宿主按实际装载视野补齐（唯一目标语音）；
+// 多候选/无目标时仅本次操作给出候选定位信息，不让模型猜编号。
+export type OidoAnalyzeInput = { audio_ref?: string; range_ms?: [number, number] };
 /** analyze 内部结果：模型投影在 service 内恰一次完成（原顺序：投影→绑定）。 */
 export type OidoAnalysisResult = { view: Record<string, unknown> };
 
 /** 受信音频内容读面（MediaService 的窄投影；不给模块整个 MediaService 写权限——P03.2）。 */
-export type AudioContentReader = { readContent(assetId: string): { bytes: Buffer; mime: string } };
+export type AudioContentReader = { readContent(assetId: string): { bytes: Buffer; mime: string }; readContentResolvingMaster?(assetId: string): Promise<{ bytes: Buffer; mime: string }> };
 /** view 测量图工件落盘（原 saveBuffer 调用面；派生工件幂等键由调用方给）。 */
 export type ArtifactSaver = {
   saveBuffer(opts: { bytes: Uint8Array; purpose: import('../../media/assets.ts').IngestPurpose; operationId: string; createdBy: string; origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null }): Promise<{ id: string; content_sha256: string; byte_size: number }>;
@@ -39,11 +44,31 @@ export class OidoHearingService {
     this.artifacts = deps.artifacts ?? null;
   }
 
+  /** RV2-01（复审 20261106 第二轮）：统一消费资格端口（observations.analysisRoundClosed）
+   *  ——被放弃轮次、以及"消息已发但本轮未采纳该分析"（超时占位轮）的迟到结果，
+   *  都不再被读取当成功。已采纳分析（delivered+adopted）的后续查询不受影响。 */
+  private analysisClosed(analysisId: string): boolean {
+    return analysisRoundClosed(this.db, analysisId);
+  }
+
+  /** R3-V01（第三轮复审）：按**实际返回的分析身份**后验资格——find 顶层与 compare
+   *  left/right 各带 analysis_id；任一被该轮资格关闭即拒绝。不再按资产全部旧自动
+   *  历史整锁（旧 audioAnalysesAllDiscarded 会把显式新分析也封死，形成死循环前置）。 */
+  private resultAnalysisClosed(result: Record<string, unknown>): boolean {
+    const ids = new Set<string>();
+    for (const v of [result.analysis_id, (result.left as Record<string, unknown> | undefined)?.analysis_id, (result.right as Record<string, unknown> | undefined)?.analysis_id]) {
+      if (typeof v === 'string' && v) ids.add(v);
+    }
+    for (const id of ids) if (analysisRoundClosed(this.db, id)) return true;
+    return false;
+  }
+
   /** 读深听结果（概览/逐字谱分页）——原 HostToolExecutor.oidoGet 逐字迁移。 */
   async getEvidence(args: OidoGetInput, ctx: ToolExecContext): Promise<CapabilityOutcome<OidoGetEvidence>> {
     if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    if (this.analysisClosed(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次未采纳它（超时/取消）；被丢弃的分析不再读取。' } };
     const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
-    const allowed = () => binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256);
+    const allowed = () => binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !analysisRoundClosed(this.db, args.analysis_id);
     if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听。' } };
     try {
       ctx.signal?.throwIfAborted();
@@ -68,14 +93,24 @@ export class OidoHearingService {
    *  无转写允许路径、hash 匹配、前后可见性检查保持；不是每条语音自动深听。 */
   async analyzeVoice(args: OidoAnalyzeInput, ctx: ToolExecContext): Promise<CapabilityOutcome<OidoAnalysisResult>> {
     if (!this.oido || !this.audio) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED', detail: 'oído 深听未接入（能力缺口，如实拒绝）' } };
-    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(args.audio_ref ?? '');
+    let audioRef = args.audio_ref;
+    if (!audioRef) {
+      const resolved = resolveCurrentVoice(this.db, ctx.roomId, ctx.seenMessages);
+      if (resolved.kind === 'unique') audioRef = `est:${resolved.assetId}`;
+      else return { ok: false, error: { error_code: 'VOICE_REF_REQUIRED', detail: `当前无法唯一确定目标语音；请从这些里指定 audio_ref：${candidateLocator(resolved.candidates)}` } };
+    }
+    const m = /^est:([A-Za-z0-9_-]{1,128})$/.exec(audioRef);
     if (!m) return { ok: false, error: { error_code: 'TOOL_ARG_INVALID', detail: 'audio_ref 必须形如 est:<asset_id>' } };
     const assetId = m[1]!;
     // 会话可达性：资产必须绑定本会话某条消息（她发的或char发的语音都算）
     const bound = this.sources.sourceAllowed(assetId, ctx.roomId);
     if (!bound) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM', detail: '该语音不属于当前会话' } };
     try {
-      const { bytes, mime } = this.audio.readContent(assetId);
+      // 宿主用户 2026-11-08 裁定（语音走 M 正本）：深听字节经回源入口（缓存缺失取 M）
+      const reader = this.audio as AudioContentReader;
+      const { bytes, mime } = reader.readContentResolvingMaster
+        ? await reader.readContentResolvingMaster(assetId)
+        : reader.readContent(assetId);
       const row = this.sources.assetSha(assetId);
       if (!row) return { ok: false, error: { error_code: 'ASSET_NOT_FOUND' } };
       const vt = this.sources.readyTranscript(assetId, ctx.roomId, row);
@@ -100,11 +135,20 @@ export class OidoHearingService {
       // 时复用通话快观察的分析任务（oído 同 digest 去重返回同一分析，RE-13d：已完成
       // 返回概览）——快观察与深听不再对同一段音频各跑一次 DSP。带 range=不同语义
       // 身份（可能裁剪），照旧新键新分析。
-      const quickKey = args.range_ms ? null : this.sources.quickAnalysisKey(assetId);
+      // F04：输入版本摘要（转写文本→sha；无转写='-'）——键复用与 O 的输入 digest 同变量
+      const inputDigest = transcript ? `${transcript.source}:${sha256Hex(transcript.text)}` : '-';
+      // RV2-01：快键只在既有分析仍可消费时复用——该资产此前全部自动分析轮已被丢弃
+      // （delivered 未采纳/abandoned）时，显式 oido_analyze 是新操作：失效旧快键，
+      // 走 legacy 键新分析，不把被丢弃的分析回放给模型。
+      const quickDiscarded = args.range_ms ? false : audioAnalysesAllDiscarded(this.db, assetId);
+      if (quickDiscarded) this.sources.invalidateAnalysisKey(assetId);
+      const quickKey = args.range_ms || quickDiscarded ? null : this.sources.quickAnalysisKey(assetId, inputDigest);
       const idemKey = quickKey ?? legacyKey;
-      if (!args.range_ms) this.sources.rememberAnalysisKey(assetId, idemKey);
+      if (!args.range_ms) this.sources.rememberAnalysisKey(assetId, idemKey, inputDigest);
       const result = await this.oido.analyze({ assetId, rangeMs: args.range_ms, waitMs: 6000, idempotencyKey: idemKey, signal: ctx.signal }).catch((err: Error) => {
         if (String(err.message).includes('IDEMPOTENCY_CONFLICT') || String(err.message).includes('idempotency_conflict')) {
+          // F04：同键异 digest=输入版本已变——失效旧键，让"重新发起"的重试生成新键新分析
+          this.sources.invalidateAnalysisKey(assetId);
           throw new Error('OIDO_CONTRACT_CHANGED');
         }
         throw err;
@@ -137,9 +181,11 @@ export class OidoHearingService {
    *  原 HostToolExecutor.oidoView 逐字迁移（前后 oidoAnalysisAllowed 复验、imageRefs 通道）。 */
   async view(args: { analysis_id: string; range_ms?: [number, number] }, ctx: ToolExecContext): Promise<CapabilityOutcome<Record<string, unknown>>> {
     if (!this.oido) return { ok: false, error: { error_code: 'INTEGRATION_UNCONFIGURED' } };
+    // RV2-01：get/view 同一消费资格端口
+    if (this.analysisClosed(args.analysis_id)) return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该分析所属轮次未采纳它（超时/取消）；被丢弃的分析不再读取。' } };
     const allowed = (): boolean => {
       const binding = this.sources.analysisBinding(args.analysis_id, ctx.roomId);
-      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256));
+      return Boolean(binding && this.sources.sourceAllowed(binding.asset_id, ctx.roomId, binding.content_sha256) && !analysisRoundClosed(this.db, args.analysis_id));
     };
     if (!allowed()) return { ok: false, error: { error_code: 'ANALYSIS_NOT_IN_ROOM', detail: '请从当前会话原声引用重新发起深听' } };
     try {
@@ -166,7 +212,7 @@ export class OidoHearingService {
         analysis_id: args.analysis_id,
         ...(args.range_ms ? { range_ms: args.range_ms } : {}),
         image: artifactAssetId !== null
-          ? { view: 'ui_only', ui_ref: `/api/v1/oido/views/${encodeURIComponent(args.analysis_id)}${args.range_ms ? `?range_ms=${args.range_ms[0]},${args.range_ms[1]}` : ''}`, mime: view.mime, note: '测量图已存为界面资产，未随工具正文携带；当前型号/通道未携带原图时不得声称已看图，结论以 oido_get 的数值证据为准' }
+          ? { view: 'image', asset_ref: artifactAssetId, mime: view.mime }
           : { view: 'unavailable', note: '宿主未配置媒体服务，图未保存；不得声称已看图' },
       };
       return { ok: true, value: out, ...(artifactAssetId !== null ? { imageRefs: [artifactAssetId] } : {}) };
@@ -189,6 +235,11 @@ export class OidoHearingService {
       // RE-06（2026-10-24 返修）：交付前复验——远端读取期间源被删除/撤权（等长改写亦换 sha）
       // 的迟到结果不交付（上轮反例：await 后直接 ok:true 交付撤权后证据）
       if (!this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM', detail: '读取期间源已失效（删除/撤权/变更），结果不交付' } };
+      // R3-V01：按实际选中的 analysis_id 后验资格（被丢弃的旧分析不因源搜索复活；
+      // 显式新分析不受旧自动历史影响）
+      if (this.resultAnalysisClosed(result as unknown as Record<string, unknown>)) {
+        return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该搜索选中了未随轮次采纳的旧分析；请用 oido_analyze 发起新分析后再查。' } };
+      }
       return { ok: true, value: result as unknown as Record<string, unknown> };
     } catch (err) {
       if (ctx.signal?.aborted) return { ok: false, error: { error_code: 'CANCELLED' } };
@@ -213,6 +264,10 @@ export class OidoHearingService {
       // RE-06：同 find——迟到交付前双侧复验
       for (const [assetId, sha] of shas) {
         if (!this.sources.sourceAllowed(assetId, ctx.roomId, sha)) return { ok: false, error: { error_code: 'ASSET_NOT_IN_ROOM', detail: '读取期间源已失效（删除/撤权/变更），结果不交付' } };
+      }
+      // R3-V01：双侧实际参与的分析各自后验资格
+      if (this.resultAnalysisClosed(result as unknown as Record<string, unknown>)) {
+        return { ok: false, error: { error_code: 'QUALIFICATION_CLOSED', detail: '该比较引用了未随轮次采纳的旧分析；请用 oido_analyze 发起新分析后再比。' } };
       }
       return { ok: true, value: result as unknown as Record<string, unknown> };
     } catch (err) {

@@ -12,7 +12,7 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { contextFingerprint } from '../../apps/host/src/identity/service.ts';
-import { RuntimeSettingsService, REASONING_EFFORTS } from '../../apps/host/src/runtime/runtime-settings.ts';
+import { RuntimeSettingsService, REASONING_EFFORTS, SDK_MODEL_OPTIONS, SDK_TO_API_MODEL, sdkEffortsForModel } from '../../apps/host/src/runtime/runtime-settings.ts';
 
 function makeDb(root: string) {
   writeApprovedIdentity(root);
@@ -40,7 +40,7 @@ test('设置服务：override 持久/清除/回落；effort 枚举校验', () =>
   db.close();
 });
 
-test('指纹：reasoning 变化不再改变指纹；模型变化改变指纹', () => {
+test('指纹：reasoning 和模型选择均不改变会话指纹', () => {
   const base = {
     runtime: { provider: 'openrouter', sdk_version: null, model: null, setting_sources: [], builtin_tools: [], mcp_servers_allowlist: [] },
     openrouter: { model: 'anthropic/claude-opus-4.6', max_output_tokens: 8192, provider_only: ['anthropic'], reasoning: null },
@@ -48,7 +48,7 @@ test('指纹：reasoning 变化不再改变指纹；模型变化改变指纹', (
   const withEffort = { ...base, openrouter: { ...base.openrouter, reasoning: { effort: 'high' } } };
   assert.equal(contextFingerprint(base, null), contextFingerprint(withEffort, null), '换思考深度不构成边界变化');
   const otherModel = { ...base, openrouter: { ...base.openrouter, model: 'anthropic/claude-fable-5.1' } };
-  assert.notEqual(contextFingerprint(base, null), contextFingerprint(otherModel, null), '换模型=边界变化');
+  assert.equal(contextFingerprint(base, null), contextFingerprint(otherModel, null), '换模型只更换执行选择');
 });
 
 test('档位清单与 OR 文档一致（default 是回落哨兵不是 OR 值）', () => {
@@ -80,10 +80,21 @@ test('已核实的具体模型：缺少元数据仍只列真实档位，并遵�
   assert.deepEqual(effortsForModel(null, 'anthropic/claude-opus-4.6'), opus);
   assert.deepEqual(effortsForModel({ supported_efforts: [...REASONING_EFFORTS] }, 'anthropic/claude-opus-4.6'), opus);
   assert.deepEqual(effortsForModel({ supported_efforts: ['low', 'high'] }, 'anthropic/claude-opus-4.6'), ['default', 'low', 'high']);
-  for (const model of ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1']) {
+  for (const model of ['anthropic/claude-opus-5.5', 'anthropic/claude-fable-5.1', 'anthropic/claude-fable-5.2']) {
     assert.deepEqual(effortsForModel(null, model), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
   }
   assert.equal(effortsForModel(null, 'anthropic/claude-unknown'), null);
+});
+
+test('SDK Fable 5.1/5.2：下拉选项、API 映射与强制思考档位一致', () => {
+  for (const [sdk, api] of [
+    ['claude-fable-5-1', 'anthropic/claude-fable-5.1'],
+    ['claude-fable-5-2', 'anthropic/claude-fable-5.2'],
+  ]) {
+    assert.ok((SDK_MODEL_OPTIONS as readonly string[]).includes(sdk));
+    assert.equal(SDK_TO_API_MODEL[sdk], api);
+    assert.deepEqual(sdkEffortsForModel(sdk), ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
+  }
 });
 
 // —— 端到端：换模型走受控换窗；换思考深度不换窗 ——
@@ -126,7 +137,7 @@ function composeRt(root, seen) {
   const routing = new RoutingService(db, events, messages);
   const selections = new ManualSelectionService(db);
   const settings = new RuntimeSettingsService(db);
-  const windows = new WindowManager(db, events, identity, config, selections);
+  const windows = new WindowManager(db, identity, config, selections);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: async () => ({ ok: false, code: 'X', httpStatus: 404 }) });
@@ -173,4 +184,18 @@ test('端到端：模型 override 变化 → 受控换窗（等选集确认）�
   // 的指纹视图触发；此处断言的是"设置服务+阻断语义"接线，OR 实机验证
   // 属于 live 项（与 Codex live 同批）。
   ctx.db.close();
+});
+
+test('execution boundary pins model and effort until the next turn',async()=>{
+ const db=makeDb(tempRoot('rts-boundary-'));const settings=new RuntimeSettingsService(db);
+ settings.setMany([['sdk_model','claude-opus-4-6'],['reasoning_effort','medium']]);
+ try {
+  await settings.atExecutionBoundary(async()=>{
+   settings.setMany([['sdk_model','claude-opus-5-5'],['reasoning_effort','high']]);
+   assert.equal(settings.effectiveSdkModel(null),'claude-opus-4-6');
+   assert.equal(settings.reasoningEffort(),'medium');
+  });
+  assert.equal(settings.effectiveSdkModel(null),'claude-opus-5-5');
+  assert.equal(settings.reasoningEffort(),'high');
+ }finally{db.close()}
 });

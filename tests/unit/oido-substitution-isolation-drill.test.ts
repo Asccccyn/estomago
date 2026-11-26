@@ -101,7 +101,7 @@ test('演练B②：断开可选能力——oído 工具如实拒绝，普通文�
     assert.equal(analyze.ok, false);
     assert.equal((analyze.output as { error_code: string }).error_code, 'INTEGRATION_UNCONFIGURED');
     // 普通文字路径正常：conversation_read 经同一 registry 返回本会话内容
-    const read = await f.tools.execute('conversation_read', { around_seq: 1 }, f.ctx());
+    const read = await f.tools.execute('conversation_read', { latest: true }, f.ctx());
     assert.equal(read.ok, true, 'oído 断开后 conversation_read 正常');
     const entries = (read.output as { entries: unknown[] }).entries;
     assert.ok(Array.isArray(entries) && entries.length >= 1, '会话内容可读（含已发布语音消息条目）');

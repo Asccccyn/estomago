@@ -5,23 +5,32 @@
 // 排队与让位由会话串行链在执行位内处理，03）；纯1维护回执与真实活动双时钟语义见
 // wake-activity.ts。数字唯一正本=policy-constants（经 POLICY_CONSTANTS）。
 import { shanghaiDayOf } from '../usage/attribution.ts';
-import type { Config } from '../config/schema.ts';
+import { isDailyCostCap, type DailyCostCap, type Config } from '../config/schema.ts';
 import type { KeepwarmSleepWindow } from './keepwarm-sleep.ts';
 
-export type BackgroundKind = 'autonomous' | 'keepwarm' | 'reminder';
+export type ModelBackgroundControl = 'autonomous' | 'free_activity' | 'keepwarm';
+export const MODEL_BACKGROUND_CONTROLS = ['autonomous','free_activity','keepwarm'] as const;
+export function backgroundControl(kind: 'autonomous'|'keepwarm'|'heartbeat_memory', origin: string): ModelBackgroundControl {
+  return kind === 'heartbeat_memory' ? 'keepwarm' : kind === 'autonomous' && origin !== 'self_schedule' ? 'free_activity' : kind;
+}
+
+export type BackgroundKind = 'autonomous' | 'keepwarm' | 'reminder' | 'heartbeat_memory';
 export type RunState = 'claimed' | 'running' | 'cancelling' | 'completed' | 'noop' | 'skipped' | 'cancelled' | 'failed' | 'unknown';
 
 export type EffectiveSettings = {
   revision: number;
-  autonomous: { enabled: boolean; max_model_requests_per_run: number; max_output_tokens_per_run: number; max_tool_calls_per_run: number; max_run_ms: number; daily_cost_cap_usd: number | null };
-  keepwarm: { enabled: boolean; max_run_ms: number; daily_cost_cap_usd: number | null; sleep_window: KeepwarmSleepWindow };
+  free_activity: { enabled: boolean; max_run_ms: number; daily_cost_cap_usd: DailyCostCap };
+  autonomous: { enabled: boolean; max_model_requests_per_run: number; max_output_tokens_per_run: number; max_tool_calls_per_run: number; max_run_ms: number; daily_cost_cap_usd: DailyCostCap };
+  keepwarm: { enabled: boolean; include_living_room: boolean; max_run_ms: number; daily_cost_cap_usd: DailyCostCap; sleep_window: KeepwarmSleepWindow };
   reminders: { enabled: boolean; delivery_grace_ms: number; default_local_time: string };
 };
 
 /** §4.2/§4.1：生效视图——页面/调度器/派发前检查读同一份（不得用启动时缓存的旧 enabled）。 */
-export function effectiveSettings(config: Config, storedRevision: number, stored: Partial<{ autonomous_enabled: boolean | null; keepwarm_enabled: boolean | null; reminders_enabled: boolean | null }> | null): EffectiveSettings {
+export function effectiveSettings(config: Config, storedRevision: number, stored: Partial<{ free_activity_enabled: boolean | null; autonomous_enabled: boolean | null; keepwarm_enabled: boolean | null; keepwarm_include_living_room: boolean | null; reminders_enabled: boolean | null }> | null): EffectiveSettings {
   return {
     revision: storedRevision,
+    free_activity: {enabled:stored?.free_activity_enabled ?? config.background.free_activity.enabled,
+      max_run_ms:config.background.autonomous.max_run_ms,daily_cost_cap_usd:config.background.free_activity.daily_cost_cap_usd},
     autonomous: {
       enabled: stored?.autonomous_enabled ?? config.background.autonomous.enabled,
       max_model_requests_per_run: config.background.autonomous.max_model_requests_per_run,
@@ -32,6 +41,7 @@ export function effectiveSettings(config: Config, storedRevision: number, stored
     },
     keepwarm: {
       enabled: stored?.keepwarm_enabled ?? config.background.keepwarm.enabled,
+      include_living_room: stored?.keepwarm_include_living_room ?? config.background.keepwarm.include_living_room,
       // The former pure-cache 30s limit must not truncate a full tool turn.
       // Keep its YAML key readable for old configurations; use the normal
       // background turn limit, just as keepwarm uses the normal output limit.
@@ -50,26 +60,26 @@ export function effectiveSettings(config: Config, storedRevision: number, stored
  * max_run_ms 结构保护与日预算；模型请求数门只对 autonomous 生效（每 run 付费上限）。
  */
 export function budgetGate(input: {
-  kind: 'autonomous' | 'keepwarm';
+  kind: ModelBackgroundControl;
   dispatchKind?: 'model' | 'tool';
   settings: EffectiveSettings;
   run: { model_requests_started: number; tool_calls_started: number; output_tokens_observed: number; startedAtMs: number; reserved_cost_micro_usd: number; known_cost_micro_usd: number; unknown_cost_count: number };
   nowMs: number;
   nextRequestCostMicroUsd: number | null; // 保守上界；null=无法核验
 }): { allowed: false; code: 'BACKGROUND_BUDGET_EXHAUSTED' | 'BUDGET_ESTIMATE_UNAVAILABLE' | 'BACKGROUND_BUDGET_NOT_CONFIGURED' } | { allowed: true } {
-  const s = input.kind === 'autonomous' ? input.settings.autonomous : input.settings.keepwarm;
-  if (s.daily_cost_cap_usd === null || !Number.isFinite(s.daily_cost_cap_usd) || s.daily_cost_cap_usd <= 0) return { allowed: false, code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' };
+  const s = input.settings[input.kind];
+  if (!isDailyCostCap(s.daily_cost_cap_usd) || s.daily_cost_cap_usd === null) return { allowed: false, code: 'BACKGROUND_BUDGET_NOT_CONFIGURED' };
   if (input.nextRequestCostMicroUsd === null || !Number.isSafeInteger(input.nextRequestCostMicroUsd) || input.nextRequestCostMicroUsd < 0) return { allowed: false, code: 'BUDGET_ESTIMATE_UNAVAILABLE' };
-  if (input.kind === 'autonomous') {
+  if (input.kind !== 'keepwarm') {
     const autoS = input.settings.autonomous;
     if ((input.dispatchKind ?? 'model') === 'model' && input.run.model_requests_started >= autoS.max_model_requests_per_run) return { allowed: false, code: 'BACKGROUND_BUDGET_EXHAUSTED' };
     if (input.dispatchKind === 'tool' && input.run.tool_calls_started >= autoS.max_tool_calls_per_run) return { allowed: false, code: 'BACKGROUND_BUDGET_EXHAUSTED' };
   }
   if (input.nowMs - input.run.startedAtMs >= s.max_run_ms) return { allowed: false, code: 'BACKGROUND_BUDGET_EXHAUSTED' };
   // 日预算（微美元整数）：已占（预占含未知）+ 本次上界 ≤ cap×1e6
-  const capMicro = Math.round(s.daily_cost_cap_usd * 1_000_000);
+  const capMicro = s.daily_cost_cap_usd === 'unlimited' ? null : Math.round(s.daily_cost_cap_usd * 1_000_000);
   const occupied = input.run.reserved_cost_micro_usd;
-  if (occupied + input.nextRequestCostMicroUsd > capMicro) return { allowed: false, code: 'BACKGROUND_BUDGET_EXHAUSTED' };
+  if (capMicro !== null && occupied + input.nextRequestCostMicroUsd > capMicro) return { allowed: false, code: 'BACKGROUND_BUDGET_EXHAUSTED' };
   return { allowed: true };
 }
 

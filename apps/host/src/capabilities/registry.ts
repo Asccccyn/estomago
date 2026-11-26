@@ -4,15 +4,23 @@
 // 不做：业务数据库查询、跨服务重试、动态刷新旧窗口、自动发现并授权新工具、
 // 万能 fetch、自动降级到旧 handler、通用 DAG 执行。不访问远端、不动态授予新能力。
 import type { Db } from '../db/connection.ts';
+import type { HeartbeatActionKind } from '../../../../packages/contracts/src/heartbeat.ts';
 import type { BackgroundToolQuote, CapabilityOutcome, HostToolSpec, ToolExecContext } from './contracts.ts';
 
+export type ToolGroup = 'C' | 'D' | 'T';
+
 export type CapabilityParseResult<I> = { ok: true; value: I } | { ok: false; code: string; detail: string };
+export type HeartbeatActionPolicy<I> = HeartbeatActionKind | ((input: I) => HeartbeatActionKind | undefined);
 
 /** 一个已登记能力 = 定义 + 校验 + handler + 唯一模型投影 + 费用声明 + 模式资格（04 §A）。 */
 export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
   /** 与原工具名一致（oido_get 等）；也是定义 function.name。 */
   readonly id: string;
   readonly owner: string;
+  readonly group?: ToolGroup;
+  /** Old frozen windows only; remove after no unfinished window references it. */
+  readonly legacyOnly?: boolean;
+  readonly replacedBy?: string;
   /** host-only 装配顺序（tool-ownership baselineOrder）；不进入工具定义。 */
   readonly baselineOrder: number;
   /** 定义工厂（唯一来源；04 §J definition() 口径）：每次目录装配调用，动态词表随正本；
@@ -24,8 +32,9 @@ export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
   readonly label: string;
   /** 内部协议工具不发事件（原 SILENT_TOOLS 语义）。 */
   readonly silent: boolean;
+  readonly heartbeatAction?: HeartbeatActionPolicy<I>;
   /** 可信费用政策（照搬 quoteBackgroundTool 证据；不以名称推断免费——D40 非背景不强加报价）。 */
-  readonly quote: (db: Db) => BackgroundToolQuote;
+  readonly quote: (db: Db, input?: any) => BackgroundToolQuote;
   /** 参数校验：用请求窗口的冻结 schema（旧窗原 spec），不用当前新定义替代。 */
   readonly parse: (rawArgs: Record<string, unknown>, frozenSpec: HostToolSpec) => CapabilityParseResult<I>;
   /** 实际 handler；产出内部结果，不直接作为模型 output。 */
@@ -39,12 +48,17 @@ export type CapabilityDescriptor<I = Record<string, unknown>, O = unknown> = {
 type ErasedDescriptor = {
   readonly id: string;
   readonly owner: string;
+  readonly group?: ToolGroup;
+  /** Old frozen windows only; remove after no unfinished window references it. */
+  readonly legacyOnly?: boolean;
+  readonly replacedBy?: string;
   readonly baselineOrder: number;
   readonly definition: () => HostToolSpec;
   readonly memoryOnlyAllowed: boolean;
   readonly label: string;
   readonly silent: boolean;
-  readonly quote: (db: Db) => BackgroundToolQuote;
+  readonly heartbeatAction?: HeartbeatActionPolicy<any>;
+  readonly quote: (db: Db, input?: any) => BackgroundToolQuote;
   readonly parse: (rawArgs: Record<string, unknown>, frozenSpec: HostToolSpec) => CapabilityParseResult<any>;
   readonly run: (input: any, ctx: ToolExecContext) => Promise<CapabilityOutcome<any>>;
   readonly toModel: (value: any, input: any) => Record<string, unknown>;
@@ -53,6 +67,7 @@ type ErasedDescriptor = {
 export interface CatalogProvider {
   /** 窄目录接口：按 baselineOrder 排序、逐条目调用定义工厂（Supervisor 消费同一 Registry）。 */
   currentCatalog(): HostToolSpec[];
+  currentGroups?(): Record<string, ToolGroup>;
 }
 
 export class CapabilityRegistry {
@@ -97,7 +112,11 @@ export class CapabilityRegistry {
   /** S17b 批次3：目录唯一来源——按 baselineOrder 排序、逐条目调用定义工厂。
    *  不缓存（动态词表随正本）；重复 ID/定义名一致在 register 时已检查。 */
   currentCatalog(): HostToolSpec[] {
-    return this.listByBaselineOrder().map((d) => d.definition());
+    return this.listByBaselineOrder().filter(d => !d.legacyOnly).map((d) => d.definition());
+  }
+
+  currentGroups(): Record<string, ToolGroup> {
+    return Object.fromEntries(this.listByBaselineOrder().filter(d => !d.legacyOnly).map(d => [d.id, d.group ?? 'C']));
   }
 
   get size(): number {

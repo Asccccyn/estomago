@@ -1,0 +1,103 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; background: #dde7bf; }
+body { overflow: hidden; overscroll-behavior: none; }
+button { font: inherit; -webkit-tap-highlight-color: transparent; }
+#seasons { position: relative; width: 100%; height: 100vh; height: 100dvh; overflow: hidden; isolation: isolate; touch-action: manipulation; }
+#home-heartbeat {
+  position: absolute;
+  z-index: 7;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  padding: 8px 13px;
+  border: 1px solid #dfccb2;
+  border-radius: 100px;
+  background: #fff9ee;
+  color: #654936;
+  font: 500 14px system-ui, sans-serif;
+  text-decoration: none;
+}
+#home-heartbeat:hover, #home-heartbeat:focus-visible { background: #f9e9cf; }
+html[data-position-editor="true"] #home-heartbeat { display: none; }
+#season-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+#panorama, #atmosphere, #season-scenes, #travelers { position: absolute; inset: 0; width: 100%; height: 100%; }
+#panorama { display: block; user-select: none; pointer-events: none; }
+#atmosphere { z-index: 1; pointer-events: none; }
+.scene-foreground { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+#field-foreground { z-index: 5; }
+#bedding-foreground { z-index: 3; }
+#season-scenes { z-index: 2; }
+.season-scene { position: absolute; top: 0; width: 25%; height: 100%; }
+.scene-hotspot, .animal-pair { position: absolute; display: block; margin: 0; padding: 0; border: 0; background: transparent; cursor: pointer; color: transparent; transform: translate(-50%, -50%); touch-action: manipulation; }
+.scene-hotspot { min-width: 36px; min-height: 36px; }
+.scene-hotspot:focus-visible, .animal-pair:focus-visible { outline: 1px dashed rgba(86, 67, 48, .72); outline-offset: 3px; border-radius: 8px; }
+.scene-hotspot:focus:not(:focus-visible), .animal-pair:focus:not(:focus-visible) { outline: none; }
+.animal-pair { width: var(--pair-width); aspect-ratio: var(--pair-aspect); z-index: 3; pointer-events: none; }
+.animal-pair[hidden] { display: none; }
+.animal-pair .animal { position: absolute; top: 0; width: var(--animal-width-in-pair); aspect-ratio: 1; }
+.animal-pair .animal:first-child { left: 0; }
+.animal-pair .animal:last-child { right: 0; }
+.animal-size { position: absolute; inset: 0; transform-origin: 50% 88%; }
+.animal-pair .animal-size { pointer-events: auto; }
+.animal-sprite { display: block; width: 100%; height: 100%; background-repeat: no-repeat; }
+.animal-cycle { position: absolute; inset: 0; background-repeat: no-repeat; opacity: 0; pointer-events: none; }
+.animal-pair .animal-sprite { animation: breathe 4.9s ease-in-out infinite; }
+.animal-pair .animal:last-child .animal-sprite { animation-delay: -2.7s; animation-duration: 5.8s; }
+#travelers { z-index: 4; pointer-events: none; }
+.traveler { position: absolute; left: 0; top: 0; aspect-ratio: 1; transform-origin: center; will-change: transform; }
+#season-veil { position: absolute; inset: 0; z-index: 5; background: #e7d5b6; opacity: 0; pointer-events: none; }
+#seasons[data-busy="true"] .scene-hotspot, #seasons[data-busy="true"] .animal-pair { pointer-events: none; }
+.footprint { position: absolute; width: 7px; height: 4px; border-radius: 60% 50%; background: #9a7447; opacity: 0; pointer-events: none; transform: rotate(-28deg); }
+.footprint::before, .footprint::after { content: ''; position: absolute; width: 2px; height: 2px; background: inherit; border-radius: 50%; left: 4px; top: -3px; }
+.footprint::after { left: 7px; top: -2px; }
+html[data-home-hidden="true"] .animal-sprite { animation-play-state: paused; }
+@keyframes breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.012, .978); } }
+@media (prefers-reduced-motion: reduce) { .animal-sprite { animation: none !important; } .animal-pair { transition: none; } }
+
+#seasons.editor-phone { width: min(100vw, calc(100dvh * 430 / 932)); margin-inline: auto; }
+
+#window-transition { position: absolute; inset: 0; z-index: 6; overflow: hidden; pointer-events: none; clip-path: inset(0); opacity: 1; }
+.window-spring-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.window-panorama, .window-scene-layer { position: absolute; inset: 0; width: 100%; height: 100%; }
+.window-scene-layer { z-index: 2; }
+
+.guide-hotspot, .point-hotspot { z-index: 4; border-radius: 50%; }
+.guide-hotspot::before, .guide-hotspot::after { content: ''; position: absolute; left: 50%; top: 50%; pointer-events: none; transform: translate(-50%, -50%); }
+.guide-hotspot::before { width: 52px; height: 52px; border-radius: 50%; background: radial-gradient(circle, rgba(255,255,229,.96) 0%, rgba(255,241,143,.78) 16%, rgba(255,219,101,.32) 38%, rgba(255,219,101,0) 72%); filter: blur(.6px); animation: guide-glow 2.6s ease-in-out infinite; }
+.guide-hotspot::after { background: #fffad8; animation: guide-core 2.6s ease-in-out infinite; }
+.guide-hotspot[data-guide="star"]::after { width: 18px; height: 18px; clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 96%, 50% 74%, 21% 96%, 32% 57%, 2% 35%, 39% 35%); filter: blur(.3px); }
+.guide-hotspot[data-guide="firefly"]::before { width: 54px; height: 54px; animation-duration: 3.1s; animation-delay: -.8s; }
+.guide-hotspot[data-guide="firefly"]::after { width: 9px; height: 11px; border-radius: 50%; background: radial-gradient(ellipse, #fffde8 15%, #fff09a 60%, #ffd46a); filter: blur(.4px); animation-duration: 3.1s; animation-delay: -.8s; }
+@keyframes guide-glow { 0%, 100% { opacity: .28; transform: translate(-50%, -50%) scale(.86); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.12); } }
+@keyframes guide-core { 0%, 100% { opacity: .72; transform: translate(-50%, -50%) scale(.95); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.13); } }
+html[data-home-hidden="true"] .guide-hotspot::before, html[data-home-hidden="true"] .guide-hotspot::after { animation-play-state: paused; }
+@media (prefers-reduced-motion: reduce) { .guide-hotspot::before, .guide-hotspot::after { animation: none; } }
+
+
+/* Navigation stays above the painted grass without lifting the animals. */
+.signature-layer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 6; pointer-events: none; }
+.signature-scene { position: absolute; top: 0; width: 25%; height: 100%; }
+.season-signature { position: absolute; transform: translate(-50%, -50%); z-index: 4; pointer-events: none; }
+.season-signature[hidden] { display: none; }
+.season-signature img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; pointer-events: none; user-select: none; z-index: 1; }
+.season-signature .scene-hotspot { pointer-events: auto; z-index: 2; }
+.spring-signature { left: 61.5%; top: 93.84465459788169%; width: 77%; aspect-ratio: 3 / 1; animation: signature-float 7.2s ease-in-out infinite; }
+@keyframes signature-float { 0%, 100% { translate: 0 0; opacity: .96; } 50% { translate: 0 -2px; opacity: 1; } }
+.summer-signature { left: 50%; top: 52%; width: 88%; aspect-ratio: 3.2 / 1; }
+.summer-signature img { object-fit: contain; transform-origin: 30% 55%; animation: summer-water-flow 8.6s ease-in-out infinite; }
+.summer-signature .signature-poem { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; pointer-events: none; }
+.summer-signature .scene-hotspot { min-width: 44px; min-height: 44px; }
+@keyframes summer-water-flow { 0%, 100% { translate: 0 0; scale: 1; opacity: .98; } 50% { translate: 1px -1px; scale: 1.006; opacity: 1; } }
+.signature-toggle { left: max(8px, env(safe-area-inset-left)); top: auto; bottom: max(12px, env(safe-area-inset-bottom)); width: 44px; height: 44px; transform: none; z-index: 5; opacity: .78; pointer-events: auto; }
+.signature-toggle::before { content: ''; position: absolute; left: 13px; top: 16px; width: 18px; height: 12px; border-radius: 65% 15% 65% 25%; background: radial-gradient(ellipse at 30% 25%, #f2b9cb, #b5758b); transform: rotate(-28deg); }
+.signature-toggle:hover, .signature-toggle:focus-visible, .signature-toggle[aria-expanded="false"] { opacity: .9; }
+.signature-toggle[aria-expanded="false"]::before { transform: rotate(18deg); }
+.signature-toggle[data-signature-season="summer"]::before { left: 15px; top: 14px; width: 14px; height: 16px; border-radius: 55% 55% 55% 15%; background: radial-gradient(ellipse at 35% 30%, #d4e8f7, #759cb8); transform: rotate(-45deg); }
+.signature-toggle[data-signature-season="summer"][aria-expanded="false"]::before { transform: rotate(-20deg); }
+html[data-home-hidden="true"] .season-signature,
+html[data-home-hidden="true"] .summer-signature img,
+#seasons[data-busy="true"] .season-signature,
+#seasons[data-busy="true"] .summer-signature img { animation-play-state: paused; }
+html[data-position-editor="true"] .season-signature,
+html[data-position-editor="true"] .season-signature img { animation: none; }
+html[data-position-editor="true"] .signature-toggle { display: none; }
+@media (prefers-reduced-motion: reduce) { .season-signature, .summer-signature img { animation: none; } }

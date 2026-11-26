@@ -27,5 +27,5 @@ test('recall preserves distinct evidence, zero results and uncertainty without d
 });
 test('actual event date survives unknown confidence, event body unchanged',()=>{
  const item:any={memory_date:'2026-07-09',date_confidence:'unknown',event_text:'完整正文\n！！'};
- assert.deepEqual(projectSurfacedMemory(item),{date:'2026-07-09',text:item.event_text});
+ assert.deepEqual(projectSurfacedMemory(item),{kind:'event',date:'2026-07-09',text:item.event_text});
 });

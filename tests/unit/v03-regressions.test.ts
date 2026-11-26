@@ -11,7 +11,6 @@ import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { ReasoningService } from '../../apps/host/src/reasoning/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { SdkEventNormalizer } from '../../apps/host/src/runtime/sdk-event-normalizer.ts';
-import { ClaudeSdkRunner } from '../../apps/host/src/runtime/runner-claude-sdk.ts';
 import { buildSdkOptions } from '../../apps/host/src/runtime/build-options.ts';
 import { IdentityService, contextFingerprint } from '../../apps/host/src/identity/service.ts';
 import { buildConfig, THINKING_EFFORT_ENUM } from '../../apps/host/src/config/schema.ts';
@@ -24,7 +23,7 @@ import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
 import { Logger } from '../../apps/host/src/observability/logging.ts';
 import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { MockRunner } from '../../apps/host/src/runtime/runner-mock.ts';
-import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, seedProbes } from '../helpers.ts';
+import {tempRoot, makeDb, makePaths, writeApprovedIdentity, readyRuntimePatch, seedProbes, assembleTestTools } from '../helpers.ts';
 
 test('§7 身份变化 → 旧窗 CONTEXT_STALE 且下一轮不 resume（CONTEXT_ROTATION_REQUIRED）', async () => {
   const root = tempRoot('fp-');
@@ -36,8 +35,8 @@ test('§7 身份变化 → 旧窗 CONTEXT_STALE 且下一轮不 resume（CONTEXT
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new MockRunner() }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(null) });
+  const windows = new WindowManager(db, identity, config);
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new MockRunner() }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(null), tools: assembleTestTools({ db }).tools });
   messages.ensureConversation('c1');
   const t1 = messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '第一轮', clientMessageId: 'fp1' });
   supervisor.enqueue(t1.turnId);
@@ -129,13 +128,6 @@ test('§29 effort：枚举校验 + buildOptions → runner options.effort 全贯
   const gate = identity.evaluateGate(db);
   const built = buildSdkOptions({ config, gate, identityText: 'x', approvedRulesText: 'rules', cwd: paths.workspacesDir });
   assert.ok(built.status === 'ok' && (built.assembled.options as Record<string, unknown>).effort === 'xhigh'); // F07：顶层
-  const captured: Array<{ prompt: string; options: Record<string, unknown> }> = [];
-  const runner = new ClaudeSdkRunner((p) => {
-    captured.push(p as { prompt: string; options: Record<string, unknown> });
-    return (async function* () { yield { type: 'result', subtype: 'success' }; })();
-  });
-  await runner.run({ prompt: 'p', options: built.assembled!, resumeSessionId: null, abortController: new AbortController(), onEvent: () => {} });
-  assert.equal((captured[0]!.options as Record<string, unknown>).effort, 'xhigh', 'SDK options.effort 必须收到（F07 顶层）');
   db.close();
 });
 

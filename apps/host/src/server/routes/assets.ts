@@ -2,7 +2,7 @@
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序/限量门/响应与错误码逐字保持。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
-import { MediaError, type IngestPurpose } from '../../media/assets.ts';
+import { MediaError, sniffMime, type IngestPurpose } from '../../media/assets.ts';
 import type { RequestDeps } from '../http.ts';
 
 /** 二进制原始体读取（自 http.ts 逐字随迁——上传限量门共用）。 */
@@ -54,7 +54,7 @@ if (sandboxPreview) {
     if (asset.mime_type !== 'image/svg+xml' && asset.mime_type !== 'text/html') {
       return json(res, 400, { error: { code: 'not_active_mime', message: '此资产不需要沙箱预览（走 content 端点）' } });
     }
-    const { bytes, mime } = d.media.readContent(id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(id);
     // §03.5.1：不能只靠 iframe sandbox——资产 URL 被直接打开时也不能在 est 主站来源执行
     res.writeHead(200, {
       'Content-Type': mime,
@@ -101,8 +101,17 @@ if (route === 'POST /api/v1/assets') {
       : Math.max(d.config.media.max_code_artifact_bytes, d.config.media.max_video_bytes);
   try {
     const bytes = await readRawBody(req, cap);
-    const asset = await d.media.saveBuffer({ bytes, purpose: purpose as IngestPurpose, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' });
-    return json(res, 201, { asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate });
+    // staged=1 keeps the file local until a message or a saved post refers to it (chat and post drafts).
+    const upload = { bytes, operationId: `upload:${opKey}`, createdBy: 'qiaosheng', origin: 'upload' as const, staged: url.searchParams.get('staged') === '1' };
+    const asset = purpose === 'chat_image' && sniffMime(bytes) === 'image/svg+xml'
+      ? await d.media.saveStaticSvg(upload)
+      : await d.media.saveBuffer({ ...upload, purpose: purpose as IngestPurpose });
+    if (!asset) return json(res, 422, { error: { code: 'unsupported_static_svg', message: '该 SVG 含交互或动画代码，请使用作品导入与沙箱预览' } });
+    return json(res, 201, {
+      asset_id: asset.id, mime_type: asset.mime_type, byte_size: asset.byte_size, state: asset.state,
+      m_sync_state: asset.m_sync_state, content_sha256: asset.content_sha256, duplicate_content: asset.duplicate,
+      ...(asset.mime_type === 'image/svg+xml' ? { model_image_ready: d.media.canProvideImage(asset) } : {}),
+    });
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
     throw err;
@@ -127,7 +136,10 @@ if (assetGet) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   try {
     const a = d.media.getAsset(decodeURIComponent(assetGet[1]!));
-    return json(res, 200, { ...a, content_url: `/api/v1/assets/${encodeURIComponent(a.id)}/content` }); // 相对地址；不返回存储绝对路径/源站凭据
+    return json(res, 200, {
+      ...a, content_url: `/api/v1/assets/${encodeURIComponent(a.id)}/content`,
+      ...(a.mime_type === 'image/svg+xml' ? { model_image_ready: d.media.canProvideImage(a) } : {}),
+    });
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
     throw err;
@@ -138,48 +150,26 @@ if (assetContent) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   const id = decodeURIComponent(assetContent[1]!);
   try {
-    const { bytes, mime } = d.media.readContent(id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(id, url.searchParams.get('view') === 'image' ? { modelImage: true } : undefined);
     return serveAudioContent(req, res, bytes, mime);
   } catch (err) {
     if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
     throw err;
   }
 }
+// —— P1.4（四仓合并审计 20261106，F06/F07）：引用登记/解除 HTTP 入口已收回。
+// 仓内无生产消费者（Host 适配器走同进程 MediaService；前端/模型/脚本均未调用），
+// 且该入口允许已登录浏览器任意写引用账本、解除不校验 assetId 绑定（审计实测
+// REFERENCE_ASSET_TARGET：B 的 URL 可解除 A 的引用并令 A 可删）。内容引用的
+// 登记与释放现在唯一由 ContentOperationCoordinator 按权威快照维护。若未来确有
+// 仓外受控消费者，按真实服务身份+assetId/referenceId 绑定+原回执重放另立合同。
 const refPost = /^POST \/api\/v1\/assets\/([^/]+)\/references$/.exec(route);
 if (refPost) {
-  // §03.10.2：受控服务接口——调用方身份由宿主配置映射，不接受浏览器自报 owner_service 扩权
-  if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-  const opKey = String(req.headers['idempotency-key'] ?? '');
-  if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-  const body = (await readJson(req, d)) as { owner_service?: unknown; owner_type?: unknown; owner_id?: unknown; owner_revision?: unknown };
-  // 允许的内容域（WP5 接线前静态注册；浏览器可用但仅限登记引用，不构成授权扩面）
-  const ALLOWED_OWNERS: Record<string, string[]> = { content: ['album_entry', 'post', 'creation', 'future_note'] };
-  const os = String(body.owner_service ?? '');
-  const ot = String(body.owner_type ?? '');
-  if (!(os in ALLOWED_OWNERS) || !ALLOWED_OWNERS[os]!.includes(ot)) return json(res, 403, { error: { code: 'owner_not_allowed', message: '不允许的引用域' } });
-  if (typeof body.owner_id !== 'string' || !body.owner_id) return json(res, 400, { error: { code: 'bad_owner_id', message: 'owner_id 必填' } });
-  try {
-    const r = d.media.registerReference({ assetId: decodeURIComponent(refPost[1]!), ownerService: os, ownerType: ot, ownerId: body.owner_id, ownerRevision: typeof body.owner_revision === 'number' ? body.owner_revision : null, operationId: `ref:${opKey}` });
-    return json(res, 201, { reference_id: r.referenceId, revision: r.revision, state: r.state });
-  } catch (err) {
-    if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-    throw err;
-  }
+  return json(res, 410, { error: { code: 'reference_api_retired', message: '引用登记入口已收回：内容引用由宿主按 content 权威快照统一维护' } });
 }
 const refDelete = /^DELETE \/api\/v1\/assets\/([^/]+)\/references\/([^/]+)$/.exec(route);
 if (refDelete) {
-  if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
-  const opKey = String(req.headers['idempotency-key'] ?? '');
-  if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
-  const ifMatch = String(req.headers['if-match'] ?? '').replace(/"/g, '');
-  if (!ifMatch || !/^\d+$/.test(ifMatch)) return json(res, 428, { error: { code: 'precondition_required', message: '解除引用必须带 If-Match: "<revision>"（请刷新后重试）' } });
-  try {
-    const r = d.media.releaseReference({ referenceId: decodeURIComponent(refDelete[2]!), expectedRevision: Number(ifMatch), operationId: `unref:${opKey}` });
-    return json(res, 200, { reference_id: r.referenceId, revision: r.revision, state: r.state });
-  } catch (err) {
-    if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
-    throw err;
-  }
+  return json(res, 410, { error: { code: 'reference_api_retired', message: '引用解除入口已收回：内容引用由宿主按 content 权威快照统一维护' } });
 }
 
 // —— RE-12c（2026-10-24）：资产删除正式入口——markAssetMissing 的真实产品消费者。
@@ -191,7 +181,15 @@ if (assetDelete) {
   if (!d.media) return json(res, 503, { error: { code: 'media_unavailable', message: '媒体服务未装配' } });
   const id = decodeURIComponent(assetDelete[1]!);
   try {
-    d.media.getAsset(id); // 不存在=404
+    const asset = d.media.getAsset(id); // 不存在=404
+    if (url.searchParams.get('staged') === '1' && asset.m_sync_state !== 'staged') {
+      return json(res, 409, { error: { code: 'asset_not_staged', message: '这份上传已离开暂存状态，未移除资产。' } });
+    }
+    if (asset.m_sync_state === 'staged') {
+     // A staged upload never reached the master store, so abandoning it removes row and bytes.
+     d.media.discardStagedAssets([id]);
+     return json(res, 200, { asset_id: id, state: 'discarded', note: '这份上传从未被发送或保存，暂存已删除' });
+    }
     const refs = d.media.isAssetReferenced(id);
     if (refs.referenced) {
       return json(res, 409, { error: { code: 'asset_referenced', message: `资产仍被引用（消息修订附件 ${refs.by_message_revisions} 条、外部引用 ${refs.by_external_refs} 条）；先解除全部引用再删除`, by_message_revisions: refs.by_message_revisions, by_external_refs: refs.by_external_refs } });
@@ -215,7 +213,7 @@ if (oidoViewRoute) {
   const row = d.db.prepare('SELECT asset_id FROM oido_view_artifacts WHERE analysis_id=? AND range_json=?').get(analysisId, rangeKey) as { asset_id: string } | undefined;
   if (!row) return json(res, 404, { error: { code: 'view_not_found', message: '该分析没有已生成的测量图工件（先由 oido_view 生成）' } });
   try {
-    const { bytes, mime } = d.media.readContent(row.asset_id);
+    const { bytes, mime } = await d.media.readContentResolvingMaster(row.asset_id);
     res.writeHead(200, { 'Content-Type': mime, 'Content-Length': String(bytes.length), 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=60' });
     res.end(bytes);
     return;

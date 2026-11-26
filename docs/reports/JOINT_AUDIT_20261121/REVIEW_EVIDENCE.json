@@ -1,0 +1,369 @@
+{
+  "base": "9b0ee7cba134560769763bfc52c309da7426e67b",
+  "business_commit": "76c8117",
+  "independent": {
+    "mid_turn_crash": {
+      "before": {
+        "cardResults": 1,
+        "drawCalls": 1
+      },
+      "canonical": {
+        "cardResults": 0,
+        "drawCalls": 0
+      },
+      "next": {
+        "cardResults": 0,
+        "drawCalls": 0
+      },
+      "projectionActions": [
+        [
+          "selection",
+          "committed"
+        ],
+        [
+          "memory_hold",
+          "committed"
+        ]
+      ],
+      "sameWindow": true,
+      "newCalls": 1
+    },
+    "living_history": {
+      "before": "available",
+      "after": "forbidden",
+      "sourceId": "living-post",
+      "originalId": "living-post",
+      "objectKeys": [
+        "id",
+        "revision",
+        "author_id",
+        "author_name",
+        "author_kind",
+        "scope",
+        "source_kind",
+        "created_at",
+        "text"
+      ]
+    },
+    "self_schedule_projection": {
+      "catalog": true,
+      "tasks": 1,
+      "actor": "jiaming",
+      "receipts": 1,
+      "actions": [
+        "selection"
+      ],
+      "feed": [
+        "心跳状态",
+        "选号",
+        "心跳状态",
+        "1 号 · 许愿星",
+        "结束状态"
+      ]
+    },
+    "reserved_note_reply_boundary": {
+      "order": [
+        "invite",
+        "assistant",
+        "card"
+      ],
+      "delivered": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "state": "drawn",
+      "terminal": {
+        "status": "completed"
+      },
+      "kind": "reserved_note",
+      "sourceQualified": true,
+      "usesPreDrawMessage": true
+    },
+    "sdk_mid_turn_crash": {
+      "before": true,
+      "canonical": false,
+      "next": false,
+      "replayedInSdkHistory": false,
+      "sameWindow": true,
+      "sessionResumed": false,
+      "newQueries": 1
+    }
+  },
+  "positive": {
+    "album": {
+      "outcome": "complete:noop",
+      "model_requests": 1,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 0,
+      "draw_state": [
+        "rejected"
+      ],
+      "reply_receipt_ids": 0
+    },
+    "api-deferred-send": {
+      "outcome": "complete:done",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "api-deferred-silent": {
+      "outcome": "complete:noop",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "api-direct-send": {
+      "outcome": "complete:done",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "api-direct-silent": {
+      "outcome": "complete:noop",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "budget": {
+      "outcome": "BACKGROUND_BUDGET_EXHAUSTED",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "cancel-after-actions": {
+      "outcome": "CANCELLED_MID_RUN",
+      "model_requests": 3,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "clock": {
+      "outcome": "complete:noop",
+      "model_requests": 1,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 0,
+      "draw_state": [],
+      "reply_receipt_ids": 0
+    },
+    "midnight": {
+      "outcome": "complete:noop",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "no-target": {
+      "outcome": "complete:noop",
+      "model_requests": 2,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 0,
+      "draw_state": [],
+      "reply_receipt_ids": 0
+    },
+    "recover": {
+      "outcome": "complete:noop",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "sdk-deferred-send": {
+      "outcome": "complete:done",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "sdk-deferred-silent": {
+      "outcome": "complete:noop",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "sdk-direct-send": {
+      "outcome": "complete:done",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "sdk-direct-silent": {
+      "outcome": "complete:noop",
+      "model_requests": 4,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 1
+    },
+    "short": {
+      "outcome": "HEARTBEAT_DECK_UNPREPARED",
+      "model_requests": 0,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 0,
+      "draw_state": [],
+      "reply_receipt_ids": 0
+    },
+    "unknown": {
+      "outcome": "HEARTBEAT_CARD_DISPATCH_UNKNOWN",
+      "model_requests": 3,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 0,
+      "draw_state": [
+        "unknown"
+      ],
+      "reply_receipt_ids": 0
+    },
+    "unpriced": {
+      "outcome": "BUDGET_ESTIMATE_UNAVAILABLE",
+      "model_requests": 3,
+      "paired": true,
+      "same_prefix": true,
+      "delivered_cards": 1,
+      "draw_state": [
+        "delivered"
+      ],
+      "reply_receipt_ids": 0
+    }
+  },
+  "focused_files": {
+    "integration/heartbeat-source-adapters": 1,
+    "integration/heartbeat-v12-orchestration": 12,
+    "integration/heartbeat-note-delete-race": 8,
+    "integration/completion-r33-recovery": 4,
+    "integration/cache-maintenance-c07-c09": 4,
+    "integration/content-f0607-lifecycle": 15,
+    "integration/content-source-revisions": 1,
+    "integration/frozen-tool-package": 1,
+    "integration/exec-v1-wp4-http": 4,
+    "integration/background-management-contract": 1,
+    "unit/turn-completion-sdk": 2,
+    "unit/heartbeat-cards": 6,
+    "unit/content-moments-http": 2,
+    "unit/zashidele-moments": 1,
+    "unit/image-creation-migration-plan": 1,
+    "unit/static-svg-media": 4,
+    "unit/album-upload": 4,
+    "unit/wishstar-integration": 9,
+    "unit/full-audit-tool-budget": 5,
+    "unit/wake-keepwarm": 15
+  },
+  "typecheck": {
+    "host": 0,
+    "web": 0
+  },
+  "physical_cache": "not tested",
+  "browser": {
+    "status": [
+      "home-click-to-album",
+      "photo-saved-refreshed-preview",
+      "same-photo-two-collections-and-independent-gif",
+      "removed-photo-preserved-sticker",
+      "code-work-import-refresh-preview-remove",
+      "heartbeat-source-id-navigation",
+      "heartbeat-create-edit-refresh-delete",
+      "moments-create-edit-refresh-delete"
+    ],
+    "uploads": 4,
+    "retry": {
+      "uploads": 1,
+      "requests": 2,
+      "sameKey": true
+    },
+    "errorDisplayed": "上传失败（asset_type_unsupported） 无法识别的文件类型（魔数校验失败）",
+    "worksControls": [
+      "",
+      "导入 HTML / SVG 代码作品"
+    ],
+    "providerRequests": 0,
+    "turns": 0,
+    "reusedPurpose": {
+      "statuses": [
+        201,
+        409
+      ],
+      "sameId": false
+    },
+    "oldCreation": {
+      "status": 422,
+      "error": "image_belongs_in_album",
+      "listed": false
+    },
+    "media": [
+      {
+        "mime_type": "image/gif",
+        "m_sync_state": "synced",
+        "n": 2
+      },
+      {
+        "mime_type": "image/png",
+        "m_sync_state": "synced",
+        "n": 1
+      },
+      {
+        "mime_type": "text/html",
+        "m_sync_state": "synced",
+        "n": 1
+      }
+    ]
+  }
+}

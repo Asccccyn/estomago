@@ -32,7 +32,7 @@ export function registerContextReviewCapabilities(registry: { register(d: Capabi
   const service = new ContextReviewService(deps);
   registry.register(toolCapability({
     owner: 'context-review',
-    id: 'context_review_complete', baselineOrder: 48, free: true, definition: () => CONTEXTREVIEWCOMPLETE_DEFINITION, memoryOnlyAllowed: true, label: 'context_review_complete', silent: true,
+    id: 'context_review_complete', group: 'T', baselineOrder: 48, free: true, definition: () => CONTEXTREVIEWCOMPLETE_DEFINITION, memoryOnlyAllowed: true, label: 'context_review_complete', silent: true,
     run: (input: Record<string, unknown>, ctx) => Promise.resolve(service.reviewComplete(input as never, ctx)),
     toModel: (value) => value,
   }));

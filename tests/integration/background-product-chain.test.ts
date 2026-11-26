@@ -22,14 +22,16 @@ test('实际Host/HTTP/SSE/前端client：模型预约管理→自然15秒调度�
   assert.equal(summary.results[0].static.versioned_js,true);
 });
 
-test('实际Host心跳：纯1不入聊天，catalog/define后1 retained，正式发言经SSE可见', () => {
+test('实际Host心跳：拒抽无补话，十张真实交付后下一心跳的 1 经 SSE 可见', () => {
   const out=tempRoot('audit-heartbeat-evidence-');
   try {
     const result=spawnSync(process.execPath,['scripts/audit/background-product.ts','--heartbeat'],{cwd:path.resolve(import.meta.dirname,'../..'),env:{...process.env,AUDIT_FRONTEND_OUT:out},encoding:'utf8',timeout:15000});
     assert.equal(result.status,0,result.stdout+result.stderr);
     const evidence=JSON.parse(fs.readFileSync(path.join(out,'heartbeat.json'),'utf8'));
     assert.equal(evidence.passed,true);assert.equal(evidence.virtual_clock,true);
-    assert.deepEqual(evidence.cases.map((c:any)=>c.run.retention),['ephemeral_ack','retained','retained']);
-    assert.deepEqual(evidence.cases.map((c:any)=>c.messages_after-c.messages_before),[0,0,1]);
+    assert.deepEqual(evidence.cases.map((c:any)=>c.mode),['declined',...Array(10).fill('drawn'),'exhausted']);
+    assert.deepEqual(evidence.cases.map((c:any)=>c.request_count),[1,...Array(10).fill(2),1]);
+    assert.deepEqual(evidence.cases.map((c:any)=>c.messages_after-c.messages_before),[2,3,...Array(9).fill(2),2]);
+    assert.ok(evidence.cases.every((c:any)=>c.run.retention==='retained'));
   } finally { fs.rmSync(out,{recursive:true,force:true}); }
 });

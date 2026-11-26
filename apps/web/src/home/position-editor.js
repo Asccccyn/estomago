@@ -1,0 +1,320 @@
+(() => {
+  'use strict';
+  const api = window.estomagoPositionEditor;
+  if (!api) return;
+  if (api.signature && new URLSearchParams(location.search).get('adjust') === 'signature') {
+    const signature = document.querySelector(api.signature.selector);
+    const panel = document.createElement('aside');
+    panel.id = 'position-editor';
+    panel.setAttribute('aria-label', '水印位置与大小调整');
+    panel.innerHTML = `
+      <header><strong>摆一摆水印</strong><button type="button" id="position-fold" aria-expanded="true">收起</button></header>
+      <div id="position-controls">
+        <p>直接拖动水印调整位置，拖动下方滑杆改大小。调好后点“保存调整”。</p>
+        <label class="position-size"><span>水印大小</span><input id="position-scale" type="range" min="30" max="100" step="1"><output id="position-scale-value"></output></label>
+        <div class="position-row position-nudge"><span>微调</span><button type="button" data-dx="-2" data-dy="0" aria-label="水印向左微调">←</button><button type="button" data-dx="0" data-dy="-2" aria-label="水印向上微调">↑</button><button type="button" data-dx="0" data-dy="2" aria-label="水印向下微调">↓</button><button type="button" data-dx="2" data-dy="0" aria-label="水印向右微调">→</button></div>
+        <div class="position-row"><button type="button" id="position-reset">恢复默认</button><button type="button" id="position-save">保存调整</button></div>
+        <div class="position-row"><button type="button" id="position-preview">查看效果</button></div>
+        <p id="position-status" role="status">调整时不会触发页面跳转，查看效果会先保存。</p>
+        <details><summary>复制水印位置给我</summary><textarea id="position-data" aria-label="水印位置数据" readonly spellcheck="false"></textarea><button type="button" id="position-copy">复制位置数据</button></details>
+      </div>`;
+    document.body.append(panel);
+    document.documentElement.dataset.positionEditor = 'true';
+    document.documentElement.dataset.signatureEditor = 'true';
+    const status = panel.querySelector('#position-status');
+    const slider = panel.querySelector('#position-scale');
+    const data = panel.querySelector('#position-data');
+    const clamp = (number, low, high) => Math.max(low, Math.min(high, number));
+    let position = api.signature.read();
+    function render(message) {
+      const { panelWidth, height } = api.dimensions();
+      const halfWidth = position.width / 2;
+      const halfHeight = position.width * panelWidth / api.signature.aspectRatio / height / 2;
+      position.x = clamp(position.x, halfWidth, 1 - halfWidth);
+      position.y = clamp(position.y, halfHeight, 1 - halfHeight);
+      api.signature.update(position);
+      const percent = Math.round(position.width * 100);
+      slider.value = percent;
+      panel.querySelector('#position-scale-value').textContent = `${percent}%`;
+      data.value = JSON.stringify(position, null, 2);
+      if (message) status.textContent = message;
+    }
+    let drag = null;
+    signature.addEventListener('pointerdown', event => {
+      if (event.button !== 0 || !event.isPrimary) return;
+      event.preventDefault();
+      drag = { x: event.clientX, y: event.clientY, start: { ...position }, ...api.dimensions() };
+      signature.setPointerCapture(event.pointerId);
+    });
+    signature.addEventListener('pointermove', event => {
+      if (!drag) return;
+      position = { ...drag.start, x: drag.start.x + (event.clientX - drag.x) / drag.panelWidth, y: drag.start.y + (event.clientY - drag.y) / drag.height };
+      render('位置已调整，还没有保存。');
+    });
+    signature.addEventListener('pointerup', () => { drag = null; });
+    signature.addEventListener('pointercancel', () => { drag = null; });
+    signature.addEventListener('lostpointercapture', () => { drag = null; });
+    slider.addEventListener('input', () => {
+      position.width = Number(slider.value) / 100;
+      render('大小已调整，还没有保存。');
+    });
+    panel.querySelectorAll('[data-dx]').forEach(button => button.addEventListener('click', () => {
+      const { panelWidth, height } = api.dimensions();
+      position.x += Number(button.dataset.dx) / panelWidth;
+      position.y += Number(button.dataset.dy) / height;
+      render('位置已调整，还没有保存。');
+    }));
+    panel.querySelector('#position-reset').addEventListener('click', () => {
+      position = { ...api.signature.defaults };
+      render('已恢复默认位置和大小，点保存可更新。');
+    });
+    panel.querySelector('#position-save').addEventListener('click', async () => {
+      try {
+        await api.signature.save();
+        status.textContent = '水印位置和大小已保存，普通预览会使用这组调整。';
+      } catch { status.textContent = '此浏览器无法保存，请展开下方数据并复制给我。'; }
+    });
+    panel.querySelector('#position-preview').addEventListener('click', async () => {
+      try {
+        await api.signature.save();
+        location.assign(`/home/index.html?season=${api.signature.seasonName}&preview=phone`);
+      } catch { status.textContent = '暂时无法保存，未切换预览。请复制下方位置数据。'; }
+    });
+    panel.querySelector('#position-copy').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.value);
+        status.textContent = '水印位置已复制，可以粘贴到聊天里。';
+      } catch {
+        data.focus();
+        data.select();
+        status.textContent = '数据已选中，请长按复制或按 ⌘C / Ctrl+C。';
+      }
+    });
+    panel.querySelector('#position-fold').addEventListener('click', event => {
+      const controls = panel.querySelector('#position-controls');
+      controls.hidden = !controls.hidden;
+      event.currentTarget.textContent = controls.hidden ? '展开' : '收起';
+      event.currentTarget.setAttribute('aria-expanded', String(!controls.hidden));
+    });
+    api.preview('phone');
+    api.select(api.signature.season);
+    render();
+    return;
+  }
+  const storageKey = 'estomago-position-draft-v1';
+  const names = ['spring', 'summer', 'autumn', 'winter'];
+  const labels = ['春天', '夏天', '秋天', '冬天'];
+  const defaults = api.read();
+  let positions = structuredClone(defaults);
+  let season = 0;
+  let target = 'otter';
+  let together = false;
+  let preview = 'phone';
+  let savedMessage = '位置、大小、角度和图层调好后，点“保存调整”。';
+  const inRange = (value, min, max) => Number.isFinite(value) && value >= min && value <= max;
+  try {
+    const stored = JSON.parse(localStorage.getItem(storageKey));
+    if (stored) {
+      const valid = (stored.version === 1 || stored.version === 2) && Array.isArray(stored.seasons) && stored.seasons.length === 4 && stored.seasons.every(item =>
+        item && inRange(item.x, .05, .95) && inRange(item.groundY, .15, .95) &&
+        ['groundOffsets', 'xOffsets', 'bodySizes'].every(key => Array.isArray(item[key]) && item[key].length === 2 &&
+          item[key].every(value => inRange(value, key === 'bodySizes' ? .5 : -.4, key === 'bodySizes' ? 1.7 : .4))) &&
+        (item.rotations === undefined || (Array.isArray(item.rotations) && item.rotations.length === 2 && item.rotations.every(value => inRange(value, -180, 180)))) &&
+        (item.frontAnimal === undefined || ['otter', 'raccoon'].includes(item.frontAnimal)));
+      if (valid) {
+        positions = stored.seasons.map(({ x, groundY, groundOffsets, xOffsets, bodySizes, rotations, frontAnimal }, index) => stored.version === 1 && index === 2 ? structuredClone(defaults[2]) : ({
+          x, groundY, groundOffsets, xOffsets, bodySizes, rotations: rotations ?? [0, 0], frontAnimal: frontAnimal ?? defaults[index].frontAnimal,
+        }));
+        savedMessage = '已恢复这个浏览器中保存的调整。';
+      } else savedMessage = '旧的位置格式不适用，已显示当前主页位置。';
+    }
+  } catch { savedMessage = '未能读取本地草稿，可以调整后复制位置。'; }
+  const panel = document.createElement('aside');
+  panel.id = 'position-editor';
+  panel.setAttribute('aria-label', '小动物位置调整');
+  panel.innerHTML = `
+    <header><strong>摆一摆小动物</strong><button type="button" id="position-fold" aria-expanded="true">收起</button></header>
+    <div id="position-controls">
+      <div class="position-row" aria-label="预览画面"><button type="button" data-preview="phone" aria-pressed="true">手机</button><button type="button" data-preview="desktop" aria-pressed="false">全景</button></div>
+      <div class="position-row" aria-label="选择季节">${labels.map((label, index) => `<button type="button" data-season-index="${index}" aria-pressed="false">${label}</button>`).join('')}</div>
+      <p class="position-prompt">先选一只，再拖动它的位置</p>
+      <div class="position-characters" aria-label="选择小动物">
+        <button type="button" data-target="otter" aria-pressed="true"><span class="position-portrait" aria-hidden="true"></span><strong>水獭</strong><small>单独调整</small></button>
+        <button type="button" data-target="raccoon" aria-pressed="false"><span class="position-portrait" aria-hidden="true"></span><strong>小浣熊</strong><small>单独调整</small></button>
+      </div>
+      <label class="position-together"><input id="position-together" type="checkbox"> 同时调整两只（移动和缩放）</label>
+      <p id="position-selection" role="status"></p>
+      <div class="position-row position-nudge"><span>微调</span><button type="button" data-dx="-2" data-dy="0" aria-label="向左微调">←</button><button type="button" data-dx="0" data-dy="-2" aria-label="向上微调">↑</button><button type="button" data-dx="0" data-dy="2" aria-label="向下微调">↓</button><button type="button" data-dx="2" data-dy="0" aria-label="向右微调">→</button></div>
+      <label class="position-size"><span id="position-scale-label">一起缩放</span> <input id="position-scale" type="range" min="50" max="160" step="1" value="100"><output id="position-scale-value">100%</output></label>
+      <div class="position-size position-rotation"><label id="position-rotation-label" for="position-rotation">水獭角度</label><input id="position-rotation" type="range" min="-180" max="180" step="1" value="0"><output id="position-rotation-value">0°</output><button type="button" id="position-upright" aria-label="所选小动物恢复零度">0°</button></div>
+      <div class="position-row position-layers" role="group" aria-label="重叠图层"><button type="button" data-front="otter" aria-pressed="false">水獭在上面</button><button type="button" data-front="raccoon" aria-pressed="false">小浣熊在上面</button></div>
+      <p class="position-layer-hint">重叠时，上面的那只盖住下面的那只。</p>
+      <div class="position-row"><button type="button" id="position-reset">恢复本季</button><button type="button" id="position-save">保存调整</button></div>
+      <p id="position-status" role="status"></p>
+      <details id="position-export"><summary>复制位置给我</summary><textarea id="position-data" aria-label="四季位置数据" readonly spellcheck="false"></textarea><button type="button" id="position-copy">复制位置数据</button></details>
+    </div>`;
+  document.body.append(panel);
+  document.documentElement.dataset.positionEditor = 'true';
+  const status = panel.querySelector('#position-status');
+  const data = panel.querySelector('#position-data');
+  const slider = panel.querySelector('#position-scale');
+  const rotation = panel.querySelector('#position-rotation');
+  const clamp = (number, low, high) => Math.max(low, Math.min(high, number));
+  const round = value => Math.round(value * 10000) / 10000;
+  function render(message) {
+    api.update(positions);
+    panel.querySelectorAll('[data-season-index]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.seasonIndex) === season)));
+    panel.querySelectorAll('[data-target]').forEach(button => {
+      const selected = button.dataset.target === target;
+      button.setAttribute('aria-pressed', String(selected));
+      button.querySelector('small').textContent = selected ? '已选中' : '单独调整';
+      const sprite = document.querySelector(`.season-scene[data-season="${names[season]}"] [data-animal="${button.dataset.target}"] .animal-sprite`);
+      const portrait = button.querySelector('.position-portrait');
+      for (const property of ['backgroundImage', 'backgroundSize', 'backgroundPosition']) portrait.style[property] = sprite.style[property];
+    });
+    panel.querySelector('#position-together').checked = together;
+    panel.querySelector('#position-selection').textContent = together ? '正在调整：两只一起' : `正在调整：${target === 'otter' ? '水獭' : '小浣熊'} · 另一只保持原位`;
+    document.querySelectorAll('.animal-pair .animal').forEach(node => {
+      node.dataset.editSelected = String(together || node.dataset.animal === target);
+    });
+    panel.querySelectorAll('[data-preview]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.preview === preview)));
+    const relativeSizes = positions[season].bodySizes.map((size, index) => size / defaults[season].bodySizes[index]);
+    const scale = together ? Math.sqrt(relativeSizes[0] * relativeSizes[1]) : relativeSizes[target === 'otter' ? 0 : 1];
+    const percent = Math.round(scale * 100);
+    panel.querySelector('#position-scale-label').textContent = together ? '一起缩放' : target === 'otter' ? '水獭大小' : '小浣熊大小';
+    slider.value = percent;
+    panel.querySelector('#position-scale-value').textContent = `${percent}%`;
+    const angle = positions[season].rotations[target === 'otter' ? 0 : 1];
+    panel.querySelector('#position-rotation-label').textContent = target === 'otter' ? '水獭角度' : '小浣熊角度';
+    rotation.value = angle;
+    panel.querySelector('#position-rotation-value').textContent = `${angle}°`;
+    panel.querySelectorAll('[data-front]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.front === positions[season].frontAnimal)));
+    data.value = JSON.stringify({ version: 2, seasons: positions }, null, 2);
+    if (message) status.textContent = message;
+  }
+  function move(dx, dy, start = positions[season]) {
+    const next = structuredClone(start);
+    if (together) {
+      next.x = round(clamp(start.x + dx, .05, .95));
+      next.groundY = round(clamp(start.groundY + dy, .15, .95));
+    } else {
+      const index = target === 'otter' ? 0 : 1;
+      next.xOffsets[index] = round(clamp(start.xOffsets[index] + dx, -.4, .4));
+      next.groundOffsets[index] = round(clamp(start.groundOffsets[index] + dy, -.4, .4));
+    }
+    positions[season] = next;
+    render('位置已调整，还没有保存。');
+  }
+  panel.querySelectorAll('[data-preview]').forEach(button => button.addEventListener('click', () => {
+    preview = button.dataset.preview;
+    api.preview(preview);
+    render();
+  }));
+  panel.querySelectorAll('[data-season-index]').forEach(button => button.addEventListener('click', () => {
+    season = Number(button.dataset.seasonIndex);
+    api.select(season);
+    render();
+  }));
+  panel.querySelectorAll('[data-target]').forEach(button => button.addEventListener('click', () => {
+    target = button.dataset.target;
+    together = false;
+    render();
+  }));
+  panel.querySelector('#position-together').addEventListener('change', event => {
+    together = event.target.checked;
+    render();
+  });
+  panel.querySelectorAll('[data-dx]').forEach(button => button.addEventListener('click', () => {
+    const { panelWidth, height } = api.dimensions();
+    move(Number(button.dataset.dx) / panelWidth, Number(button.dataset.dy) / height);
+  }));
+  slider.addEventListener('input', () => {
+    const scale = Number(slider.value) / 100;
+    const sizes = positions[season].bodySizes;
+    if (together) {
+      const relativeSizes = sizes.map((size, index) => size / defaults[season].bodySizes[index]);
+      const currentScale = Math.sqrt(relativeSizes[0] * relativeSizes[1]);
+      const ratio = clamp(scale / currentScale, Math.max(...relativeSizes.map(size => .5 / size)), Math.min(...relativeSizes.map(size => 1.6 / size)));
+      positions[season].bodySizes = sizes.map(size => round(size * ratio));
+    } else {
+      const index = target === 'otter' ? 0 : 1;
+      sizes[index] = round(defaults[season].bodySizes[index] * scale);
+    }
+    render('大小已调整，还没有保存。');
+  });
+  rotation.addEventListener('input', () => {
+    positions[season].rotations[target === 'otter' ? 0 : 1] = Number(rotation.value);
+    render('角度已调整，还没有保存。');
+  });
+  panel.querySelector('#position-upright').addEventListener('click', () => {
+    positions[season].rotations[target === 'otter' ? 0 : 1] = 0;
+    render('所选小动物已回正，还没有保存。');
+  });
+  panel.querySelectorAll('[data-front]').forEach(button => button.addEventListener('click', () => {
+    positions[season].frontAnimal = button.dataset.front;
+    render('上下图层已调整，还没有保存。');
+  }));
+  panel.querySelector('#position-reset').addEventListener('click', () => {
+    positions[season] = structuredClone(defaults[season]);
+    render('本季已恢复，点保存可更新草稿。');
+  });
+  panel.querySelector('#position-save').addEventListener('click', () => {
+    try {
+      localStorage.setItem(storageKey, data.value);
+      status.textContent = '位置、大小、角度和图层已保存。告诉我“调好了”，我再写回主页。';
+    } catch { status.textContent = '此浏览器无法保存，请展开下方数据并复制给我。'; }
+  });
+  panel.querySelector('#position-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(data.value);
+      status.textContent = '位置已复制，可以粘贴到聊天里。';
+    } catch {
+      data.focus();
+      data.select();
+      status.textContent = '数据已选中，请长按复制或按 ⌘C / Ctrl+C。';
+    }
+  });
+  panel.querySelector('#position-fold').addEventListener('click', event => {
+    const controls = panel.querySelector('#position-controls');
+    controls.hidden = !controls.hidden;
+    event.currentTarget.textContent = controls.hidden ? '展开' : '收起';
+    event.currentTarget.setAttribute('aria-expanded', String(!controls.hidden));
+  });
+  document.querySelectorAll('.animal-pair .animal').forEach(node => {
+    let drag = null;
+    node.addEventListener('pointerdown', event => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      season = names.indexOf(node.closest('.season-scene').dataset.season);
+      api.select(season);
+      drag = { x: event.clientX, y: event.clientY, start: structuredClone(positions[season]), ...api.dimensions() };
+      node.setPointerCapture(event.pointerId);
+      render();
+    });
+    node.addEventListener('pointermove', event => {
+      if (drag) move((event.clientX - drag.x) / drag.panelWidth, (event.clientY - drag.y) / drag.height, drag.start);
+    });
+    node.addEventListener('pointerup', () => { drag = null; });
+    node.addEventListener('pointercancel', () => { drag = null; });
+    node.addEventListener('lostpointercapture', () => { drag = null; });
+  });
+  document.addEventListener('click', event => {
+    if (event.target.closest('.animal-pair')) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (event.target.matches('input, textarea, select')) return;
+    const directions = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    const direction = directions[event.key];
+    if (!direction) return;
+    event.preventDefault();
+    const { panelWidth, height } = api.dimensions();
+    const step = event.shiftKey ? 10 : 2;
+    move(direction[0] * step / panelWidth, direction[1] * step / height);
+  });
+  api.preview(preview);
+  api.select(0);
+  render(savedMessage);
+})();

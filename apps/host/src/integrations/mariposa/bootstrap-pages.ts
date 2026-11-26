@@ -2,7 +2,7 @@ import type { MariposaCallResult, MariposaClient } from './client.ts';
 
 type PageClient = Pick<MariposaClient, 'bootstrapNext'>;
 type RecordValue = Record<string, unknown>;
-export type BootstrapSectionName = 'mood_text' | 'bootstrap' | 'i' | 'event_text' | 'our_words';
+export type BootstrapSectionName = 'mood_text' | 'bootstrap' | 'i' | 'event_text' | 'our_words' | 'plans' | 'memory_days';
 export type BootstrapGap = { section: BootstrapSectionName; memoryId?: string; code: string; retryable: boolean };
 export type BootstrapCompletion = { data: RecordValue; gaps: BootstrapGap[] };
 
@@ -71,6 +71,85 @@ export async function bootstrapCall(
   }
   if (!object(result.result)) fail('BOOTSTRAP_SHAPE_INVALID', section);
   return result.result;
+}
+
+const MEMORY_DAY_PAGE_LIMIT = 5;
+const MEMORY_DAY_ITEM_LIMIT = 100;
+
+type MemoryDayCursor = { memory_before_date: string; memory_last_id: string };
+
+function memoryDayCursor(value: unknown): MemoryDayCursor {
+  if (!object(value) || typeof value.memory_before_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.memory_before_date)
+    || typeof value.memory_last_id !== 'string') fail('BOOTSTRAP_CURSOR_INVALID', 'memory_days');
+  return { memory_before_date: value.memory_before_date, memory_last_id: value.memory_last_id };
+}
+
+/** Fetch missing buckets on the original snapshot before spending time on item continuations. */
+export async function completeMemoryDayPages(
+  client: PageClient, section: unknown, snapshotId: string | null,
+  options: { signal: AbortSignal; deadline: number },
+): Promise<{ data: RecordValue | undefined; gap?: BootstrapGap }> {
+  if (section == null) return { data: undefined };
+  if (!object(section) || (section.items !== undefined && (!Array.isArray(section.items) || !section.items.every(object)))) {
+    fail('BOOTSTRAP_SHAPE_INVALID', 'bootstrap');
+  }
+  const items: RecordValue[] = [...(section.items ?? []) as RecordValue[]];
+  let total = integer(section.total_in_window) ? section.total_in_window : undefined;
+  let rawCursor = section.next_cursor;
+  const data = () => ({ ...section, items, next_cursor: rawCursor, ...(total === undefined ? {} : { total_in_window: total }) });
+  try {
+    if (section.total_in_window !== undefined && (total === undefined || total < items.length)) fail('BOOTSTRAP_TOTAL_MISMATCH', 'memory_days');
+    const seen = new Set(items.map(item => item.memory_id));
+    let pagesRead = 0;
+    while (rawCursor != null && (total === undefined || items.length < total)) {
+      if (!snapshotId) fail('BOOTSTRAP_SNAPSHOT_MISSING', 'memory_days');
+      if (pagesRead >= MEMORY_DAY_PAGE_LIMIT || items.length >= MEMORY_DAY_ITEM_LIMIT) fail('BOOTSTRAP_PAGE_LIMIT', 'memory_days');
+      const remaining = Math.floor(options.deadline - performance.now());
+      if (remaining <= 0) fail('BOOTSTRAP_MEMORY_TIME_LIMIT', 'memory_days');
+      const cursor = memoryDayCursor(rawCursor);
+      const last = items.at(-1);
+      // The server can emit an empty first page at its byte limit. Its cursor starts at today's date and the empty ID.
+      if ((last && (last.memory_date !== cursor.memory_before_date || last.memory_id !== cursor.memory_last_id))
+        || (!last && cursor.memory_last_id !== '')) fail('BOOTSTRAP_CURSOR_INVALID', 'memory_days');
+      const page = await bootstrapCall(signal => client.bootstrapNext(snapshotId, cursor, 'memory_days', signal),
+        { signal: options.signal, timeoutMs: Math.min(1500, remaining), section: 'memory_days' });
+      if (page.snapshot_id !== snapshotId) fail('BOOTSTRAP_SNAPSHOT_MISMATCH', 'memory_days');
+      if (page.section !== 'memory_days') fail('BOOTSTRAP_RESOURCE_MISMATCH', 'memory_days');
+      authority(page, 'memory_days', true);
+      if (!Array.isArray(page.items) || !page.items.every(object) || page.count !== page.items.length) fail('BOOTSTRAP_SHAPE_INVALID', 'memory_days');
+      if (!integer(page.total_in_window) || (total !== undefined && total !== page.total_in_window)) fail('BOOTSTRAP_TOTAL_MISMATCH', 'memory_days');
+      if (!Object.hasOwn(page, 'next_cursor')) fail('BOOTSTRAP_CURSOR_MISSING', 'memory_days');
+      if (page.items.length === 0) fail('BOOTSTRAP_NO_PROGRESS', 'memory_days');
+      const after = items.length + page.items.length;
+      if (after > MEMORY_DAY_ITEM_LIMIT) fail('BOOTSTRAP_PAGE_LIMIT', 'memory_days');
+      if (after > page.total_in_window) fail('BOOTSTRAP_TOTAL_MISMATCH', 'memory_days');
+      let previousDate = cursor.memory_before_date;
+      let previousId = cursor.memory_last_id;
+      for (const item of page.items) {
+        const date = item.memory_date, id = item.memory_id;
+        if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || typeof id !== 'string' || !id || seen.has(id)
+          || date > previousDate || (date === previousDate && id <= previousId)) fail('BOOTSTRAP_NO_PROGRESS', 'memory_days');
+        seen.add(id);
+        previousDate = date;
+        previousId = id;
+      }
+      if (page.next_cursor != null && after < page.total_in_window) {
+        const next = memoryDayCursor(page.next_cursor);
+        if (next.memory_before_date !== previousDate || next.memory_last_id !== previousId) fail('BOOTSTRAP_CURSOR_INVALID', 'memory_days');
+      }
+      items.push(...page.items);
+      total = page.total_in_window;
+      rawCursor = page.next_cursor;
+      pagesRead++;
+    }
+    if (total !== undefined && items.length !== total) fail('BOOTSTRAP_INCOMPLETE', 'memory_days');
+    // The server can include a cursor on the last full-sized page; total proves the section is complete.
+    rawCursor = null;
+    return { data: data() };
+  } catch (error) {
+    if (!(error instanceof BootstrapPagingError) || globalBootstrapFailure(error)) throw error;
+    return { data: data(), gap: { section: 'memory_days', code: error.code, retryable: retryableBootstrapFailure(error) || error.code === 'BOOTSTRAP_MEMORY_TIME_LIMIT' } };
+  }
 }
 
 export type BootstrapPagingOptions = { signal?: AbortSignal; maxPages?: number; maxBytes?: number; pageTimeoutMs?: number; maxDurationMs?: number };

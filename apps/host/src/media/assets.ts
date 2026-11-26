@@ -12,8 +12,24 @@ import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 import { genId, sha256Hex } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
+import type { MariposaMediaStore } from '../integrations/mariposa/media-store.ts';
+import { classifySvg, renderStaticSvg } from './static-svg.ts';
 
 export type IngestPurpose = 'chat_image' | 'chat_sticker' | 'chat_voice' | 'creation_icon' | 'creation_work' | 'derived_view';
+const STATIC_SVG_VIEW_SERVICE = 'estomago_static_svg';
+const staticSvgViewOperation = (assetId: string) => `static-svg-view-v1:${assetId}`;
+
+// 相册重构 P2：这些用途的媒体字节以 M 为唯一长期正本，落正后本地缓存缺失时从 M 回源。
+/** 暂存上传（输入框里选了还没发、编辑框里加了还没保存）最多留这么久；过后仍无引用即删除。 */
+export const STAGED_UPLOAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+export const M_MASTER_PURPOSES: ReadonlySet<IngestPurpose> = new Set([
+  'chat_image', 'chat_sticker', 'creation_icon', 'creation_work', 'derived_view',
+  // 宿主用户 2026-11-08 裁定：语音同图片——M 唯一正本，E 播放/使用走 M 回源
+  // （替代此前 A66 的"语音不迁"范围）。读取回源经 readContentResolvingMaster；
+  // voice.ts 转写链已改为"先认领后取字节"以保留单飞语义（见 media/voice.ts）。
+  'chat_voice',
+]);
 
 // 用途 → 格式白名单（§5.1：两套小名单；不是按扩展名信任）
 const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
@@ -21,7 +37,8 @@ const PURPOSE_MIMES: Record<IngestPurpose, string[]> = {
   chat_sticker: ['image/png', 'image/jpeg', 'image/gif', 'image/webp'],
   chat_voice: ['audio/webm', 'audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav'],
   creation_icon: ['image/svg+xml', 'image/png', 'image/webp'],
-  creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp'],
+  // GIF（复审 2026-11-09 她裁定 image 模型可生动图）：生成动图作品合法入列
+  creation_work: ['image/svg+xml', 'text/html', 'video/mp4', 'image/png', 'image/jpeg', 'image/webp', 'image/gif'],
   // derived_view（2026-10-24，RE-05）：oído 测量图等宿主派生图工件（origin=generated+origin_service 标来源）
   derived_view: ['image/png'],
 };
@@ -60,18 +77,37 @@ export class MediaError extends Error {
 export type StoredAsset = {
   id: string; state: string; mime_type: string; byte_size: number; content_sha256: string;
   origin: string; origin_service: string | null; origin_ref: string | null;
+  creation_operation_id: string | null;
   ingest_purpose: string; created_by: string; created_at: string; duplicate: boolean;
+  /** staged=只存本地、尚未进 M（见 commitStagedAssets）；pending=等后台补落正；synced=M 已有正本。 */
+  m_sync_state: 'staged' | 'pending' | 'synced' | 'out_of_scope'; m_content_hash: string | null;
+  m_sync_attempts: number;
+};
+type SaveAssetInput = {
+  bytes: Uint8Array; purpose: IngestPurpose; operationId: string; createdBy: string;
+  origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null;
+  declaredMime?: string | null;
+  /** 只存 E 本地；等正式消息或内容引用它时才落正 M（未发送的附件不进 M）。 */
+  staged?: boolean;
 };
 
 export class MediaService {
   private db: Db;
   private mediaDir: string;
   private config: Config;
-  constructor(db: Db, mediaDir: string, config: Config) {
+  private mStore: MariposaMediaStore | null;
+  private readonly stagedSyncs = new Map<string, Promise<boolean>>();
+  constructor(db: Db, mediaDir: string, config: Config, mStore: MariposaMediaStore | null = null) {
     this.db = db;
     this.mediaDir = mediaDir;
     this.config = config;
+    this.mStore = mStore;
     fs.mkdirSync(mediaDir, { recursive: true });
+  }
+
+  /** M 唯一正本客户端是否装配（未装配=本实例无 M 落正语义，调用方按各自合同处理）。 */
+  get masterStoreConfigured(): boolean {
+    return this.mStore !== null;
   }
 
   private purposeLimitBytes(purpose: IngestPurpose): number {
@@ -83,12 +119,28 @@ export class MediaService {
     return 0;
   }
 
+  /** 旧静态上传曾把 chat_image 记作 creation_icon；仅有可信衍生关系才可确认为原图片用途。 */
+  private assertUploadPurpose(assetId: string, purpose: IngestPurpose): void {
+    const asset = this.getAsset(assetId);
+    const existingPurpose = asset.ingest_purpose === 'creation_icon' && asset.mime_type === 'image/svg+xml' && this.staticSvgView(assetId)
+      ? 'chat_image' : asset.ingest_purpose;
+    if (existingPurpose !== purpose) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同上传幂等键对应不同用途');
+  }
+
+  findSavedOperation(operationId: string, bytes: Uint8Array): StoredAsset | null {
+    const row = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id=?')
+      .get(operationId) as { id: string; content_sha256: string } | undefined;
+    if (!row) return null;
+    if (row.content_sha256 !== sha256Hex(bytes)) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+    return this.getAsset(row.id);
+  }
+
   /** 幂等保存：同 creation_operation_id 返回既有资产；成功操作不重复建图。 */
-  async saveBuffer(opts: {
-    bytes: Uint8Array; purpose: IngestPurpose; operationId: string; createdBy: string;
-    origin: 'upload' | 'import' | 'generated' | 'service'; originService?: string | null; originRef?: string | null;
-    declaredMime?: string | null;
-  }): Promise<StoredAsset> {
+  async saveBuffer(opts: SaveAssetInput): Promise<StoredAsset> {
+    return this.storeBuffer(opts);
+  }
+
+  private async storeBuffer(opts: SaveAssetInput, verifiedSvgImage = false): Promise<StoredAsset> {
     if (opts.bytes.byteLength === 0) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '空文件');
     const limit = this.purposeLimitBytes(opts.purpose);
     if (opts.bytes.byteLength > limit) throw new MediaError('ASSET_TOO_LARGE', 413, `超过用途上限 ${limit} 字节`);
@@ -97,11 +149,17 @@ export class MediaService {
     const existing = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id = ?').get(opts.operationId) as { id: string; content_sha256: string } | undefined;
     if (existing) {
       if (existing.content_sha256 !== sha) throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+      if (opts.origin === 'upload') this.assertUploadPurpose(existing.id, opts.purpose);
+      // 上一次保存可能停在 M 待同步：顺手补一次（M 端按 hash 去重，重复上传无副作用）
+      await this.attemptMSync(existing.id, opts.bytes);
       return this.getAsset(existing.id);
     }
     const sniffed = sniffMime(opts.bytes);
     if (sniffed === null) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, '无法识别的文件类型（魔数校验失败）');
-    if (!PURPOSE_MIMES[opts.purpose].includes(sniffed)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `用途 ${opts.purpose} 不接受 ${sniffed}`);
+    if (!PURPOSE_MIMES[opts.purpose].includes(sniffed)
+      && !(opts.purpose === 'chat_image' && sniffed === 'image/svg+xml' && verifiedSvgImage)) {
+      throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `用途 ${opts.purpose} 不接受 ${sniffed}`);
+    }
     const id = genId('asset');
     const ext = sniffed.split('/')[1] === 'svg+xml' ? 'svg' : sniffed.split('/')[1] === 'plain' ? 'txt' : sniffed.split('/')[1];
     const storageKey = path.join(sha.slice(0, 2), `${sha}.${ext}`);
@@ -118,15 +176,244 @@ export class MediaService {
       } else duplicate = true; // 内容去重：同 hash 只存一份字节；不同 asset 身份仍各自成立（§3.1）
       this.db.prepare(
         `INSERT INTO media_assets(id, creation_operation_id, state, mime_type, byte_size, content_sha256, storage_key,
-           width, height, duration_ms, origin, origin_service, origin_ref, created_by, ingest_purpose, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?)`,
-      ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso);
+           width, height, duration_ms, origin, origin_service, origin_ref, created_by, ingest_purpose, created_at, updated_at,
+           m_sync_state)
+         VALUES (?,?,?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,?,?,?)`,
+      ).run(id, opts.operationId, 'available', sniffed, opts.bytes.byteLength, sha, storageKey, opts.origin, opts.originService ?? null, opts.originRef ?? null, opts.createdBy, opts.purpose, nowIso, nowIso,
+        !M_MASTER_PURPOSES.has(opts.purpose) ? 'out_of_scope' : opts.staged === true ? 'staged' : 'pending');
     } catch (err) {
       try { for (const f of fs.readdirSync(absDir)) { if (f.includes('.tmp-')) fs.unlinkSync(path.join(absDir, f)); } } catch { /* 清理失败不掩盖 */ }
       if (err instanceof MediaError) throw err;
       throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '媒体目录写入失败');
     }
+    await this.attemptMSync(id, opts.bytes);
     return { ...this.getAsset(id), duplicate };
+  }
+
+  /** Save the original and a versioned visual derivative. The collection retains the original asset id. */
+  async saveStaticSvg(opts: { bytes: Uint8Array; operationId: string; createdBy: string; origin: 'upload' | 'generated'; staged?: boolean }): Promise<StoredAsset | null> {
+    const existing = this.db.prepare('SELECT id, content_sha256 FROM media_assets WHERE creation_operation_id=?')
+      .get(opts.operationId) as { id: string; content_sha256: string } | undefined;
+    if (existing && existing.content_sha256 !== sha256Hex(Buffer.from(opts.bytes))) {
+      throw new MediaError('IDEMPOTENCY_CONFLICT', 409, '同幂等键对应不同内容');
+    }
+    if (existing && opts.origin === 'upload') this.assertUploadPurpose(existing.id, 'chat_image');
+    const view = existing ? this.staticSvgView(existing.id) : null;
+    if (existing && view) {
+      await this.attemptMSync(existing.id, opts.bytes);
+      await this.attemptMSync(view.id);
+      return this.getAsset(existing.id);
+    }
+    const classification = classifySvg(opts.bytes);
+    if (classification === 'code') return null;
+    if (classification !== 'image') throw new MediaError('SVG_CLASSIFICATION_UNAVAILABLE', 422, '无法确认该 SVG 的真实图片/作品类型');
+    let png: Buffer | null;
+    try { png = await renderStaticSvg(opts.bytes); }
+    catch { throw new MediaError('SVG_RENDER_UNAVAILABLE', 503, '静态 SVG 的 PNG 视图暂不可用'); }
+    if (png === null) throw new MediaError('SVG_STATIC_UNSUPPORTED', 422, '该静态 SVG 暂不能生成安全的发送视图，不将它误归代码作品');
+    const original = await this.storeBuffer({ ...opts, purpose: opts.origin === 'upload' ? 'chat_image' : 'creation_icon' }, true);
+    // The view shares the original's standing: an unsent upload sends neither its SVG nor its PNG view to M.
+    await this.saveSvgView(original, png, opts.staged === true);
+    return original;
+  }
+
+  private async saveSvgView(original: StoredAsset, png: Buffer, staged = false): Promise<void> {
+    await this.saveBuffer({
+      bytes: png, purpose: 'derived_view', operationId: staticSvgViewOperation(original.id),
+      createdBy: original.created_by, origin: 'generated', originService: STATIC_SVG_VIEW_SERVICE, originRef: original.id, staged,
+    });
+  }
+
+  /** For explicitly reviewed historical assets: attach a PNG view to the existing original identity. */
+  async ensureStaticSvgView(assetId: string): Promise<StoredAsset> {
+    const original = this.getAsset(assetId);
+    if (original.mime_type !== 'image/svg+xml' || original.state !== 'available'
+      || original.m_sync_state !== 'synced' || original.m_content_hash !== original.content_sha256) {
+      throw new MediaError('SVG_SOURCE_UNCONFIRMED', 409, 'SVG 原件及权威 hash 尚未确认');
+    }
+    const view = this.staticSvgView(assetId);
+    if (view) {
+      await this.attemptMSync(view.id);
+      return original;
+    }
+    const { bytes } = await this.readContentResolvingMaster(assetId);
+    if (sha256Hex(bytes) !== original.content_sha256 || classifySvg(bytes) !== 'image') {
+      throw new MediaError('SVG_SOURCE_UNCONFIRMED', 422, '原件 hash 或静态图片类型未确认');
+    }
+    let png: Buffer | null;
+    try { png = await renderStaticSvg(bytes); }
+    catch { throw new MediaError('SVG_RENDER_UNAVAILABLE', 503, '静态 SVG 的 PNG 视图暂不可用'); }
+    if (!png) throw new MediaError('SVG_STATIC_UNSUPPORTED', 422, '该静态 SVG 暂不能生成安全的发送视图');
+    await this.saveSvgView(original, png);
+    return original;
+  }
+
+  private staticSvgView(assetId: string): { id: string; m_sync_state: string } | null {
+    const view = this.db.prepare(`
+      SELECT id,m_sync_state FROM media_assets WHERE creation_operation_id=? AND origin_service=?
+      AND origin_ref=? AND ingest_purpose='derived_view' AND mime_type='image/png' AND state='available'
+    `).get(staticSvgViewOperation(assetId), STATIC_SVG_VIEW_SERVICE, assetId) as { id: string; m_sync_state: string } | undefined;
+    return view ?? null;
+  }
+
+  canProvideImage(asset: StoredAsset): boolean {
+    return asset.state === 'available' && (asset.mime_type === 'image/svg+xml'
+      ? isStaticSvgViewReady(this.staticSvgView(asset.id), this.masterStoreConfigured)
+      : PURPOSE_MIMES.chat_image.includes(asset.mime_type));
+  }
+
+  originalImageAsset(asset: StoredAsset): StoredAsset {
+    return asset.ingest_purpose === 'derived_view' && asset.origin_service === STATIC_SVG_VIEW_SERVICE && asset.origin_ref
+      && asset.creation_operation_id === staticSvgViewOperation(asset.origin_ref)
+      ? this.getAsset(asset.origin_ref) : asset;
+  }
+
+  // —— 相册重构 P2：M 唯一正本同步/回源。失败不掩盖本地保存成功——状态回 pending
+  //    由后台循环退避重试；成功即 m_content_hash 落行，本地文件自此只是可重建缓存。
+
+  /** 单资产落正到 M。bytes 给定则免读盘（保存路径）；返回是否已 synced。
+   *  暂存上传只经 commitStagedAssets 落正：后台重试与同键重放都不得把它提前送进 M。 */
+  async attemptMSync(assetId: string, bytes?: Uint8Array, options?: { staged?: true }): Promise<boolean> {
+    const row = this.db.prepare('SELECT id, content_sha256, mime_type, state, ingest_purpose, m_sync_state FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string; mime_type: string; state: string; ingest_purpose: IngestPurpose; m_sync_state: string } | undefined;
+    if (!row || row.state !== 'available') return false;
+    if (!M_MASTER_PURPOSES.has(row.ingest_purpose)) return row.m_sync_state === 'out_of_scope';
+    if (row.m_sync_state === 'synced') return true;
+    if (row.m_sync_state === 'staged' && options?.staged !== true) return false;
+    if (!this.mStore) return false; // M 未配置：保持原状态（如实的待完成状态，不假装 synced）
+    try {
+      const buf = bytes ?? this.readLocalBytes(row.content_sha256);
+      const out = await this.mStore.uploadBytes(buf, row.mime_type);
+      if (out.content_hash !== row.content_sha256) throw new Error('hash mismatch after upload');
+      this.db.prepare("UPDATE media_assets SET m_content_hash = ?, m_sync_state = 'synced', m_sync_attempts = 0, m_synced_at = ?, m_last_sync_error = NULL WHERE id = ?")
+        .run(out.content_hash, new Date().toISOString(), assetId);
+      return true;
+    } catch (err) {
+      // 保留字节与可恢复状态：pending + attempts/error 可见，绝不在失败时清理本地唯一副本
+      this.db.prepare("UPDATE media_assets SET m_sync_attempts = m_sync_attempts + 1, m_last_sync_error = ? WHERE id = ?")
+        .run(String((err as Error).message).slice(0, 200), assetId);
+      return false;
+    }
+  }
+
+  private isStaged(assetId: string): boolean {
+    return Boolean(this.db.prepare("SELECT 1 FROM media_assets WHERE id = ? AND state = 'available' AND m_sync_state = 'staged'").get(assetId));
+  }
+
+  private syncStagedAsset(assetId: string): Promise<boolean> {
+    const inFlight = this.stagedSyncs.get(assetId);
+    if (inFlight) return inFlight;
+    const sync = this.attemptMSync(assetId, undefined, { staged: true }).finally(() => this.stagedSyncs.delete(assetId));
+    this.stagedSyncs.set(assetId, sync);
+    return sync;
+  }
+
+  /** 草稿在正式提交请求前保持本地暂存。M 拒绝落正时调用方不发布附件引用。
+   *  M 未配置时与普通上传一致：转 pending，由后台补落正。 */
+  async commitStagedAssets(assetIds: readonly string[]): Promise<void> {
+    const staged: string[] = [];
+    for (const assetId of new Set(assetIds)) {
+      if (!this.isStaged(assetId)) continue;
+      const view = this.staticSvgView(assetId);
+      if (view && view.m_sync_state === 'staged') staged.push(view.id);
+      staged.push(assetId);
+    }
+    for (const assetId of staged) {
+      const a = this.getAsset(assetId);
+      try { this.readLocalBytes(a.content_sha256); }
+      catch { throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, `暂存资产文件缺失 ${assetId}`); }
+    }
+    for (const assetId of staged) {
+      if (!this.mStore) {
+        this.db.prepare("UPDATE media_assets SET m_sync_state = 'pending' WHERE id = ? AND m_sync_state = 'staged'").run(assetId);
+      } else if (!(await this.syncStagedAsset(assetId))) {
+        throw new MediaError('ASSET_MASTER_COMMIT_FAILED', 503, '附件还没存入正本，本次未发出。请稍后重试。');
+      }
+    }
+  }
+
+  /** 放弃从未落正的暂存上传：删行与本地字节（静态 SVG 连同它的 PNG 视图）。已被引用则拒绝；
+   *  同一字节仍被其它资产需要时只删行、留文件。返回删掉的暂存上传数。 */
+  discardStagedAssets(assetIds: readonly string[]): number {
+    const files = new Map<string, string>();
+    let discarded = 0;
+    tx(this.db, () => {
+      for (const assetId of assetIds) {
+        const view = this.staticSvgView(assetId);
+        for (const id of view ? [assetId, view.id] : [assetId]) {
+          if (this.stagedSyncs.has(id)) {
+            throw new MediaError('ASSET_UPLOAD_IN_PROGRESS', 409, '附件正在确认正本，请等发送结果后再移除。');
+          }
+          const row = this.db.prepare("SELECT storage_key, content_sha256 FROM media_assets WHERE id = ? AND m_sync_state = 'staged'").get(id) as { storage_key: string; content_sha256: string } | undefined;
+          if (!row) continue;
+          if (id === assetId && this.isAssetReferenced(assetId).referenced) {
+            throw new MediaError('ASSET_REFERENCED', 409, '这份附件已被正式消息或内容引用，不能删除');
+          }
+          this.db.prepare("DELETE FROM media_assets WHERE id = ? AND m_sync_state = 'staged'").run(id);
+          files.set(row.content_sha256, row.storage_key);
+          if (id === assetId) discarded++;
+        }
+      }
+      // 标删行不再需要本地字节；未落正的行（pending/out_of_scope/其它 staged）仍是这些字节的唯一依赖。
+      for (const [sha, storageKey] of files) {
+        if (this.db.prepare("SELECT 1 FROM media_assets WHERE content_sha256 = ? AND state != 'missing'").get(sha)) continue;
+        const abs = path.join(this.mediaDir, storageKey);
+        if (fs.existsSync(abs)) fs.rmSync(abs);
+      }
+    });
+    return discarded;
+  }
+
+  /** 过期仍无引用的暂存上传（页面被关、进程崩溃后没人再来移除）按同一规则清掉。 */
+  pruneStagedUploads(now = Date.now(), limit = 20): number {
+    const cutoff = new Date(now - STAGED_UPLOAD_MAX_AGE_MS).toISOString();
+    const rows = this.db.prepare(`
+      SELECT id FROM media_assets
+      WHERE m_sync_state = 'staged' AND state = 'available' AND origin = 'upload' AND created_at < ?
+      ORDER BY created_at LIMIT ?`).all(cutoff, limit) as Array<{ id: string }>;
+    let pruned = 0;
+    for (const row of rows) {
+      if (this.isAssetReferenced(row.id).referenced) continue;
+      try { pruned += this.discardStagedAssets([row.id]); }
+      catch (err) {
+        if (!(err instanceof MediaError) || err.code !== 'ASSET_UPLOAD_IN_PROGRESS') throw err;
+      }
+    }
+    return pruned;
+  }
+
+  /** ALB-01：本地缓存 LRU 逐出一跳——物理文件口径的唯一正本见模块级
+   *  planCacheEviction/deleteCacheFiles（二轮返修 P1-4：后台与运维 CLI 共用）。 */
+  evictCacheOverBudget(maxEvict = 20): { evicted: number; cacheBytes: number } {
+    const budget = this.config.media.cache_budget_bytes;
+    const { candidates, totalBytes } = planCacheEviction(this.db, this.mediaDir);
+    const targets: CacheEvictionCandidate[] = [];
+    let acc = totalBytes;
+    for (const f of candidates) {
+      if (acc <= budget || targets.length >= maxEvict) break;
+      targets.push(f);
+      acc -= f.size;
+    }
+    const { evicted, freedBytes } = deleteCacheFiles(this.mediaDir, targets);
+    return { evicted, cacheBytes: totalBytes - freedBytes };
+  }
+
+  /** 待同步批次（后台一跳有界推进；按创建序，最旧优先）。 */
+  pendingMSyncBatch(limit: number): Array<{ id: string; m_sync_attempts: number }> {
+    const purposes = [...M_MASTER_PURPOSES];
+    const placeholders = purposes.map(() => '?').join(',');
+    return this.db.prepare(
+      `SELECT id, m_sync_attempts FROM media_assets
+       WHERE m_sync_state = 'pending' AND state = 'available' AND ingest_purpose IN (${placeholders})
+       ORDER BY created_at ASC, id ASC LIMIT ?`,
+    ).all(...purposes, limit) as Array<{ id: string; m_sync_attempts: number }>;
+  }
+
+  private readLocalBytes(contentSha256: string): Buffer {
+    // storage_key 由内容 hash 派生（<hh>/<hash>.<ext>）——按目录扫前缀取回，不信任扩展名
+    const dir = path.join(this.mediaDir, contentSha256.slice(0, 2));
+    const name = fs.readdirSync(dir).find((f) => f.startsWith(contentSha256));
+    if (!name) throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '媒体文件缺失');
+    return fs.readFileSync(path.join(dir, name));
   }
 
   getAsset(id: string): StoredAsset {
@@ -137,12 +424,24 @@ export class MediaService {
       byte_size: row.byte_size as number, content_sha256: row.content_sha256 as string,
       origin: row.origin as string, origin_service: (row.origin_service as string | null) ?? null,
       origin_ref: (row.origin_ref as string | null) ?? null,
+      creation_operation_id: (row.creation_operation_id as string | null) ?? null,
       ingest_purpose: row.ingest_purpose as string, created_by: row.created_by as string,
       created_at: row.created_at as string, duplicate: false,
+      m_sync_state: (row.m_sync_state as StoredAsset['m_sync_state']) ?? 'pending',
+      m_content_hash: (row.m_content_hash as string | null) ?? null,
+      m_sync_attempts: Number(row.m_sync_attempts ?? 0),
     };
   }
 
-  /** 授权读取字节（storage_key 由宿主管理，不暴露绝对路径）。 */
+  publishedImageInRoom(assetId: string, roomId: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM message_attachments a
+      JOIN messages m ON m.id=a.message_id AND m.current_revision=a.revision
+      WHERE a.asset_id=? AND m.conversation_id=? AND m.published_at IS NOT NULL
+      AND a.presentation IN ('image','sticker') LIMIT 1`).get(assetId, roomId));
+  }
+
+  /** 授权读取本地缓存字节（storage_key 由宿主管理，不暴露绝对路径）。同步、不回源——
+   *  语音（chat_voice，M 同步范围外）等消费者依赖读取后同步认领行，保持原时序不变。 */
   readContent(id: string): { bytes: Buffer; mime: string } {
     const row = this.db.prepare('SELECT storage_key, mime_type, state FROM media_assets WHERE id = ?').get(id) as { storage_key: string; mime_type: string; state: string } | undefined;
     if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '资产不存在');
@@ -150,6 +449,42 @@ export class MediaService {
     const abs = path.join(this.mediaDir, row.storage_key);
     if (!fs.existsSync(abs)) throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '资产文件缺失');
     return { bytes: fs.readFileSync(abs), mime: row.mime_type };
+  }
+
+  /** 相册重构 P2：M 正本媒体的读取入口——本地缓存命中即同步返回；缓存缺失且已落正 M 时
+   *  从 M 回源（sha256 校验后原子重建本地缓存）；M 也读不到才如实
+   *  ASSET_STORAGE_UNAVAILABLE——绝不静默换一张或假装可读。 */
+  async readContentResolvingMaster(id: string, options?: { modelImage: true }): Promise<{ bytes: Buffer; mime: string }> {
+    const row = this.db.prepare('SELECT storage_key, mime_type, state, content_sha256, m_sync_state, m_content_hash FROM media_assets WHERE id = ?').get(id) as { storage_key: string; mime_type: string; state: string; content_sha256: string; m_sync_state: string; m_content_hash: string | null } | undefined;
+    if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '资产不存在');
+    if (row.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产状态 ${row.state}`);
+    if (options?.modelImage && row.mime_type === 'image/svg+xml') {
+      const view = this.staticSvgView(id);
+      if (!view || !isStaticSvgViewReady(view, this.masterStoreConfigured)) {
+        throw new MediaError('SVG_VIEW_UNAVAILABLE', 422, '原 SVG 未建立可用的 PNG 视图');
+      }
+      return this.readContentResolvingMaster(view.id);
+    }
+    const abs = path.join(this.mediaDir, row.storage_key);
+    if (fs.existsSync(abs)) {
+      // ALB-01：本地缓存命中即触 LRU（同步小写入；NULL=从未读过=逐出时视为最旧）
+      if (row.m_sync_state === 'synced') {
+        this.db.prepare("UPDATE media_assets SET cache_last_used_at = ? WHERE id = ? AND m_sync_state = 'synced'").run(new Date().toISOString(), id);
+      }
+      return { bytes: fs.readFileSync(abs), mime: row.mime_type };
+    }
+    const mHash = row.m_content_hash ?? (row.m_sync_state === 'synced' ? row.content_sha256 : null);
+    if (mHash && this.mStore) {
+      const { bytes } = await this.mStore.fetchBytes(mHash);
+      // 回源成功即原子重建本地缓存（后续读取不再依赖 M 在线）
+      const absDir = path.join(this.mediaDir, path.dirname(row.storage_key));
+      fs.mkdirSync(absDir, { recursive: true });
+      const tmp = `${abs}.tmp-${process.pid}-${Date.now()}`;
+      fs.writeFileSync(tmp, bytes);
+      fs.renameSync(tmp, abs);
+      return { bytes, mime: row.mime_type };
+    }
+    throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, '资产文件缺失');
   }
 
   /** §7 URL 导入：连接目标受控。逐跳重查（≤max_redirects）；私网/环回/链路本地/云元数据全拒。 */
@@ -227,45 +562,92 @@ export class MediaService {
     });
   }
 
-  // —— §4.3/§10.2 引用登记：protected pin → committed；解除 released ——
-  registerReference(opts: { assetId: string; ownerService: string; ownerType: string; ownerId: string; ownerRevision?: number | null; operationId: string }): { referenceId: string; revision: number; state: string } {
+  // —— §4.3/§10.2 引用保护（P1·F06/F07 重构 20261106）：一次内容写操作的持久生命周期 =
+  //     HTTP 前 protected pin（按操作隔离）→ 提交成功后按 content 权威快照原子确认
+  //     （正式 committed 关系按 owner+asset 唯一；非当前成员的同 owner 关系同事务释放；
+  //     本次操作 pin 收口）。消息附件引用在 message_attachments，独立于本表，不受影响。 ——
+
+  /** 操作前置 pin：资产在内容提交前先进入保护（删除守卫计入 protected）。幂等。
+   *  RF2-02（复审 20261106 第二轮）：同一操作的意图按现有合同可失败后重开（重试换参
+   *  场景）——重开即重新接受，必须重新取得有效保护：旧 released 行恢复 protected，
+   *  不能凭"行存在"当已保护（旧实现重开后 pin 仍 released，提交成功后资产可删）。 */
+  pinAssetForOperation(opts: { assetId: string; operationKey: string }): void {
     this.getAsset(opts.assetId); // ASSET_NOT_FOUND 如实
     const existing = this.db.prepare(
-      'SELECT id, revision, state FROM asset_external_refs WHERE asset_id = ? AND owner_service = ? AND owner_type = ? AND owner_id = ? AND operation_id = ?',
-    ).get(opts.assetId, opts.ownerService, opts.ownerType, opts.ownerId, opts.operationId) as { id: string; revision: number; state: string } | undefined;
-    if (existing) return { referenceId: existing.id, revision: existing.revision, state: existing.state }; // 幂等
-    const id = genId('aref');
+      "SELECT id, state FROM asset_external_refs WHERE asset_id = ? AND owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ?",
+    ).get(opts.assetId, opts.operationKey, opts.operationKey) as { id: string; state: string } | undefined;
     const nowIso = new Date().toISOString();
+    if (existing) {
+      if (existing.state === 'released') {
+        this.db.prepare("UPDATE asset_external_refs SET state = 'protected', revision = revision + 1, released_at = NULL WHERE id = ?")
+          .run(existing.id);
+      }
+      return; // protected/committed：已有效保护
+    }
     this.db.prepare(
       `INSERT INTO asset_external_refs(id, asset_id, owner_service, owner_type, owner_id, owner_revision, revision, operation_id, state, created_at)
-       VALUES (?,?,?,?,?,?,1,?, 'protected', ?)`,
-    ).run(id, opts.assetId, opts.ownerService, opts.ownerType, opts.ownerId, opts.ownerRevision ?? null, opts.operationId, nowIso);
-    return { referenceId: id, revision: 1, state: 'protected' };
+       VALUES (?, ?, 'content', 'content_operation', ?, NULL, 1, ?, 'protected', ?)`,
+    ).run(genId('aref'), opts.assetId, opts.operationKey, opts.operationKey, nowIso);
   }
 
-  confirmReference(referenceId: string): { referenceId: string; revision: number; state: string } {
-    const row = this.db.prepare('SELECT id, revision, state FROM asset_external_refs WHERE id = ?').get(referenceId) as { id: string; revision: number; state: string } | undefined;
-    if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '引用不存在');
-    if (row.state === 'committed') return { referenceId: row.id, revision: row.revision, state: row.state };
-    this.db.prepare("UPDATE asset_external_refs SET state = 'committed' WHERE id = ?").run(referenceId);
-    return { referenceId, revision: row.revision, state: 'committed' };
+  /** 按权威快照确认映射（调用方包同一本地事务）：
+   *  ① 快照成员逐个落正式 committed 关系（owner+asset 唯一；曾 released 的重新引用即恢复）；
+   *  ② 该 owner 名下不在当前成员集合的 committed/protected 关系释放（不动其他 owner、
+   *     其他操作的 pin、message_attachments）；
+   *  ③ 本次操作的 protected pin 全部收口。
+   *  返回实际新增/释放计数，供对账与测试断言。 */
+  commitContentSnapshot(owner: { type: string; id: string }, snapshot: { ownerRevision: number; assetIds: string[] }, operationKey: string): { committed: number; released: number; pinsReleased: number } {
+    const nowIso = new Date().toISOString();
+    const ownerOpId = `owner:${owner.type}:${owner.id}`;
+    let committed = 0;
+    for (const assetId of snapshot.assetIds) {
+      this.getAsset(assetId); // 资产行缺失=如实抛错（整事务回滚，不假收口）
+      const existing = this.db.prepare(
+        'SELECT id, state FROM asset_external_refs WHERE asset_id = ? AND owner_service = ? AND owner_type = ? AND owner_id = ? AND operation_id = ?',
+      ).get(assetId, 'content', owner.type, owner.id, ownerOpId) as { id: string; state: string } | undefined;
+      if (existing && existing.state === 'committed') {
+        this.db.prepare('UPDATE asset_external_refs SET owner_revision = ? WHERE id = ?').run(snapshot.ownerRevision, existing.id);
+      } else if (existing) {
+        this.db.prepare("UPDATE asset_external_refs SET state = 'committed', owner_revision = ?, revision = revision + 1 WHERE id = ?").run(snapshot.ownerRevision, existing.id);
+        committed++;
+      } else {
+        this.db.prepare(
+          `INSERT INTO asset_external_refs(id, asset_id, owner_service, owner_type, owner_id, owner_revision, revision, operation_id, state, created_at)
+           VALUES (?, ?, 'content', ?, ?, ?, 1, ?, 'committed', ?)`,
+        ).run(genId('aref'), assetId, owner.type, owner.id, snapshot.ownerRevision, ownerOpId, nowIso);
+        committed++;
+      }
+    }
+    const placeholders = snapshot.assetIds.length > 0 ? snapshot.assetIds.map(() => '?').join(',') : "''";
+    const released = this.db.prepare(
+      `UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ?
+       WHERE owner_service = 'content' AND owner_type = ? AND owner_id = ? AND operation_id = ?
+         AND state IN ('protected','committed') AND asset_id NOT IN (${placeholders})`,
+    ).run(nowIso, owner.type, owner.id, ownerOpId, ...snapshot.assetIds).changes as number;
+    const pinsReleased = this.db.prepare(
+      `UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ?
+       WHERE owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ? AND state = 'protected'`,
+    ).run(nowIso, operationKey, operationKey).changes as number;
+    return { committed, released, pinsReleased };
   }
 
-  /** 解除引用（幂等键=operationId；If-Match 校验引用自身 revision）。历史消息附件引用不在此表，不受此操作影响。 */
-  releaseReference(opts: { referenceId: string; expectedRevision: number; operationId: string }): { referenceId: string; revision: number; state: string } {
-    const row = this.db.prepare('SELECT id, revision, state FROM asset_external_refs WHERE id = ?').get(opts.referenceId) as { id: string; revision: number; state: string } | undefined;
-    if (!row) throw new MediaError('ASSET_NOT_FOUND', 404, '引用不存在');
-    if (row.revision !== opts.expectedRevision) throw new MediaError('REVISION_CONFLICT', 412, '引用 revision 不匹配（If-Match）');
-    if (row.state === 'released') return { referenceId: row.id, revision: row.revision, state: 'released' }; // 幂等重放
-    this.db.prepare("UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ? WHERE id = ?").run(new Date().toISOString(), opts.referenceId);
-    return { referenceId: opts.referenceId, revision: row.revision + 1, state: 'released' };
+  /** 定局失败（content 4xx=业务未提交）时释放本次操作的全部 pin。不动任何正式关系。 */
+  releaseOperationPins(operationKey: string): number {
+    return this.db.prepare(
+      `UPDATE asset_external_refs SET state = 'released', revision = revision + 1, released_at = ?
+       WHERE owner_service = 'content' AND owner_type = 'content_operation' AND owner_id = ? AND operation_id = ? AND state = 'protected'`,
+    ).run(new Date().toISOString(), operationKey, operationKey).changes as number;
   }
 
   /** 有效引用查询（§4.4）：历史消息附件 ∪ protected/committed 外部引用。删除守卫的唯一依据。 */
   isAssetReferenced(assetId: string): { referenced: boolean; by_message_revisions: number; by_external_refs: number } {
     const byMsg = (this.db.prepare('SELECT COUNT(*) n FROM message_attachments WHERE asset_id = ?').get(assetId) as { n: number }).n;
     const byRef = (this.db.prepare("SELECT COUNT(*) n FROM asset_external_refs WHERE asset_id = ? AND state IN ('protected','committed')").get(assetId) as { n: number }).n;
-    return { referenced: byMsg > 0 || byRef > 0, by_message_revisions: byMsg, by_external_refs: byRef };
+    const bySvgSource = this.db.prepare(`
+      SELECT 1 FROM media_assets view JOIN media_assets source ON source.id=view.origin_ref
+      WHERE view.id=? AND view.origin_service=? AND view.ingest_purpose='derived_view' AND source.state='available'
+    `).get(assetId, STATIC_SVG_VIEW_SERVICE) ? 1 : 0;
+    return { referenced: byMsg > 0 || byRef > 0 || bySvgSource > 0, by_message_revisions: byMsg, by_external_refs: byRef + bySvgSource };
   }
 
   /** R6′（2026-10-23，她批 R6P 方案）：源资产删除原语——state→missing（引用守卫外的显式删除）。
@@ -295,15 +677,72 @@ export class MediaService {
     return { content: rev.content, attachments: this.listMessageAttachments(messageId, revision) };
   }
 
+  /** 落正前全量本地预检：确保全部被引用资产存在、available 且暂存字节可读，避免后面的项本地失败时前面的暂存项已先上传 M。 */
+  validateAssetsAvailable(assetIds: readonly string[]): void {
+    for (const assetId of new Set(assetIds)) {
+      const a = this.getAsset(assetId);
+      if (a.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产 ${assetId} 状态 ${a.state}`);
+      if (a.m_sync_state === 'staged') {
+        try { this.readLocalBytes(a.content_sha256); }
+        catch { throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, `暂存资产文件缺失 ${assetId}`); }
+        if (a.mime_type === 'image/svg+xml') {
+          const view = this.staticSvgView(a.id);
+          if (view?.m_sync_state === 'staged') {
+            const viewAsset = this.getAsset(view.id);
+            try { this.readLocalBytes(viewAsset.content_sha256); }
+            catch { throw new MediaError('ASSET_STORAGE_UNAVAILABLE', 500, `暂存 SVG 视图缺失 ${assetId}`); }
+          }
+        }
+      }
+    }
+  }
+
+  /** 发送附件落正前本地预检：存在/available/暂存字节可读/presentation 类型与混排合法。 */
+  validateBeforeCommit(items: Array<{ asset_id: string; presentation: string }>): void {
+    if (items.some((a) => a.presentation === 'voice') && items.length > 1) {
+      throw new MediaError('ATTACHMENT_MIX_INVALID', 422, '语音消息不能与其他附件混合');
+    }
+    this.validateAssetsAvailable(items.map((it) => it.asset_id));
+    for (const it of items) {
+      const a = this.getAsset(it.asset_id);
+      if (it.presentation === 'work') {
+        if (a.mime_type !== 'image/svg+xml' && a.mime_type !== 'text/html') {
+          throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=work 只接受 SVG/HTML 作品（收到 ${a.mime_type}；普通图片用 presentation=image）`);
+        }
+        continue;
+      }
+      const wanted = it.presentation === 'voice' ? PURPOSE_MIMES.chat_voice : PURPOSE_MIMES.chat_image;
+      const svgReadyOrStaged = it.presentation !== 'voice' && a.mime_type === 'image/svg+xml'
+        && (this.canProvideImage(a) || this.staticSvgView(a.id) !== null);
+      if (!wanted.includes(a.mime_type) && !svgReadyOrStaged) {
+        throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
+      }
+    }
+  }
+
   /** 校验发送附件：存在/available/格式匹配 presentation（§5.2 先全量校验再入事务）。 */
   validateForSend(items: Array<{ asset_id: string; presentation: string }>): void {
     for (const it of items) {
       const a = this.getAsset(it.asset_id);
       if (a.state !== 'available') throw new MediaError('ASSET_NOT_READY', 409, `资产 ${it.asset_id} 状态 ${a.state}`);
+      // M02（包1 2026-11-15）：work=代码作品引用（SVG/HTML）——隔离交付，前端走沙箱
+      // 预览（/api/v1/assets/:id/preview）；可执行格式不进普通图片白名单（§5.1 不放宽）。
+      if (it.presentation === 'work') {
+        if (a.mime_type !== 'image/svg+xml' && a.mime_type !== 'text/html') {
+          throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=work 只接受 SVG/HTML 作品（收到 ${a.mime_type}；普通图片用 presentation=image）`);
+        }
+        continue;
+      }
       const wanted = it.presentation === 'voice' ? PURPOSE_MIMES.chat_voice : PURPOSE_MIMES.chat_image;
-      if (!wanted.includes(a.mime_type)) throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
+      if (!wanted.includes(a.mime_type) && !(it.presentation !== 'voice' && a.mime_type === 'image/svg+xml' && this.canProvideImage(a))) {
+        throw new MediaError('ASSET_TYPE_UNSUPPORTED', 422, `presentation=${it.presentation} 不接受 ${a.mime_type}`);
+      }
     }
   }
+}
+
+function isStaticSvgViewReady(view: { m_sync_state: string } | null, masterConfigured: boolean): boolean {
+  return view !== null && (view.m_sync_state === 'synced' || !masterConfigured);
 }
 
 /** 公网判定：拒环回/私网/链路本地/唯一本地/云元数据（§7.2）。 */
@@ -328,4 +767,58 @@ export function isPublicIp(ip: string): boolean {
     return true;
   }
   return false;
+}
+
+// —— 二轮返修 P1-4/P2-5（2026-11-15）：物理文件逐出的唯一正本——后台 evictCacheOverBudget
+// 与运维脚本 scripts/media-cache-evict.mjs 共用（同一计量、同一保护、同一候选顺序）。 ——
+export type CacheEvictionCandidate = { storageKey: string; sha: string; size: number; lastUsed: string | null };
+
+/** 缓存计划：**totalBytes=磁盘实占**（synced 范围内按 storage_key 去重的全部现存文件，
+ *  含受保护文件——它们同样占预算，只是不可删）；**candidates=可删候选**（排除受保护
+ *  后按 LRU 排序：各引用最近使用时间的最大值，从未读过最旧）。保护：同文件存在仍需
+ *  本地字节的有效引用——available 且未 synced（pending 待同步）或 out_of_scope（无 M
+ *  正本，如语音/派生图）；missing（已标删）行不保护文件——它不是文件的活跃依赖。
+ *  反例3（2026-11-16 裁定）：受保护文件计入实际占用、只在挑选删除对象时跳过——上一版
+ *  把它们从 totalBytes 一并剔除，实占 208B/预算 150B 时误判不超而一个不删。 */
+export function planCacheEviction(db: Db, mediaDir: string): { candidates: CacheEvictionCandidate[]; totalBytes: number; protectedCount: number; protectedBytes: number } {
+  const rows = db.prepare(
+    `SELECT storage_key, content_sha256, byte_size, cache_last_used_at FROM media_assets
+     WHERE state = 'available' AND m_sync_state = 'synced'`,
+  ).all() as Array<{ storage_key: string; content_sha256: string; byte_size: number; cache_last_used_at: string | null }>;
+  const blocked = new Set((db.prepare(
+    `SELECT DISTINCT content_sha256 FROM media_assets
+     WHERE content_sha256 IS NOT NULL AND state != 'missing' AND NOT (state = 'available' AND m_sync_state = 'synced')`,
+  ).all() as Array<{ content_sha256: string }>).map((r) => r.content_sha256));
+  const files = new Map<string, CacheEvictionCandidate & { protectedFile: boolean }>();
+  for (const r of rows) {
+    if (!fs.existsSync(path.join(mediaDir, r.storage_key))) continue;
+    const isProtected = blocked.has(r.content_sha256);
+    const f = files.get(r.storage_key);
+    if (!f) {
+      files.set(r.storage_key, { storageKey: r.storage_key, sha: r.content_sha256, size: r.byte_size, lastUsed: r.cache_last_used_at, protectedFile: isProtected });
+    } else {
+      if (r.cache_last_used_at && (!f.lastUsed || r.cache_last_used_at > f.lastUsed)) f.lastUsed = r.cache_last_used_at;
+      if (isProtected) f.protectedFile = true; // 任一引用仍需本地字节=整文件受保护
+    }
+  }
+  const all = [...files.values()];
+  const candidates = all.filter((f) => !f.protectedFile)
+    .map(({ protectedFile: _p, ...rest }) => rest)
+    .sort((a, b) => (a.lastUsed ?? '').localeCompare(b.lastUsed ?? ''));
+  const protectedFiles = all.filter((f) => f.protectedFile);
+  return { candidates, totalBytes: all.reduce((s, f) => s + f.size, 0), protectedCount: protectedFiles.length, protectedBytes: protectedFiles.reduce((s, f) => s + f.size, 0) };
+}
+
+/** 执行删除（存在才删、逐个容错）：返回实际删除文件数/字节/失败数。预演=不调用本函数。 */
+export function deleteCacheFiles(mediaDir: string, files: CacheEvictionCandidate[]): { evicted: number; freedBytes: number; failed: number } {
+  let evicted = 0, freedBytes = 0, failed = 0;
+  for (const f of files) {
+    const abs = path.join(mediaDir, f.storageKey);
+    try {
+      if (!fs.existsSync(abs)) continue;
+      fs.rmSync(abs);
+      evicted += 1; freedBytes += f.size;
+    } catch { failed += 1; }
+  }
+  return { evicted, freedBytes, failed };
 }

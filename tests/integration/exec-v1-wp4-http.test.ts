@@ -7,6 +7,8 @@ import path from 'node:path';
 import {tempRoot, writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
+import { BackgroundTaskService } from '../../apps/host/src/runtime/background-task-service.ts';
+import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 
 const root = tempRoot('exec-v1-wp4-http-');
 writeApprovedIdentity(root);
@@ -33,14 +35,16 @@ test('睡眠 JSON 元数据：配置可见，23:00 active/无排程，08:00解�
   const sleep = await read();
   assert.deepEqual(sleep.keepwarm.sleep_window, { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' });
   assert.equal(sleep.keepwarm_status.sleep_window_active, true);
-  assert.equal(sleep.keepwarm_status.blocked_reason, 'KEEPWARM_SLEEP_WINDOW');
+  // v2.1：手动总开关关闭优先于一切自动暂停原因，同时仍如实暴露睡眠时段元数据。
+  assert.equal(sleep.keepwarm_status.blocked_reason, 'KEEPWARM_DISABLED');
   assert.equal(sleep.keepwarm_status.scheduled, false);
   assert.equal(sleep.keepwarm_status.local_time, '23:00');
   assert.equal(sleep.keepwarm_status.next_keepwarm_at, undefined);
   t.mock.timers.setTime(Date.parse('2026-10-24T08:00:00+08:00'));
   const awake = await read();
   assert.equal(awake.keepwarm_status.sleep_window_active, false);
-  assert.equal(awake.keepwarm_status.blocked_reason, null);
+  // This fixture never switched keepwarm on: the page says so instead of showing a time.
+  assert.equal(awake.keepwarm_status.blocked_reason, 'KEEPWARM_DISABLED');
   assert.equal(awake.keepwarm_status.local_time, '08:00');
   assert.equal((host.db.prepare('SELECT COUNT(*) n FROM turns').get() as { n: number }).n, 0);
 });
@@ -65,46 +69,45 @@ test('BACKGROUND-01/02：默认三关状态如实；开自主无预算=422；有
   await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"1"', 'Idempotency-Key': 'k5' }), body: JSON.stringify({ autonomous: { enabled: false } }) });
 });
 
-test('WAKE/A-02/A-03/A-06：自主预约 HTTP 创建走 service——服务端幂等+CAS+瘦返回；取消递增 revision', async () => {
-  // 自主开关关 → SELF_WAKE_DISABLED（422）
+test('WAKE/A-02/A-03/A-06：用户不能代设或改自约；管理面仍可读、取消并保留既有 CAS', async () => {
+  // 自主开关无论开关，owner 不可以代创建。
   const disabled = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-d1' }), body: JSON.stringify({ note: 'x', delay_seconds: 600 }) });
-  assert.equal(disabled.status, 422);
-  assert.equal(((await disabled.json()) as { error: { code: string } }).error.code, 'self_wake_disabled');
+  assert.equal(disabled.status, 403);
+  assert.equal(((await disabled.json()) as { error: { code: string } }).error.code, 'self_wake_owner_only');
   // 开自主（有预算）
   const cur = await (await fetch(`${base}/api/v1/background/settings`, { headers: auth() })).json() as { revision: number };
   await fetch(`${base}/api/v1/background/settings`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': `"${cur.revision}"`, 'Idempotency-Key': 'w-e1' }), body: JSON.stringify({ autonomous: { enabled: true, daily_cost_cap_usd: 5 } }) });
-  // 创建（服务端幂等：同 Idempotency-Key 重放返回同一任务）
+  // 自主打开后仍不授予用户代设权。用拥有者 service 建立真实任务，
+  // C07 另从模型工具创建/重放/调度。
   const c1 = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-op1' }), body: JSON.stringify({ note: '提醒宿主用户读书', delay_seconds: 600 }) });
-  assert.equal(c1.status, 201);
-  const t1 = (await c1.json()) as { task_id: string; scheduled_at: string; revision: number };
-  const c2 = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-op1' }), body: JSON.stringify({ note: '提醒宿主用户读书', delay_seconds: 600 }) });
-  assert.equal(c2.status, 200);
-  const t2 = (await c2.json()) as { task_id: string; duplicate: boolean };
-  assert.equal(t2.task_id, t1.task_id, 'W-08 面：同键重放同一任务');
-  assert.equal(t2.duplicate, true);
-  // 时间校验：过去时间 422 + server_now
-  const past = await fetch(`${base}/api/v1/background/tasks`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'w-op2' }), body: JSON.stringify({ note: 'x', at: '2020-01-01T00:00:00Z' }) });
-  assert.equal(past.status, 422);
-  // A-02：PUT CAS——旧 revision 409
+  assert.equal(c1.status, 403);
+  const service = new BackgroundTaskService(host.db, new BackgroundSettingsService(host.db, host.config));
+  const created = service.schedule({ actorId: 'jiaming', createdBy: 'jiaming', conversationId: 'primary', operationId: 'self-op-1', note: '提醒宿主用户读书', delaySeconds: 600 });
+  assert.ok(created.ok);
+  if (!created.ok) return;
+  const t1 = created.task;
+  // 用户 PUT 即便 revision 匹配也不获得改期/改正文权限。
   const p409 = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': '"9"', 'Idempotency-Key': 'w-u1' }), body: JSON.stringify({ note: '改' }) });
-  assert.equal(p409.status, 409);
+  assert.equal(p409.status, 403);
   const p200 = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'If-Match': `"${t1.revision}"`, 'Idempotency-Key': 'w-u2' }), body: JSON.stringify({ note: '改后的note' }) });
-  assert.equal(p200.status, 200);
+  assert.equal(p200.status, 403);
   // A-06：列表瘦返回（无 payload/全文 note；有 note_preview/next_cursor）
   const list = await (await fetch(`${base}/api/v1/background/tasks`, { headers: auth() })).json() as { tasks: Array<{ task_id: string; revision: number; status: string; note_preview: string | null; payload_json?: unknown; note?: unknown }>; next_cursor: string | null };
   const row = list.tasks.find((t) => t.task_id === t1.task_id)!;
-  assert.equal(row.revision, t1.revision + 1, '修改递增 revision');
+  assert.equal(row.revision, t1.revision, '代改不产生新修订');
   assert.ok(typeof row.note_preview === 'string' && row.note_preview.length <= 81, '短预览');
   assert.equal('payload_json' in row, false, '不回 payload');
   assert.equal('note' in row, false, '列表不回全文——详情按需读');
   // 详情含全文
-  const detail = await (await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { headers: auth() })).json() as { task: { note: string } };
-  assert.equal(detail.task.note, '改后的note');
+  const detail = await (await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { headers: auth() })).json() as { task: { note: string; created_by: string; scheduled_at: string } };
+  assert.equal(detail.task.note, '提醒宿主用户读书');
+  assert.equal(detail.task.created_by, 'jiaming');
+  assert.equal(detail.task.scheduled_at, t1.scheduled_at);
   // A-03：DELETE 递增 revision（不只 enabled=0）
-  const del = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'DELETE', headers: auth({ Origin: base, 'If-Match': `"${t1.revision + 1}"`, 'Idempotency-Key': 'w-d2' }) });
+  const del = await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { method: 'DELETE', headers: auth({ Origin: base, 'If-Match': `"${t1.revision}"`, 'Idempotency-Key': 'w-d2' }) });
   assert.equal(del.status, 200);
   const after = await (await fetch(`${base}/api/v1/background/tasks/${t1.task_id}`, { headers: auth() })).json() as { task: { revision: number; status: string } };
-  assert.equal(after.task.revision, t1.revision + 2, '取消也递增 revision');
+  assert.equal(after.task.revision, t1.revision + 1, '取消也递增 revision');
   assert.equal(after.task.status, 'cancelled');
 });
 
@@ -133,4 +136,89 @@ test('BACKGROUND-13/14：到期提醒零模型投递为 system 消息；runs 可
   const stop = await (await fetch(`${base}/api/v1/background/runs/${run!.id}/stop`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 's2' }) })).json() as { state: string; stopping: boolean };
   assert.equal(stop.state, 'completed');
   assert.equal(stop.stopping, false, '已结束=如实（不拿按钮状态冒充）');
+});
+
+type StatusBody = {
+  revision: number
+  keepwarm: { enabled: boolean }
+  keepwarm_status: { scheduled: boolean; blocked_reason: string | null; sleep_window_active: boolean;
+    next_keepwarm_at?: string; next_keepwarm_basis?: string; resting: boolean; rest_decided_at: string | null }
+};
+
+test('T-A02：页面只给出调度器能兑现的预计时间——到点落在睡眠时段、休息中、开关关闭都不承诺唤醒', async (t) => {
+  const settings = new BackgroundSettingsService(host.db, host.config);
+  let revision = (await (await fetch(`${base}/api/v1/background/settings`, { headers: auth() })).json() as StatusBody).revision;
+  if ((host.db.prepare("SELECT value FROM runtime_settings WHERE key='background.settings'").get() as { value: string } | undefined)) {
+    host.db.prepare("DELETE FROM runtime_settings WHERE key='background.settings'").run();
+    host.db.prepare("UPDATE background_tasks SET enabled=0 WHERE kind='keepwarm'").run();
+  }
+  host.messages.ensureConversation('primary');
+  const stamp = new Date().toISOString();
+  host.db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('status-window','primary','ACTIVE',?,?)").run(stamp, stamp);
+  host.db.prepare("UPDATE conversations SET active_window_id='status-window' WHERE id='primary'").run();
+  host.db.prepare("INSERT INTO conversation_activity(conversation_id,activity_revision,last_real_activity_at,updated_at) VALUES ('primary',1,'2026-10-23T14:40:00+08:00',?)").run(stamp);
+  const read = async () => await (await fetch(`${base}/api/v1/background/settings`, { headers: auth() })).json() as StatusBody;
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-10-23T14:45:00+08:00') });
+  assert.equal((await read()).keepwarm_status.blocked_reason, 'KEEPWARM_DISABLED', '开关关闭时不给时间');
+  settings.applyUpdate({ expectedRevision: revision, patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 5 } });
+  revision += 1;
+  const day = await read();
+  assert.equal(day.keepwarm_status.blocked_reason, null);
+  assert.equal(day.keepwarm_status.scheduled, true);
+  assert.equal(day.keepwarm_status.next_keepwarm_at, '2026-10-23T07:30:00.000Z', '白天照常给出 L+50 分钟');
+  assert.equal(day.keepwarm_status.next_keepwarm_basis, 'real_message');
+
+  // 22:40 的最后一条消息把目标推到 23:30：那一刻在睡眠时段里，不能显示成可执行的唤醒。
+  t.mock.timers.setTime(Date.parse('2026-10-23T22:45:00+08:00'));
+  host.db.prepare("UPDATE conversation_activity SET last_real_activity_at='2026-10-23T22:40:00+08:00' WHERE conversation_id='primary'").run();
+  const ahead = (await read()).keepwarm_status;
+  assert.deepEqual({ scheduled: ahead.scheduled, reason: ahead.blocked_reason, active: ahead.sleep_window_active, next: ahead.next_keepwarm_at },
+    { scheduled: false, reason: 'KEEPWARM_SLEEP_WINDOW', active: false, next: undefined });
+  t.mock.timers.setTime(Date.parse('2026-10-23T23:30:00+08:00'));
+  assert.equal((await read()).keepwarm_status.sleep_window_active, true, '到点时确实在静默期内');
+
+  // 休息中优先于一切时间；恢复后按原锚点重算，不另造一次补偿。
+  t.mock.timers.setTime(Date.parse('2026-10-23T21:00:00+08:00'));
+  host.db.prepare("UPDATE conversation_activity SET last_real_activity_at='2026-10-23T20:55:00+08:00' WHERE conversation_id='primary'").run();
+  const resumed = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-before-rest' }) })).json();
+  assert.deepEqual(resumed, { resting: false, changed: false, duplicate: false }, '没有在休息时恢复是空操作');
+  host.db.prepare("UPDATE conversation_activity SET resting=1, rest_decided_at='2026-10-23T21:00:00+08:00', rest_source='owner_message', rest_recovery_mode='next_user_message', rest_morning_date=NULL WHERE conversation_id='primary'").run();
+  const resting = (await read()).keepwarm_status;
+  assert.equal(resting.resting, true);
+  assert.equal(resting.rest_decided_at, '2026-10-23T21:00:00+08:00');
+  assert.equal(resting.blocked_reason, 'KEEPWARM_RESTING_WAIT_USER');
+  assert.equal(resting.scheduled, false);
+  assert.equal(resting.next_keepwarm_at, undefined);
+  // 正常夜休（morning_0800）按 v2.1 暂停普通心跳，并在 morning_wake 预告次晨 08:00 有条件兜底。
+  host.db.prepare("UPDATE conversation_activity SET rest_recovery_mode='morning_0800', rest_morning_date='2026-10-24' WHERE conversation_id='primary'").run();
+  const nightRest = (await read()).keepwarm_status as StatusBody['keepwarm_status'] & { morning_wake?: { scheduled: boolean; target_at?: string } };
+  assert.equal(nightRest.resting, true);
+  assert.equal(nightRest.blocked_reason, 'KEEPWARM_RESTING');
+  assert.equal(nightRest.scheduled, false);
+  assert.equal(nightRest.next_keepwarm_at, undefined);
+  assert.equal(nightRest.morning_wake?.scheduled, true);
+  assert.equal(nightRest.morning_wake?.target_at, '2026-10-24T00:00:00.000Z');
+  const first = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-op' }) })).json();
+  assert.deepEqual(first, { resting: false, changed: true, duplicate: false });
+  const replay = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-op' }) })).json();
+  assert.deepEqual(replay, { resting: false, changed: true, duplicate: true }, '同一操作重放首次结果');
+  const again = await (await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-again' }) })).json();
+  assert.deepEqual(again, { resting: false, changed: false, duplicate: false });
+  const after = await read();
+  assert.equal(after.keepwarm_status.resting, false);
+  assert.equal(after.keepwarm_status.scheduled, true);
+  assert.equal(after.keepwarm_status.next_keepwarm_at, '2026-10-23T13:45:00.000Z', '锚点未被界面操作改动');
+  assert.equal(after.keepwarm.enabled, true, '总开关保持原样');
+  assert.equal((await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base }) })).status, 400, '缺少操作键被拒');
+
+  // 开关原本关闭时，恢复休息不会替她打开。
+  settings.applyUpdate({ expectedRevision: after.revision, patch: { keepwarm_enabled: false } });
+  host.db.prepare("UPDATE conversation_activity SET resting=1 WHERE conversation_id='primary'").run();
+  assert.equal((await read()).keepwarm_status.blocked_reason, 'KEEPWARM_DISABLED', '开关关闭先于休息说明');
+  await fetch(`${base}/api/v1/background/heartbeat/resume`, { method: 'POST', headers: auth({ Origin: base, 'Idempotency-Key': 'resume-off-switch' }) });
+  const closed = await read();
+  assert.equal(closed.keepwarm.enabled, false);
+  assert.equal(closed.keepwarm_status.resting, false);
+  assert.equal(closed.keepwarm_status.blocked_reason, 'KEEPWARM_DISABLED');
+  assert.equal((host.db.prepare("SELECT COUNT(*) n FROM messages WHERE client_message_id IS NULL AND speaker='owner'").get() as { n: number }).n, 0, '恢复不伪造聊天');
 });

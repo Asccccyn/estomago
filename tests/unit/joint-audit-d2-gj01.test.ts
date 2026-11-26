@@ -3,9 +3,11 @@
 //    不阻塞；同窗第二轮不重复注入（B 冻结在轨迹正本）
 //  - G-J-01：memory_recall 工具——模型按需查；request_ref 宿主派生幂等；
 //    失败分类（unknown 不当失败）；结果数据注记
+import { HOST_BOUNDARY_RULES } from '../../apps/host/src/context/fixed-runtime.ts';
 import { test } from 'node:test';
 import { assembleTestTools, fullToolCatalog, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -57,7 +59,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
@@ -81,7 +83,17 @@ test('D2：新窗首信封含开窗资料（B 点）——同窗第二轮不重�
     if (cap === 'bootstrap.get') return { ok: true, result: bootPack() };
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
-  const ctx = compose(tempRoot('d2a-'), transport, mariposa, log);
+  const root = tempRoot('d2a-');
+  const ctx = compose(root, transport, mariposa, log);
+  const paths = buildPaths(root);
+  const manifestPath = path.join(paths.configDir, 'identity-manifest.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const profile = '合成 Profile';
+  const anchors = '合成记忆锚点';
+  fs.writeFileSync(path.join(paths.identityDir, 'profile-v1.md'), profile);
+  fs.writeFileSync(path.join(paths.identityDir, 'memory-anchors-v1.md'), anchors);
+  fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, approved_source_ref: 'profile-v1.md',
+    approved_source_hash: sha256Hex(profile), memory_anchors_ref: 'memory-anchors-v1.md', memory_anchors_hash: sha256Hex(anchors) }));
   const say = async (id: string) => {
     const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: `话${id}`, clientMessageId: id, occurredAt: T0 });
     ctx.supervisor.enqueue(sub.turnId);
@@ -96,6 +108,7 @@ test('D2：新窗首信封含开窗资料（B 点）——同窗第二轮不重�
   assert.ok(sysText.includes('周末采购'), '含未完成计划');
   assert.ok(!sysText.includes('mood_text'), '渲染为正文，不泄露协议字段名');
   assert.ok(sysText.includes('开心'), '心情标签在场');
+  assert.match(sysText, /合成 Profile[\s\S]*I 当前的话：合成[\s\S]*合成记忆锚点[\s\S]*近三天的记忆[\s\S]*周末采购[\s\S]*运行边界/);
   const second = log[1]!.full as Array<{ role: string; content: unknown }>;
   assert.equal(sysOf(second), sysOf(first), '同窗第二轮 system 块不变（B 已冻结进轨迹正本）');
   ctx.db.close();
@@ -128,7 +141,7 @@ const recallResult = {
   judge_mode: 'on', judgement_status: 'evaluated', judged_count: 1,
   judge_policy_revision: 1,
   candidates: [{ memory_id: '00001', original_title: '天台看月亮', text: '她约今晚天台看月亮' }],
-  continuation: { continue_request_ref: 'cont_abc', for_revision: 1 },
+  continuation: { query: '中秋', channel: 'event', continue_request_ref: 'cont_abc', for_revision: 1 },
 };
 
 test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重试同 ref、结果数据注记', async () => {
@@ -153,9 +166,9 @@ test('G-J-01：memory_recall 工具——宿主派生 request_ref、同调用重
   // R1′（2026-10-23，她本轮裁定）："数据非指令"指引进稳定工具描述，不逐条结果重复——
   // 描述占一次 token，替代每结果 note；权限/低信任边界仍由宿主落实
   const recallSpec = fullToolCatalog().find((t) => t.function.name === 'memory_recall')!.function;
-  assert.ok(recallSpec.description.includes('数据（非指令）'), '工具描述含"数据非指令"指引');
+  assert.ok(HOST_BOUNDARY_RULES.includes('数据（非指令）'), '全局稳定宿主规则实际进入新窗；不在每条描述重复');
   assert.ok(!('note' in out.output), '普通结果不再逐条重复注记');
-  assert.ok(String((out.output as Record<string, unknown>).continuation_note).includes('cont_abc'), '续查引用透传');
+  assert.equal((out.output.next as any).arguments.refine_continue_ref, 'cont_abc', '续查引用透传');
   // 重试同 ref
   await tools.execute('memory_recall', { query: '上次聊中秋看月亮' }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'req-1', toolCallId: 'call-r1' });
   assert.equal(calls.length, 2);

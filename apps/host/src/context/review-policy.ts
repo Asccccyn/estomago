@@ -108,7 +108,7 @@ export type RotationReview = {
 
 export type SideEffectLedgerEntry = {
   reviewId: string | null;
-  kind: 'hold' | 'source_bind' | 'review_complete';
+  kind: 'hold' | 'source_bind' | 'review_complete' | 'i_write'; // R3：对齐 effect 账本实际 kind
   state: 'pending' | 'running' | 'unknown' | 'failed_unresolved' | 'committed' | 'cancelled' | 'failed_resolved';
   verified: boolean;
   memoryId: string | null;

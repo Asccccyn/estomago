@@ -55,14 +55,30 @@ export class VoiceService {
     }
     const status = this.status();
     if (!status.available) throw new MediaError(status.reason!.toUpperCase(), 503, '语音转写暂不可用，请检查语音服务配置');
-    const audio = this.media.readContent(assetId);
-    const format = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a' }[audio.mime];
-    if (!format) throw new MediaError('VOICE_FORMAT_UNSUPPORTED', 422, '语音格式不支持');
+    // 宿主用户 2026-11-08 裁定（语音走 M 正本）：字节改异步回源（readContentResolvingMaster，
+    // 本地缓存缺失时从 M 取回）。取字节移到**认领之后**——先落 processing 行保住
+    // 单飞语义（并发的第二请求立即 UNCONFIRMED，不会因回源耗时双开转写），格式
+    // 不支持按原语义把该行落失败态（可换键重试）。
     const now = new Date().toISOString();
     this.db.prepare(`INSERT INTO voice_transcripts(asset_id,conversation_id,operation_key,state,content_sha256,created_at,updated_at)
       VALUES (?,?,?,'processing',?,?,?) ON CONFLICT(asset_id) DO UPDATE SET operation_key=excluded.operation_key,state='processing',error_code=NULL,updated_at=excluded.updated_at`)
       .run(assetId, conversationId, operationKey, asset.content_sha256, now, now);
     try {
+    // R3（复审 2026-11-08）：字节回源失败发生在 ASR 调用**之前**——不存在真实结果
+    // 未知，收口为可换键重试的 failed（原实现直接抛出，行卡死 processing，M 恢复后
+    // 仍被单飞门拒绝，ASR 零调用）。
+    let audio: { bytes: Buffer; mime: string };
+    try {
+      audio = await this.media.readContentResolvingMaster(assetId);
+    } catch (err) {
+      this.db.prepare("UPDATE voice_transcripts SET state='failed', error_code='VOICE_MASTER_UNREACHABLE', updated_at=? WHERE asset_id=? AND state='processing'").run(new Date().toISOString(), assetId);
+      throw new MediaError('VOICE_MASTER_UNREACHABLE', 503, `语音字节回源失败（M 正本暂不可读）：${String((err as Error).message).slice(0, 80)}——稍后可重试`);
+    }
+    const format = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a' }[audio.mime];
+    if (!format) {
+      this.db.prepare("UPDATE voice_transcripts SET state='failed', error_code='VOICE_FORMAT_UNSUPPORTED', updated_at=? WHERE asset_id=? AND state='processing'").run(new Date().toISOString(), assetId);
+      throw new MediaError('VOICE_FORMAT_UNSUPPORTED', 422, '语音格式不支持');
+    }
       const c = this.config.integrations.siren;
       const adapter = new SirenAdapter(c.base_url, process.env[c.credential_ref!]!, this.transport);
       const result = await adapter.transcribe(audio.bytes, { format, mimeType: audio.mime, conversationId });
@@ -71,6 +87,11 @@ export class VoiceService {
         .run(result.text, result.language, result.durationMs, new Date().toISOString(), assetId);
       return this.dto(this.db.prepare('SELECT * FROM voice_transcripts WHERE asset_id=?').get(assetId) as TranscriptRow, false);
     } catch (error) {
+      // RR1（复审 2026-11-09）：错误分类只对**已派发 ASR** 的结果负责。预派发失败
+      // （回源不可达/格式不支持）在上面各自的处理点已把行落成可重试的 failed 并抛
+      // MediaError——此处再按"远端结果未知"改写会把它们覆盖成 unknown（单飞门永久
+      // 拒绝重试、ASR 零调用）。MediaError 直通，保留各自已写入的终态。
+      if (error instanceof MediaError) throw error;
       const known = error instanceof SirenTranscriptionError;
       const code = known ? error.code : 'SIREN_OUTCOME_UNKNOWN';
       this.db.prepare('UPDATE voice_transcripts SET state=?,error_code=?,updated_at=? WHERE asset_id=?')

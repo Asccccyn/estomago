@@ -53,7 +53,7 @@ function compose(root: string, transport: OrTransport, openrouterExtra: Record<s
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const alerts = new SystemAlertService(db, events);
   const media = new MediaService(db, paths.mediaDir, config);
   const trajectory = new WindowTrajectoryService(db);
@@ -207,7 +207,7 @@ test('MEDIA-08/门：语音无转写→不空输入唤起模型（MEDIA_TRANSCRI
   const p1 = projectRevisionBlocks('hi', [{ asset_id: 'a', presentation: 'voice', caption: null, derived_text: null, derived_source: null }]);
   assert.ok((p1.blocks[1] as { text: string }).text.includes('无转写'));
   const p2 = projectRevisionBlocks('hi', [{ asset_id: 'a', presentation: 'voice', caption: null, derived_text: '我说的话', derived_source: 'siren:transcribe' }]);
-  assert.ok((p2.blocks[1] as { text: string }).text.includes('语音消息转写') && (p2.blocks[1] as { text: string }).text.includes('siren:transcribe'));
+  assert.ok((p2.blocks[1] as { text: string }).text.includes('[语音转写|siren:transcribe|非亲笔]'), '转写短标记含来源与非亲笔（B4）');
 });
 
 test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息）；media_import 错误码如实（不冒充成功）', async () => {
@@ -216,10 +216,14 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   const ctx = compose(root, transport);
   const img = await ctx.media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-tool', createdBy: 'jiaming', origin: 'upload' });
   const ctx1 = ctx.toolCtx();
-  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
-  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', content: '给你看' }, ctx1);
+  const r1 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', text: '给你看' }, ctx1);
+  const r2 = await ctx.tools.execute('chat_send_attachment', { asset_id: img.id, presentation: 'image', text: '给你看' }, ctx1);
   assert.equal(r1.ok, true);
   assert.equal(r2.ok, true);
+  // RR4 回归（林石见 2026-11-10 口径）：发送回执=精简文字（message_id/published），
+  // 不含图片块——"找图给引用、按需看图、发送回执不重复塞图"三入口分工不回归。
+  assert.deepEqual(Object.keys(r1.output as Record<string, unknown>).sort(), ['message_id', 'published']);
+  assert.equal(JSON.stringify(r1.output).includes('asset_image'), false, '回执不含图像块');
   const msgs = ctx.messages.listMessages({ conversationId: 'c1', afterSequence: 0, limit: 100 }).filter((m) => m.speaker === 'assistant');
   const sent = msgs.filter((m) => m.revision.attachments.length > 0);
   assert.equal(sent.length, 1, '同一工具调用重试只发一条');
@@ -232,6 +236,37 @@ test('MEDIA-07：chat_send_attachment 幂等（同调用重发=同一条消息�
   const r4 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/x.png' }, ctx1);
   assert.equal(r4.ok, false);
   assert.equal((r4.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
+});
+
+test('F05：media_import 操作键含 toolCallId——同请求两次调用各自资产；同调用重放复用（四仓审计 20261104）', async () => {
+  const root = tempRoot('wp3-f05-');
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map<string, string>(), body: Readable.from([enc.encode(okBody('ok'))]) });
+  const ctx = compose(root, transport);
+  // 两个不同 URL 的导入（字节不同才可比资产身份——saveBuffer 预置两份再按 operation 命中不适用；
+  // 这里直接测操作键区分：URL 合法性先过，下载走 MediaService.importFromUrl 的 guard 边界——
+  // 用公网不可达地址会产生 ASSET_IMPORT_FAILED（retryable），操作键层面仍可断言：
+  // 两次调用若共用操作键，第二次会命中第一次的失败缓存吗？——不会（失败不落 creation_operation_id）。
+  // 因此用字节可注入的 saveBuffer + importFromUrl 相邻层验证：直接调用 mediaImport 两次，
+  // 断言 operationId 不同（经由 media 层既有幂等键格式）。
+  const ctx1 = ctx.toolCtx();
+  const r1 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/a.png' }, { ...ctx1, toolCallId: 'call_a' });
+  const r2 = await ctx.tools.execute('media_import', { source_url: 'http://192.168.1.79:8877/b.png' }, { ...ctx1, toolCallId: 'call_b' });
+  // 私网拒绝（策略边界真实生效）——两次都拒绝且错误一致；键区分由下方直接验证
+  assert.equal((r1.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
+  assert.equal((r2.output as { error_code: string }).error_code, 'ASSET_SOURCE_NOT_ALLOWED');
+  // 直接构造 MediaToolsService 断言操作键（真实实现，stub 掉网络下载层）
+  const { MediaToolsService } = await import('../../apps/host/src/modules/media/service.ts');
+  const ops: string[] = [];
+  const stubMedia = {
+    importFromUrl: async (o: { operationId: string }) => { ops.push(o.operationId); return { id: 'asset_x', mime_type: 'image/png', byte_size: 1 }; },
+  };
+  const svc = new MediaToolsService({ db: ctx.db, media: stubMedia as never, tools: null } as never);
+  const c1 = await svc.mediaImport({ source_url: 'https://example.com/a.png' }, { ...ctx1, toolCallId: 'call_a' });
+  const c2 = await svc.mediaImport({ source_url: 'https://example.com/b.png' }, { ...ctx1, toolCallId: 'call_b' });
+  const c1b = await svc.mediaImport({ source_url: 'https://example.com/a.png' }, { ...ctx1, toolCallId: 'call_a' });
+  assert.equal(c1.ok && c2.ok && c1b.ok, true);
+  assert.notEqual(ops[0], ops[1], '不同 toolCallId=不同操作键（旧实现共用→第二张图返回第一张）');
+  assert.equal(ops[2], ops[0], '同调用重放复用同一键（幂等保持）');
 });
 
 test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估算与 textOnly 投影同源（R05）', async () => {
@@ -253,9 +288,9 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估�
   const loaded = ctx.selections.loadContents([{ message_id: vMsg.message.id, revision: 1, sequence: vMsg.message.sequence, speaker: 'owner', content_hash: vMsg.message.revision.content_hash, content_chars: 1 }]);
   assert.equal(loaded.loaded[0]!.attachments.length, 1);
   assert.equal(loaded.loaded[0]!.attachments[0]!.asset_id, voice.id);
-  // R05（2026-10-24）：估算与发送同源——历史图片按 textOnly 占位文本计费。
-  // 临界实例：5 张贴纸（实际投影=5 段占位文本）估算必须由真实文本预算决定，
-  // 旧链会加 5×1600=8000 token 把纯文本装得下的选集错误拒绝。
+  // 相册重构 P5（宿主用户 2026-11-08 裁定：开窗包按最新裁定，撤销 2026-10-18 textOnly）：
+  // 选集历史图片恢复真实视觉输入——估算与发送继续同源，图片块按保守视觉成本
+  // 1600/张计费（R05"同源、不另立模型"原则不变）。5 张贴纸=5 个视觉块+占位文本清零。
   for (let i = 0; i < 4; i++) {
     ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '', clientMessageId: `s3-${i}`, attachments: [{ asset_id: sticker.id, presentation: 'sticker' }] });
   }
@@ -264,29 +299,25 @@ test('MEDIA-06b：选集放行语音/贴纸；装载按修订携带附件；估�
     .flatMap((x) => (x.ok ? x.items : []));
   assert.equal(imgItems.length, 5, '五条贴纸历史可选');
   const est = ctx.selections.estimateTokens(imgItems, { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 });
-  assert.ok(est < 100, `5 张历史图片的 textOnly 估算按占位文本计（实际 ${est}；旧口径会 ≥8000）`);
+  assert.ok(est >= 5 * 1600 && est < 5 * 1600 + 100, `5 个视觉块按 1600/张计（实际 ${est}；应为 8000+文本余量）`);
   // 临界边界：容量上限放在文本预算与旧 1600/图口径之间——新口径必须 fits
   const pv = ctx.selections.preview({ conversationId: 'c1', sourceWindowId: 'csel-src-x', expectedWindowRevision: 0, items: imgItems.map((it) => ({ message_id: it.message_id })), cutoffSequence: 999, estimate: { systemChars: 0, tailInputChars: 0, charsPerToken: 2.5 }, capacityBoundTokens: est + 1599 });
   assert.equal((pv as { ok: boolean; result?: { fits: boolean; estimated_tokens: number } }).ok, true);
-  assert.equal((pv as { result: { fits: boolean; estimated_tokens: number } }).result.fits, true, '文本装得下就不能被图片虚拟成本拒绝（旧口径 5×1600=8000 必拒）');
+  assert.equal((pv as { result: { fits: boolean; estimated_tokens: number } }).result.fits, true, '上限高于当前估算（含真实视觉成本）即放行');
   assert.equal((pv as { result: { estimated_tokens: number } }).result.estimated_tokens, est);
 });
 
-test('MEDIA-07（她 2026-10-18 裁定：多选只带文本）——textOnly 投影：图片占位不产视觉块、caption/语音转写保留、非 textOnly 行为不变', () => {
+test('MEDIA-07（相册重构 P5，宿主用户 2026-11-08 裁定：撤销 textOnly）——图片一律真实视觉块、caption/语音转写保留', () => {
   const attachments = [
     { asset_id: 'a-img', presentation: 'image', caption: '海边的落日', derived_text: null, derived_source: null },
     { asset_id: 'a-voice', presentation: 'voice', caption: null, derived_text: '今天很开心', derived_source: 'siren:transcribe' },
   ];
-  // textOnly：图片→占位文本（无 asset_image、hasImage=false、不触发视觉门）；caption 与语音转写照常
-  const t = projectRevisionBlocks('正文一句', attachments, { textOnly: true });
-  assert.equal(t.hasImage, false, 'textOnly 不得产视觉块');
-  assert.ok(t.blocks.every((b) => b.type === 'text'), 'textOnly 全部为文本块');
-  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('[图片消息')), '图片有如实占位');
-  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('[附件说明] 海边的落日')), 'caption 随文本保留');
-  assert.ok(t.blocks.some((b) => b.type === 'text' && b.text.includes('今天很开心')), '语音转写照常携带');
-  assert.ok(!t.blocks.some((b) => b.type === 'asset_image'), '无视觉引用块');
-  // 非 textOnly（默认）：原行为不变——图片仍是视觉块
+  // 撤销 2026-10-18 textOnly：图片不再有占位文本分支，恒产 asset_image 视觉块
+  //（发送边界物化、视觉门照常；携带上限由装配层合并规划——context/carry-images.ts）
   const d = projectRevisionBlocks('正文一句', attachments);
   assert.equal(d.hasImage, true);
-  assert.ok(d.blocks.some((b) => b.type === 'asset_image' && b.asset_id === 'a-img'));
+  assert.ok(d.blocks.some((b) => b.type === 'asset_image' && b.asset_id === 'a-img'), '图片=真实视觉引用块');
+  assert.ok(!d.blocks.some((b) => b.type === 'text' && b.text.includes('[图片消息')), '无占位文本残留');
+  assert.ok(d.blocks.some((b) => b.type === 'text' && b.text.includes('[附件说明] 海边的落日')), 'caption 随文本保留');
+  assert.ok(d.blocks.some((b) => b.type === 'text' && b.text.includes('今天很开心')), '语音转写照常携带');
 });

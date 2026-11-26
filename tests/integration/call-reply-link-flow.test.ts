@@ -56,9 +56,12 @@ for (const scenario of ['completed', 'interrupted', 'late-reply', 'no-reply'] as
       const body = 'data: ' + JSON.stringify({ id: 'a04', choices: [{ delta: { content: '我在呢，慢慢说。\n\n' } }] }) + '\n\n' +
         'data: ' + JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 4 } }) + '\n\ndata: [DONE]\n\n';
       if (interrupted) {
+        // 她 2026-11-15 裁定：客户端提前断开不再打断已派发的生成——首个 delta 后延迟
+        // 送完全量（客户端已走，服务侧照常收口），不再挂流等 abort
         return new Response(new ReadableStream({ start(controller) {
-          controller.enqueue(new TextEncoder().encode(body.split('\n\n')[0] + '\n\n'));
-          init?.signal?.addEventListener('abort', () => controller.close(), { once: true });
+          const enc2 = new TextEncoder();
+          controller.enqueue(enc2.encode(body.split('\n\n')[0] + '\n\n'));
+          setTimeout(() => { controller.enqueue(enc2.encode(body.slice(body.split('\n\n')[0].length + 2))); controller.close(); }, 30);
         } }), { headers: { 'content-type': 'text/event-stream' } });
       }
       return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
@@ -105,6 +108,7 @@ for (const scenario of ['completed', 'interrupted', 'late-reply', 'no-reply'] as
     });
     assert.ok(stream.includes(interrupted ? '"type":"delta"' : '"type":"done"'));
     if (interrupted) {
+      // 她 2026-11-15 裁定：客户端断开只收口语音接纳记录（cancelled），est 回合不再被打断
       const deadline = Date.now() + 3000;
       while (Date.now() < deadline && (host.db.prepare("SELECT state FROM voice_stream_turns WHERE call_id='a04-call'").get() as { state: string } | undefined)?.state !== 'cancelled') {
         await new Promise(r => setTimeout(r, 10));
@@ -112,7 +116,7 @@ for (const scenario of ['completed', 'interrupted', 'late-reply', 'no-reply'] as
       assert.equal((host.db.prepare("SELECT state FROM voice_stream_turns WHERE call_id='a04-call'").get() as { state: string }).state, 'cancelled');
     }
     await host.supervisor.waitIdle();
-    assert.ok(host.db.prepare("SELECT 1 FROM messages WHERE speaker='assistant'").get(), '取消前的完整段落已正式发布');
+    assert.ok(host.db.prepare("SELECT 1 FROM messages WHERE speaker='assistant'").get(), '断开不打断生成——回复完整生成并正式发布');
     assert.equal(calls.modelRequests, 1, '一轮=一次模型请求');
 
     // B3-D：挂断命令=est 收口 + 尽力 Siren 终止控制 + 关联 wake

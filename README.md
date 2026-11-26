@@ -1,5 +1,293 @@
 # estómago
 
+当前生产基线（太平洋时间 2026-11-23 04:04 验收）。Host 和 Content 运行 `joint-20261123-e3f514b7f592`，源码 `e3f514b`，聊天库 v90，内容库 v9。Mariposa 运行 `joint-20261123-522dc24ac57e`，正式库 v43。
+
+- 本次上线 Plan 自动建计划并返回正式 ID、四款 Claude SDK 型号原生图片，以及此前工作树的心跳、通话工具、里程碑、相册与召回交付修复。est 前端重建与发布包逐字一致，两仓能力合同逐字一致。
+- 第一次停机复制件的只读校验失败，旧服务立即恢复。修正隔离副本校验后重试，五库备份均通过校验。Host 健康、认证首页与聊天页和资源、Content 认证读取、Mariposa 健康与前端资源均通过。切换前后活动窗、完整轨迹、已冻结工具定义、配置及消息、模型请求、浮现和后台派发计数一致。切换备份在 `~/Backups/est-mariposa-joint-20261123-040443`。
+
+先前生产基线（太平洋时间 2026-11-22 01:20 验收）。Host 和 Content 均运行 `joint-20261122-35b009354a43`，源码 `35b0093`，聊天库 v89，内容库 v9。配套 Mariposa 运行 `joint-20261122-6c1b10de081b`，源码 `6c1b10d`，正式库 schema v43。
+
+- 已上线四项 diff 审计修复，以及心跳首轮说话与抽盲盒的选择、聊天系统灰字、朋友圈卡面和动作明细、同条记忆只显示最新确认结果。Mariposa 同批保留原文列表的实时频道热修。
+- 已核对三个进程及启动目标。Host live/ready、Content 认证读取、Mariposa health/首页及两套前端的 JS 和 CSS 均通过。Mariposa Qwen 就绪，回填 0 个事件、0 条原话。切换前五个数据库通过备份校验，目录 `~/Backups/est-mariposa-joint-20261122-011907`。活动窗口、冻结工具表、轨迹及消息、模型请求和后台派发数量与备份一致。
+
+- **待办（2026-11-26 核对，心跳 2.1 审计完成、远端 `unified-main-20261102` 与 `main` 均已合入并脱敏同步，代码 HEAD `52897f0`，心跳 2.1 终版 `62160e1` / `1327fb2`，生产仍为 `e3f514b`）**：
+  1. **待切生产**：下面标“本地验证，未上线”的各条均尚未部署，含 `2dfa730`–`fff9917`（朋友圈映射、留言视图、相册直传、图片像素预算、聊天主动抽牌、暂存上传、单张聊天照片同键重试）与心跳 2.1 整批（`b758de5` / `668a8a9` / `62160e1`，Host schema `v90 → v93`，含重建前端 `apps/web/dist/`），以及并行提交 `36adc80`（`wishstar_read what=shared`）与 `52897f0`（冷启动同步 ACTIVE 窗工具集到当前目录）。切生产需要明确授权；本批涉及 Content 朋友圈投影与 Host schema/前端更新，上线须**先切 Content 再切 Host**（Mariposa 无本批配套业务提交）。
+  2. **上线后实测**：在手机上试相册上传（原故障没能在桌面内核复现）；看约 1000 token 的图片识别效果，不够就调大 `apps/host/src/media/model-view.ts` 里的 `MODEL_IMAGE_MAX_PIXELS`；确认选了没发的附件不再出现在 Mariposa；核实心跳 2.1 在线上真实 Sol 凭据下的休息分类路由（动态跟随生效浮现 Sol 型号）与 `rest_intent_sol` 用量观测。
+  3. **待裁定**：① 原审计 #10：要不要给 Mariposa 补一个带引用检查的安全回收/删除接口（两附件第一张落正、第二张失败时正式消息为零但 M 留对象，不能由 E 按共享哈希直接删）；② 心跳 2.1 两项默认口径：一般 `sleep` 的 `18:00` 傍晚默认分界（2.1 仅明文裁定凌晨 `02:00`），以及心跳手动关期间是否连带停止休息意图 Sol 分类调用。
+  4. **待裁定（审计遗留）**：朋友圈连续五次投递失败后，是否允许按原事件重排；到期目标在候选补足后，是否给一次有界重试。
+  5. **审计未覆盖**：拆星仪式各阶段、其他订正类别、通话动作等写分支仍未映射到朋友圈，要按实际回执逐项判定。
+  6. **远端同步（已推且已合并 `main`）**：2026-11-25/26 已通过 `git anon push origin` 将截至 `52897f0`（含本次基线更新）脱敏快进至 `origin/unified-main-20261102`，并将 `unified-main-20261102` 合并入 `main` 后脱敏快进至 `origin/main`（原仓零重写；`git status` 显示 ahead/behind 为 `git-anon` 本地原哈希与远端脱敏哈希分离所致，后续推送继续走 `git anon push origin`）。
+  7. **不要动的东西**：`README.md` 里有乔乔本人两行未提交改动；Mariposa 有五个未跟踪的备份脚本；仓库里有一份 2026-11-02 的他人 stash（`preserve daytime subset before unify`）。
+- 2026-11-26（用户授权远端脱敏同步并合入 `main`）· 沿既有 `git-anon` 导出将 `unified-main-20261102`（截至 `52897f0` 及本条基线更新）脱敏快进推送至 `origin/unified-main-20261102`，并按最新内容将 `unified-main-20261102` 合并入 `main`（覆盖旧 `f01e9a33` 的 3 份过时测试/夹具冲突）后脱敏快进推送至 `origin/main`；一次性副本重写后全量扫描通过并已销毁，原仓全程零重写，未切生产。
+- 2026-11-23（太平洋时间 20:37，生产数据操作，乔乔授权）· 删除三份“选了没发”的上传：estómago 侧经 Host 正式删除接口标为 missing；Mariposa 侧在服务运行中用一个事务删除三条 `media_objects` 记录、写入三条 `media.deleted` 审计并删除三个对象文件。备份在 `~/Backups/orphan-uploads-20261123/`。事后 Mariposa 206 条记录对应 206 个文件，完整性检查通过，Host live 与 Mariposa health 均为 200。线上版本未变。
+- 2026-11-25（本地验证，**审计完成**，未上线）· `62160e1`（整批 `b758de5` → `668a8a9` → `62160e1`，Host schema `v93`）心跳 2.1 审计收口与最新缓存裁定：Sol 休息分类在发起前建立稳定本地请求身份，连接中断与超时同样落 `usage_observations` 未知观测（零重发、不存原文）；`satisfied_by_request` 缓存顺延改为逐笔证明同型号／同传输／受保护主聊天前缀规模与显式 1h 覆盖（证据不足时沿原 2.1 不顺延）；同步加固旧排队消息编辑隔离与晚间当条休息编辑撤销。类型检查、`git diff --check`、全量 274 文件（含专项 19/19 与补跑 3/3，合计 1741 项）通过；未切生产。
+- 2026-11-25（本地验证，未上线）· `668a8a9` 修复 `c0422cd` 独立复审全部 7 项问题（Host schema v93）：提前恢复豁免限定于已进入的夜间静默期且新正常夜休原子恢复当日 08:00；手动关→开事务抑制停用期已过期机会不补发且不伪造末句；目标计算与领取共用 `anchorKey` 解决穿插安静自主预约后的卡死；次日 08:00 晨间机会始终从第 1 次起算；补齐消息修订失效与 `keepwarm_control_revision` 独立控制栅栏；长消息保留尾句、扩充短口语入口、缺 Sol 保守同 503 并严审 `rest+null`；休息 Sol 动态跟随生效浮现型号并将 token 观测记入 `usage_observations`（`purpose='rest_intent_sol'`，费用未知）。前后端类型检查、`git diff --check`、全量 274 个测试文件（1738 项，0 失败 0 跳过）通过；未切生产，18:00 傍晚分界默认待确认。
+- 2026-11-25（本地验证，未上线）· `b758de5` 按执行稿 v2.1 统一心跳规则（Host schema v92）：分离用户出现、真实发言 50 分钟锚点与连续三次无人出现计数；落地 02:00 正常夜休／通宵补觉分界、夜间 4 小时精准提前恢复与次晨 08:00 条件兜底；接入与记忆浮现解耦的 Sol 休息意图判定及版本栅栏；前端收口为单开关与服务端同源状态；同步完成收尾复审 R1–R6（含 413 `payload_too_large` 解锁改稿）及 T1（`?staged=1` 正式资产保护）。类型检查、前端构建、全量 274 个测试文件（1730 项）通过；#10 多附件部分落正回收仍待 E/M 跨仓裁定，未切生产。
+- 2026-11-24（本地验证，未上线）· `fff9917` 聊天附件的上传回执丢失时沿原键核对，同次发送重试共用一次正本上传，明确未发出后允许更换附件。定向 7 文件、83 项通过。现场与隔离证据见 [验收报告](docs/reports/HEARTBEAT_MORNING_AND_AUDIT_FIX_20261124/RESULT.md#单张聊天照片重复上传复查)。
+- 2026-11-24（本地验证，未上线）· `da165dd` 完成上海 08:00 晨间唤醒顺延、抽卡常用入口和揭牌后对话记录，并修复存档与相册回执。全量 273 个测试文件、1719 项通过。新投影先切 Content 再切 Host。多附件部分落正后的安全回收待跨仓裁定。详见 [验收报告](docs/reports/HEARTBEAT_MORNING_AND_AUDIT_FIX_20261124/RESULT.md)。
+- 2026-11-23（本地验证，未上线）· `9403224` 聊天输入框和帖子草稿里选中的附件改为暂存：只存 estómago，发送或保存时先落正 Mariposa 再发布，Mariposa 拿不下就不发布；移除即删，超过一天无引用的暂存由后台清理。未发送的附件不再进入 Mariposa，相册页上传不变。类型检查与全量 272 个测试文件通过；真实浏览器核对选图、移除、发送三步，Mariposa 只在发送后收到一份；审计包脚本无异常。
+- 2026-11-23（本地验证，未上线）· `86f442c` 聊天里可以主动抽牌：抽牌的普通回合以回合 ID 记为一个逻辑回合，与心跳共用当天固定牌组，一回合约最多一张；读取工具定义即返回剩余号码；夜间、休息和心跳开关只管自动唤醒，自主预约轮不能抽牌；聊天抽完只告知已抽完，下一次心跳才回 1；聊天抽到的牌有单独的朋友圈记录。本次四个包的核查与结果记录（含兼容结论表、验收对应、审计入口）在 `docs/reports/HEARTBEAT_KEEPWARM_FIX_20261123/`。Host schema v91。在新 HEAD 上全量 271 个文件、1692 项通过；上线须先切 Content 再切 Host。
+- 2026-11-23（本地验证，未上线）· `e31652f` 送给模型的图片有了像素预算：超过 75 万像素（约 1000 token）的位图在发送边界换成缩小视图，API 与 Claude SDK 两条接入、当前输入、历史和工具结果共用这一处；聊天、相册和存档里保存的原件不变，预算内的小图和 GIF 照旧原样发送。解码与缩放在带超时的独立子进程里完成，并先核对文件头声明的尺寸，生成不出视图时原样发送。实测 4032×3024、1.5 MB 的原图以 62 KB 的 1000×750 送达模型。类型检查、全量 270 个测试文件通过，审计包 38 组脚本无异常（切页旧脚本的已知超时除外）；真实识别效果尚未实测。
+
+- 2026-11-23（本地验证，未上线）· `3052753` 相册上传不再在浏览器里预先读取整个文件，选中的图片直接作为请求体发送；回执丢失后重选的文件由服务器按原操作键核对，请求长时间无回应时给出超时提示，上传途中点击遮罩不会关掉面板。类型检查、7 项单元测试、Chromium 与 WebKit 的真实浏览器相册流程及审计包 3 个浏览器脚本通过；原故障未在桌面内核复现，仍待手机实测。
+
+- 2026-11-23（本地验证，未上线）· `4cf1fde` 心跳唤醒事件改为并列的说话、抽卡或安静结束，并在本轮准备派发时带上当前时间；退役同日规则重复判断。乔乔本人明确晚安即进入休息状态（Host schema v91），心跳在领取、派发和发布前都受休息、夜间静默和总开关约束，被拦的正文不补发、不进朋友圈回复，也不成为下一轮协议；自主预约与普通聊天不受影响。页面只给出能兑现的预计时间和暂停原因，并可手动恢复。类型检查、前端构建、223 个单元与 42 个集成测试文件通过。
+- 2026-11-23（本地验证，未上线）· `8f118b1` `chat_send_text` 的工具说明改为与实际一致：预约唤醒和自由活动轮的正文不会自动发出，要用工具；普通聊天和心跳轮的回复由宿主自动发出，不要用工具重复同一句。参数和回执不变，旧窗口的冻结定义照常可用；工具目录与信封 golden 按既有脚本重建，差异只有这段说明及其定义 ID。全量 269 个测试文件通过。
+- 2026-11-23（本地验证，未上线）· `b20b41c` 预留留言列表拆成“待用”和“已使用”两个视图：归属只看交付账本，已交付的离开待用列表、仍可在已使用视图编辑和删除，投递未知单列为待确认且不会重新可抽；分页在过滤之后进行，计数与列表一致，旧留言无需回填。朋友圈的心跳先显示卡面和本轮真实发出的话，邀请、揭牌、选号、动作和结束状态收进折叠详情。全量 269 个测试文件通过。
+- 2026-11-23（本地验证，未上线）· `2dfa730` 心跳朋友圈补记回应开星请求、递星、接星、建立与订正记忆关系这五类已提交动作及其源引用；只经聊天工具发话并正常完成的无卡回合改记为只说了话。类型检查、全量 267 个测试文件和审计包 35 组复验脚本通过。
+
+- 2026-11-23（随 11 月 23 日发布上线）· `e3f514b` 四款可选 Claude SDK 模型通过现有模型目录接入原生图片，走 OpenRouter 时核对实际接收图片的型号。类型检查、四款离线图片回归与联合发布预演通过。
+
+- 2026-11-23（随 11 月 23 日发布上线）· `778695f` 记忆工具可保留 `plan` 分类并显示 Mariposa 同事务创建或关联的正式计划 ID，配套 M `7e4366f`。类型检查及 8 个定向测试文件通过。
+
+- 2026-11-22（随 11 月 23 日发布上线）· `1d69593` 修复心跳正式发言、耗尽邀请恢复、工具和媒体终态、来源冷却与撤回、锚点幂等、朋友圈写入映射、相册切换和上传恢复。锚点回执使用 Host v90。
+
+- 2026-11-22（随 11 月 23 日发布上线）· `59643c7` 通话中被拒绝的工具调用正常结束活动状态，旧语音工具记录可从同一调用已送达模型的回执恢复拒绝结果。类型检查及 6 个相关测试文件通过。
+
+- 2026-11-22（随 11 月 23 日发布上线）· `d6a6f50` 正常生成完毕的心跳直接回复在插话时仍先发布，回忆完成账本采用实际交付缺项，本轮回忆列表显示同一份获准原文邻句及署名。
+
+先前 estómago 生产基线（太平洋时间 2026-11-21 18:27）。Host 和 Content 均运行 `joint-20261121-d5b7dd071537`，聊天库从 v84 升至 v89，内容库为 v9。配套 Mariposa 制品为 `joint-20261121-13ab68ee63ac`。
+
+- 新窗注册 15 个常用工具和两个地图入口，包含自动唤醒、画图和聊天存档。已有窗口沿用其冻结工具定义。自动回忆以对话语气呈现，命中「我们的话」会带入所属事件正文和该记忆获准保存的原话。活动记录显示「我们的锚点」。此批也包含心跳、朋友圈和相册的联合审计修复。
+- Claude SDK 在已发送的回合出错后保留最近可验证的原生前缀。隔离回环验证了超时与工具执行后上游出错两条恢复路径，工具都只执行了一次。全量 266 个测试文件、1,611 项通过。
+- 切换前已备份五个数据库和启动配置。Host 和 Content 从新版本启动，Host 就绪、Content 读取、Mariposa 健康检查及前端资源校验已记录。活动窗口、冻结工具摘要及消息与模型请求数和备份一致。增加了一条记忆心跳任务，切换期间后台运行数增量为零。
+
+- 2026-11-21（已随 11 月 22 日发布上线）· `8d343b5` 心跳首轮并列提供说话和抽盲盒，聊天保留灰字系统邀请和实际消息，抽卡与动作过程在朋友圈展示，同条记忆仅显示最新确认的修订。（首轮邀请措辞和“邀请须逐条带出抽卡规则”的口径已由 `4cf1fde` 精简替代；朋友圈默认先显示卡面和真实聊天，过程收入详情，见 `b20b41c`。）
+
+- 2026-11-21（已随 11 月 22 日发布上线）· `4951bd6` 保留首条已确认的心跳邀请、分别记录记忆创建和修订，支持按当前窗口展示的用途搜索工具。配套 Mariposa `cae7e95` 恢复明确查聊天原文时经核准的上下文和缺项提示。
+
+先前生产基线（太平洋时间 2026-11-20 23:26）。Host 和 Content 已切到 `v12-20261120-0b3aaa7f960f-r2`，源码提交 `0b3aaa7f960f`，聊天库 v84，内容库 v9。
+
+- 已核实两个实际进程目录、Host live/ready、生产库迁移版本、冻结聊天窗工具定义的完整哈希及《char的星空》《char的声音》的正式回读。切换窗口内消息、回合、模型请求、后台派发、通话和内容写入计数均无增量。候选取完整 Git 归档，补齐 Host 启动所需的 fixtures 包后，三组隔离启动验收通过。
+- Mariposa 线上仍沿已记录的 `joint-hold-20261120-c2a646dc015c`，其 v1.2 源端改动提交 `23b5eccf5170`。扎西德勒 v1.2 只读接入提交 `791c79138f7c`。这两个外部源服务的生产授权和启用各沿其原发布流程。
+
+先前生产基线（太平洋时间 2026-11-20 08:42）。Host 运行 `joint-v80-20261120-1881310aaf67`，生产聊天库 v80。Content 继续运行 `full-mcp-20261120-9385da539353`，库版本 v7。配套 Mariposa 运行 `joint-hold-20261120-c2a646dc015c`。
+
+- Host 发布沿用 03:46 上线的原生 MCP、中文工具和前端制品，叠加经复审的联合修复（实现提交 `80b24d26f82b`）。当前发布由这两部分组成。新窗默认 `direct`，切换时活动窗沿用冻结的 `deferred`。D02 将自主轨迹与提交标记写在同一事务，旧版半写记录可经手动选集续接原输入。
+
+- 生产库 v79 → v80 清除了 2 个缺少提交后观察证据的旧时间值。其余工具副作用字段和 45 条来源绑定任务均与上线前一致，9 份冻结工具目录逐行相同。E Host、Content 和 M 均通过就绪或业务读取检查。验收期间消息、供应商请求和后台派发增量均为 0。
+
+- 2026-11-20 19:57（太平洋时间，生产数据补录）。通过 Host 正式 Content 接口给《char的星空》`crt_mwpvngi1aa7a0892`、《char的声音》`crt_mwpvngie99c6bb22`补建两条 HTML 作品展示关系，复用已有 Mariposa 媒体正本和 E 资产 ID。按资产 ID 回读各一条有效记录，作品文件和图标引用均已确认，live/ready 均为 200。此次沿用 Host v80、Content v7 的生产发布。
+
+先前生产基线（太平洋时间 2026-11-20 03:46）· Host 和 Content 均为 `full-mcp-20261120-9385da539353`。发布源取本次确认的完整工作树快照，沿已上线通话实现构建前端。Host schema v79，Content schema v7，Mariposa 沿 `pkg4-mcp-exit-25c6cd15568b`。
+
+先前生产基线（太平洋时间 2026-11-19 16:59）· E host `pkg4-system-guides-3661a851d849`（包 4 基础提交 `6c9aad7e8a9a`，SDK 选集引导 `4126fbbd3fbc`），M `pkg4-mcp-exit-25c6cd15568b`（代码 `d983ba2ad332`），Content `pkg2-0fb14ac`，E schema v77。
+
+- 2026-11-19（太平洋时间 17:26，容量试切已回退）。同一发布版本上试调上下文容量，随后恢复试切前配置。回退验收时 live/ready 均为 200，活动窗保留。
+
+- 2026-11-19（16:59，E 后续上线，`4126fbbd3fbc`）。`pkg4-system-guides-3661a851d849` 将选集引导恢复到 Claude SDK 系统提示，并在出站投影中去重旧引导。上线时 live/ready 均为 200，原活动窗保留，消息、模型请求和后台派发增量均为 0。 隔离复跑 6 个文件 72 项及 TypeScript 类型检查通过。
+
+- 2026-11-19（15:54 初次成对部署）。E 初始发布 `pkg4-window-map-1dc2e84a24f3`，对应包 4 基础提交 `6c9aad7e8a9a`。按 [开窗映射与工具地图裁定](docs/specs/ESTOMAGO_CHAT_EXEC_V1/IMPLEMENTATION_MAP.md)，新窗提供 12 项常驻、41 项按需工具和 2 项任务工具。部署时两端健康检查均为 HTTP 200，Mariposa 的千问加载就绪。现有活动窗和冻结工具目录保持原样。16:03 完成资料迁移，estómago 身份清单引用独立的 `profile-v1.md` 与 `memory-anchors-v1.md`，I 正本在 Mariposa，全文校验为 v11，五条的旧修订和关联均已核对。资料迁移无须重启或换窗。后续新窗按现行资料和常驻目录装载。
+
+- 2026-11-18（已上线，E 实现 `b55b655`）。同一助手回合用一个稳定气泡承载媒体、正文、思考和记忆入口；跨媒体追加的正文按已有修订顺序展示。摘要增量即时更新，思考和工具状态分别显示。模型出站回放核实 UI 排序信息与消息长 ID 均未进入聊天内容；手机浏览器核过晚到快照、展开状态、收藏、多选、复制和语音插入位置。59 项定向测试及前后端类型检查通过。17:11:05 空闲时单次重启 E，原聊天窗口保持，live/ready 200，实际提供的前端脚本与已验证制品一致。
+
+- 2026-11-18（已上线，E 实现 `a82b2e7`）。SDK 组装上下文时过滤自动生成的账号邮箱字段 `userEmail`。原生 SDK 合成回放核实，重建底层 CC 会话并沿用 est 聊天历史后，出站消息和新会话日志均无测试邮箱；直接续接过滤前的 CC 会话仍带旧值。11 项定向测试通过。16:39:53 空闲时单次重启 E，原 est 活动窗口保持不变，live/ready 均为 200，切换期间无新增消息、模型请求或后台派发。
+
+- 2026-11-18（已上线，E 实现 `e8973d8`）。前台聊天本轮已有正文且一批 `memory_hold` 全部保存成功时，SDK 可在后续空回复处正常结束；正常工具续轮仍会执行。移除思考摘要的简体中文要求，保留独立摘要通道。类型检查、5 个文件 53 项定向测试及原生 SDK 本机回环验证通过，含新正文、错误重试和同窗续接。16:20:29 仅重启 E 一次，live/ready 均为 200，切换期间无新增聊天、模型请求或后台派发。
+
+当前源码基线分支为 `unified-main-20261102`（不要改用较旧的默认 `main`）；Mariposa 配套分支为 `main`。**20261106 四仓审计线**（F06/F07 P1-P7、C03、C07-C09、O 补证）已随 G4 切换与 G5 回填于 2026-11-06/07 全部上线并按 G6 关闭条件逐项✓关闭（记录见下方 G4/G5 节）；其后复审修复（7ff0b59 RF01-03、9580e69 第三轮、e762ff2 R2-M04）、结构整改 R1-R4b、相册重构/整改与 PLAN_NOT_FOUND 契约修陆续合入。**此前生产 release**（2026-11-16 二次部署，她授权『123 可以』）：E host+content `pkg2-0fb14ac`（当前 HEAD，含 RR4 全链/包1 媒体增量/停止与缓存锚/审计返修/反例3 与 **包2 全部施工：批A/B/C、DBG-04、批D、批E 文档**；启动自动迁移至 schema **v74** v74 source_bind_jobs）+ M `album-rr4-f334fab`（**同日白名单热更新：estomago_builtin 47→49 项加 plan.complete/plan.cancel 立即生效；备份 scripts/allowlist-backup-20261116-070112.json**）。身份句正本已写：`longterm-milestones-v11`（追加『你是char。宿主用户是你的妻子，你是宿主用户的丈夫。』，manifest 原子更新 hash 核对一致，v10 留档）。S `unified-20261107-87ff1d7`；O `lifecycle-startup-20261107-621d710` 不变。后续同日三次授权热修部署至 pkg2fix2-5cfe676；Codex 只读审计返修批部署至 `pkg2audit-7d44852`；**BIND 生命周期批（她授权'重启吧'）2026-11-17 部署至 `pkg2life-ffa05ca`**（content 无改动未动；M 白名单热更 54→55 含 source.bindings.of_memory；schema 随启动升至 **v76**：v75 source_bind_jobs 加 pending_segments_json+credential_blocked、v76 加 judging——整表重建保数据）。部署核验：cwd=pkg2life、live 200、**ready 503（archive degraded）**——追因发现**上一版运行期归档死信**（空正文消息 text='' 被 M required 非空语义拒 SCHEMA_VIOLATION，其后续消息 blocked）——M 修复（`11d7ffa`）已随她授权的 M 重启上线（新 release `pkg2bind-11d7ffa`、白名单兼容、health 200）；死信批与行已一次性复位（批行删除+行解绑 pending——drain 无周期器、由启动/消息发布触发，复位行将在她下一条消息发布时组批收口，届时 ready 恢复 200）。**BIND（DeepSeek 判断层）已启用并完成首批真实绑定**：40 条昨日 hold 全部终态——bound 29 / skipped_existing 3（人工已绑不覆盖）/ no_match 7（判断无对应聊天）/ failed 1（记忆已删，如实终态）；启用过程暴露并修复批C 四个缺陷（M 白名单缺 source.binding.bind 热更 49→50；绑定会话误传 E id 改收据 source_conversation_id；failed 无重试路径改有界重试 attempts<4；多修订消息收据按当前修订精确匹配——均复放实证+防回归测试，提交 f8eb66b/fdb102b/5cfe676+M af15e94）。部署核验：host cwd=pkg2fix2-5cfe676、live/ready 200、重启均发生于授权时点。**部署状态**：未部署队列已清空——2026-11-16 两次部署将 RR4 全链、包1 媒体增量、停止与缓存锚、审计返修、反例3 与包2 全部施工（批A/B/C+DBG-04+批D+批E）上线。当前源码 HEAD 测试基线 **241 文件全绿**（unit+contract+integration 三组）。**包2 剩余**：仅 BIND 启用前置=她配 `source_binding.api_key_env` 凭据并 `enabled: true`（BIND-09 真实评估另行授权）；白名单热更新/身份句写入/部署重启已于本次授权执行完毕；回执见 `docs/reports/PACKAGE2_RECEIPT_20261116.md`，交接见 `docs/reports/HANDOFF_PACKAGE2_20261116.md`。部署后 GIF 新冻结工具定义待受控滚窗自然装载。二轮交接见 `docs/reports/ALBUM_HANDOFF_20261109_RR.md`。后续部署一律 `bash deploy/macos/make-release.sh HEAD <label>` 从当前 HEAD 建新检出，勿把 start.sh 切回更早 release（会把已上线主页清理挤掉）。生成契约和 golden 仍从既有脚本派生，不手改。以下条目记录各批当时状态，当前部署与限制以本节及对应批次条目为准。
+
+- 2026-11-18（包 4 本地阶段，历史记录）。早期实现与当时的隔离验证归档在 `docs/reports/PKG4_MCP_20261118/`。最新工具名单、装配合同及生产状态见本页 11 月 19 日条目。
+
+- 2026-11-18（召回复审四项修复，已成对部署）。E 实现 `9c2582e`，M 实现 `8ee5596`。复合请求的事件已在窗口时，原话的缺项状态可单独进入已确认模型请求。该包不重复事件，不产生记忆引用、已读范围或观察池边界。原仓 14 个定向文件共 78 项及 TypeScript 类型检查通过。复审包 8 组反例与对照均经真实 E 回合、隔离 M 和最终确认信封核实，110 项能力合同一致。太平洋时间 05:30:27 核实 E 运行 `recallreview-b7a5295`、M 运行 `recallreview-8889d97`。切换前在途回合为 0，切换后 E live/ready 与 M health 均为 HTTP 200。Qwen 就绪，启动回填 0 个事件、0 条存词。生产未写入测试数据，本次部署未发起付费模型调用。
+
+- 2026-11-18（包 3 召回和观察池修复，已成对部署）。E 实现 `070ec0b`、`8b9ea66`，发布 `recallfix-1e44ced`，配套 M 发布 `recallfix-9c53bb7`。太平洋时间 04:37:43 核实两个生产进程均运行目标 release。E live/ready 与 M health 均为 HTTP 200，E schema v77，Sol 持久模型覆盖为 `gpt-6.2-sol`。Qwen 就绪，启动回填 0 个事件、0 条存词。切换期间消息、模型请求、浮现作业与后台派发新增均为 0。业务反例已在隔离库验证，生产验收使用只读状态检查。
+
+- 2026-11-18（bootstrap-pages 断言对齐 + 包4 §6.2 姓名投影上线，`b0e90ff`，**已部署** `pkg4names-b0e90ff`——她授权部署，start.sh 已切向、kickstart 重启一次、live/ready 200 无 degraded、cwd 核验通过；含 `ba93204` 姓名投影与 `db114a4` 基线行）。bootstrap-pages 此前 6 个失败经查**非时区问题**（洛杉矶/上海两时区失败逐项一致）：包3 `6895224`（已上线）把部分交付的开窗包也写入 byWindow（`complete:false` 供 coverageFor 按实际交付计账，take 不放行、下次重建），旧断言仍检查「部分交付不入缓存」、源码注释也仍写「不进缓存」。对齐为消费语义断言（`take(key)===undefined`，恢复路径 `complete:true`）并修正过期注释；生产行为零改动。修后全量 **243/243** 全绿（此前 242/243）。
+
+- 2026-11-18（包4 §6.2 姓名投影统一，仅 E，本地实现 `ba93204`，**已随 `pkg4names-b0e90ff` 上线**）。char在历史材料里看到的宿主生成说话人标签统一为身份配置真实姓名（宿主用户/char）：自动浮现顶层 `speaker`（旧 jiaming/qiaosheng 枚举）、主动召回/续页候选卡、memory_read_full 深读 our_words/source、conversation_read 条目（旧 owner/assistant）、开窗 B 段 our_words 行首署名（旧「他/她」代词）五入口逐项改在 E 投影边界（toModel/装配）映射；M 冻结卡、底层消息 ID/修订/来源、锚点合同（本就用姓名）与 provider role/事件类型不动，第三方署名与未核实身份原样保留，旧冻结窗口已发送历史不回写。身份配置单一来源 `identity/speaker-labels.ts`（sol user/assistant_display_name）。隔离验收 `tests/unit/pkg4-speaker-name-projection.test.ts` 五入口全绿——逐项读最后已确认 provider_requests：同字回应场景（char先说、宿主用户逐字重复）新结果 `"speaker":"宿主用户"` 且已读句不重入记忆块；第三方对照 speaker 空/normalized_sender 原样、正文 user/assistant 字样逐字、信封 role 全合法。真实供应商调用 0。
+
+- 2026-11-18（Sol 观察池超限恢复，本地实现 `8b9ea66`，随包 3 待部署）。仅 E 构造 Sol 输入时，双方原话累计超过字节预算才记 `blocked / SURFACE_SOL_INPUT_TOO_LARGE`。聊天正本完整保留，从本轮目标消息的当前修订之后重新判断，超限段不自动补判。observe、超时、检索空结果及 M 容量拒绝都保留当前观察段。原仓 6 个定向文件共 50 项及类型检查通过，正式回合隔离回放覆盖单条超长、累计超限、连续短句、传输超时、宿主截止时间和 M 空结果。上一版生成的隔离库也已验证 E 与 M 超限记录可区分。生产仍为 E `solalign-69023a7`、M `solalign-a7fe3ad`，本批真实模型调用为 0。
+
+- 2026-11-18（包 3 召回修复，本地待成对部署）。E 实现 `070ec0b`，配套 M 实现 `97dca38`。自动浮现按实际送达的同版码点范围投影正文和邻句，部分覆盖保留未读原文及深读引用。首页及后续固定页透传显式重读，旧窗沿冻结坐标翻页。主动卡与对话条目保留内容版本和修订，复合请求保留事件并说明原文缺项，Sol 逐请求记录已知用量及未知次数。原仓 23 个定向测试文件、114 项通过，类型检查与三份既有 golden 通过。E→M 隔离回放核过最终信封，两仓 110 项生成合同一致。生产 release 仍为 E `solalign-69023a7`、M `solalign-a7fe3ad`。该批交付时观察池超限恢复尚待裁定，本批真实供应商请求为 0。
+
+- 2026-11-18（生产 Sol 设置热更新，E release 仍为 `solalign-69023a7`）。通过浮现设置的持久覆盖启用 `gpt-6.2-sol`，实际推理档位保持 `low`，12h 缓存配置保持。隔离付费对照每档 6 例，`low` 与 `medium` 均 6/6，输出分别为 1082/1368 tokens；本次选择 `low`。另经专用 JEV 验证原文交付和同版范围短回执。Sol 12 次、JEV 3 次，均为合成样本，SDK/OR 0 次，生产无测试回合、无重启。
+
+- 2026-11-18（包3 架构与同轮召回对齐，**已成对部署**，E 实现 `6895224`、运行 `solalign-69023a7`，M 实现 `eeead1b`、运行 `solalign-a7fe3ad`）。Sol 由正式目标回合领取，按最近明确 none 或成功浮现之后的双方原话判断，observe 延续；已验证身份只取相关原句。自动与主动 recall 可同轮，M 判精确覆盖，E 以实际请求和窗口轨迹确认范围并在出站合并，同一版本同一范围只送一次；主动回执保留引用、版本和游标。退役后台抢跑、子串覆盖、整窗来源粗排除和旧覆盖表的运行时读写。定向验证含 SDK 首轮主动查、OR/DeepSeek 出站、未派发与取消、开窗/深读/固定续页和关系/事件；TypeScript 与三份重新生成的快照通过。本次切换 E live/ready 与 M health 均为 200，Qwen 就绪，回填 0e/0w。切换期间新增主模型请求、自动浮现作业和后台派发均为 0；线上语义未主动触发。本次切换前的启动脚本已私有备份。
+
+- 2026-11-17（包3→包4 接缝·显式重读合同，**已随 `solalign-69023a7` 上线**，`reread` 随新工具快照生效）：memory_recall / memory_recall_next 增可选布尔参数 `reread`——仅当用户明确要求重看/逐字核对/修订前确认时置 true：本次照常返回正文、不改窗口已读状态；普通查询已读条目仍返回 already_in_window 短回执。无必填理由、无确认往返、不绕原文授权（深读/第二轮仍走既有合同）；工具描述同步已读回执语义。旧冻结窗不受影响（新参数随新窗工具目录生效）。recall 批次回归 17+4 全过。
+
+- 2026-11-17（包3 SOL_R31·Sol 合同 v3_r31 + 真实窗口共享覆盖短回执，**已部署** `solr31-88e1cb2`，配套 M `solr31-2752fea` 同批成对上线——她授权重启，2026-11-17 21:34–21:36 执行；M 生产迁移 650/650+481/481 全 Qwen、BGE 向量与权重清零，部署回执见 `docs/reports/SOL_RECALL_R31_20261116/DEPLOYMENT_STATUS.md`）：Sol 输出合同升级——plan 查询级 `need_kind/need/time_hint/speaker`（计划级退役，evidence 保留），validateSolDecision 增 route↔need_kind 跨字段校验；默认判断模板重写为 R3.1（三态/已知与新需要/已读增量/P1-P2/成对边界）；`planForMariposa` 逐查询映射（显示名→枚举）。**已读最小投影**：preparePhase 先取当前窗 `coveredDigest`（保留交付+开窗资料节选，window_trajectories 唯一事实源）进 Sol 动态输入与 M prepare `covered_context`（供 JEV already_in_context 与缓存身份）。**共享覆盖短回执**：memory_recall/next 候选正文已在本窗轨迹逐字出现→短 `already_in_window` 回执（保留 ref/版本/游标，分页语义不变；投影白名单放行）；装配去重增 `textSeenInWindow`（N04：主动 recall 先交 599 字→auto 不再重发同文全文）；read_full 保持定向深读入口不加覆盖门（显式重读表达移交第 4 包）。新增 surfacing-r31-window-coverage 3 例+既有夹具迁移；tsc 0 错。生产未动——E/M 合同成对切换须同批上线（旧 E↔新 M 互相 SCHEMA_VIOLATION），部署步骤与生产 Qwen 迁移见 `docs/reports/SOL_RECALL_R31_20261116/DEPLOYMENT_STATUS.md`。
+
+- 2026-11-18（北京时间，已部署）E host `bind-calendar-0fb8cfa`（实现 `f6ed464`），M `bind-calendar-82b8eb4`（实现 `ad8713b`）。现有 builtin 白名单 55→56，新增只读 `memory.calendar`。E 生产库已迁移至 v77，M health、E live/ready 均为 200。11 月月格逐日对账一致，11 月 17 日 3 个桶中 2 个缺原文，日详情逐桶与 M 一致。原有 52 条归档待处理已清空。失败任务可在四季首页「日历与记忆」按事件发生日找到，由本人点击 DS 重算。
+
+- 2026-11-17（包2·BIND 生命周期返修批，**未部署**）：按《BIND 完整生命周期返修指令》六阶段实施+双进程联验——①旧余额恢复识别 v74 英文 detail（HTTP 402）②判断在途落账（迁移 v76 status 加 judging：发出前落 attempts+请求指纹；attempts 唯一计数点=判断发出；重启不丢已发事实，服务端接收次数=E 尝试记录可对账）③M 正式 schema 登记 expected 两字段（**上线前拦下 SCHEMA_VIOLATION 阻断**）+E 段提交 expected 集=实时已确认集④段操作身份幂等键（source-bind:job:segIdx 跨进程稳定）——恢复按原键重放找回原 binding_id（键证明操作归属，替代成员交集认领；人工绑定不会被错认）⑤停机有界等待（≤30s）在途批次收口后再关库⑥通知本人可见（system.notice 进活动面板白名单+前端标签；按上海日去重；重连/刷新经持久事件可查）。**双进程联验**（两个 PID 真实 E 宿主+真实隔离 M 全链）五场景全 PASS：正常链逐段对账/判断在途停机双路径/A成功B未提交只补B/B回执丢失原键找回/人工绑定不认领；联验暴露两处收口缺陷（重放 expected 空集/STATE_CHANGED 覆盖成功段入账）已修。探针入库 scripts/probe/bind-lifecycle/。E `95ede3b`+`4d5c5ee`/M `aeda70f`；E 全量 241/241（落盘）+单元 21 组+M 定向 24。生产未动——部署+白名单 54→55 攒批待授权。
+- 2026-11-17（包2·Codex 三轮复审返修批，**未部署**）：Codex 二轮验收 2 过 4 部分修复，四个残留收口——①**回执丢失认领**：恢复时按成员交集区分自写段（M 已提交回执丢失→认领入账不重写不误判人工来源；与待补段无交集才是人工障碍）②**复核→提交窗口原子化**：M bind 新增 expected_memory_version/expected_binding_ids 事务内核对（版本移动→VersionConflict；判断后新建绑定→EVENT_SOURCE_STATE_CHANGED）；E 全部 bind 带判断快照；of_memory 任何非 ok（含 404）付费前停③**无效回包防抛**：ranges 含 null→failed；runBatch 逐任务 catch（单条异常不再中止整批——B03 注释此前无实现）④**余额语义**：熔断行 batch_boundary 推进本批边界（当日零请求、次日恰一次判断）；旧耗尽四次余额任务自动转熔断次日恢复（attempts 归零）；提醒 dedupe 改**上海业务日**；第二出口=system.notice SSE 事件（本人可直接查）。E `f5d1e1c`/M `a0145fb`；source-binding 20 组+M 原子核对 3 用例；E 全量 241/241（落盘）。生产未动——部署+白名单 54→55+余额提醒同窗口待授权。
+- 2026-11-17（包2·Codex 复审返修批，**未部署**——她在聊天，生产完全未动）：按《返修指令（6 项）》实施——**BIND 四项 P1**：①多段部分成功不再记 bound（迁移 v75：pending_segments_json 存剩余段+status 加 credential_blocked；恢复只补缺段不重新付费判断，联验 A 段不重写）②来源/版本复核失败即停（按**记忆**查既有绑定 M 新只读 of_memory——跨会话人工来源可见；查询/复核 503 付费前停止不写入；判断期间新建来源提交时拦截）③match=true 无范围=无效回包 failed 可恢复（非永久 no_match）④402/401→credential_blocked 当日熔断（attempts 不耗、提醒一条、跨上海日界自动复活——充值即恢复）；**writeSegments 竞态修复**（补 await）。M 配套：of_memory 能力+bootstrap 条目带正文 version（P2-5，E 开窗 vN 真实来源）+发币脚本 sys.path 修复（P2-6，原入口 2 passed）。测试 source-binding 16 组（含两项联验）+M 新定向；全量 241/241 全绿（落盘；历史偶发首次抓到文件名 exec-v1-wp1-http TOKEN 组，单跑绿无复现）。E `3cdf40d`/M `33908dc`。**待授权**：部署（make-release+重启 host）+M 白名单热更 54→55（of_memory）——与上一批余额提醒（d020c01）同窗口执行。
+- 2026-11-16（三项裁决落地批，白名单已热更生效/余额提醒待部署）：①**M 清单与 E 对齐**（她裁定）：补 E 既有调用面 5 项（memory.recall.round2/emotion.context.get/plan.memory.correct/i.item.relations.correct/memory.relations.trace——深搜等此前 FORBIDDEN）、退役零调用旧项 memory.recall.status/accept、发币脚本改 import 维护脚本同一正本（46 项独立副本退役）；生产热更 51→54（M `6d89aa5`，备份 allowlist-backup-20261116-160511.json）。②**BIND 凭据/余额提醒**（她裁定：按日处理照常、余额不足才提醒）：GlmChatAdapter 识别 402 余额不足（带供应商 message）；判断失败命中凭据/余额类→幂等宿主通知（当日一条，下次正常请求投递；非聊天消息不违反 BIND-06）+warn 日志；充值/换 key 后下批自动恢复（E `d020c01`，13 组测试；**待一次授权重启后上线**）。③API 供应商错误脱敏策略——她 2026-11-16 裁定**维持现状**（保留完整错误原因；理论回显风险接受，实际泄漏未发生过且内容留在私有库，此事项结案）。全量 241/241 全绿。
+- 2026-11-16（包2·Codex 审计返修批，**已部署** `pkg2audit-7d44852`）：按 Codex 只读审计 `PACKAGE2_AUDIT_20261116.md`（~/Documents/Codex/2026-11-16/…/outputs/）修九项 P1+两项 P2+P3——**BIND 六项**：多段逐段独立保存（段间消息不进成员，旧实现全局 min/max 合并扩大范围）/判断快照钉住（候选修订+记忆版本复核，编辑后冲突退出）/付费前查既有绑定（他源跳过零调用，防人工来源被自动追加；M 配套只读白名单 51 项）/dueNow 含可重试态（单独留存的 failed 也会触发）/判断服务失败≠no_match（有效否定才记）/提交时刻半开区间（恰点归下批）；**P1-6 计划续页**（M 真实两种包形+全 null 末页 cursor+total 对账——DBG-10 此前实测丢第 51 条已补正）；**P1-10 SDK 错误**（error+errors 合并进最终回执，Overloaded 类具体原因不再丢）；**P1-12 锚点消歧摘录**裁在各自已见区间+候选上限 5（节选外邻文不外发）；**P2**：milestone schema 文案改必填显式/开窗记忆行补 vN/多修订回归测试开 reverse_unordered_selects；P3 交接文档版本表与 §6 更正。**三项待她裁决未动代码**：①主凭据白名单缺 5 项既有工具授权（深搜/情绪上下文/计划关联纠错/I 关联纠错/关系追踪）+发币脚本 46 项独立清单——授权变更须她逐项批准；②BIND 首轮历史起点与补记候选 ±30 覆盖范围——产品语义；③API 供应商错误自由文本的脱敏策略——无可靠净化规则需她定。golden 三件重建（目录 +50B）+容量五点 +80 平移；全量 241/241 全绿（E `7d44852`/M `a989bcf`）。
+- 2026-11-16（包2 BIND 上线运维批，**已部署**）：她授权启用 BIND（DeepSeek 专用凭据盲搬入 source-bind.env、配置 source_binding enabled）+ BIND-09 真实评估（合成数据真实调用：判断保守准确、无幻觉 id）。生产首批 40 条 hold 暴露批C 四缺陷并全部热修：①M 白名单缺 source.binding.bind（热更 49→50，M `af15e94`）②绑定会话传 E 会话 id→NOT_FOUND（改收据会话，`f8eb66b`）③failed 无重试路径（有界重试 attempts<4+达上限如实标注，`fdb102b`）④多修订消息收据混旧修订 sm→SOURCE_RANGE_NOT_PATH（按当前修订精确匹配，`5cfe676`；复放 00647 实证）。三次部署均她按次授权（pkg2-0fb14ac→pkg2fix-fdb102b→pkg2fix2-5cfe676，content 无改动未动）；收口终态 bound 29/skipped 3/no_match 7/failed 1（记忆已删）。全量 241/241 全绿。**遗留两项已排查收口（同日）**：①退役键 integrations.mariposa.contract_version 已从生产 yaml 移除（备份 estomago.yaml.bak-clean-retired-20261116；生产加载函数核验 retiredKeys=[]；siren 同名键有真实消费者保留；无需重启）；②三次单文件偶发——失败文件名当时被 tail 截断丢失，后续 4 轮复现（空闲三连跑+make-release 并行负载）全部 241/241 全绿，特征指向高负载时段时序抖动、无稳定复现路径；处置=全量输出落盘的取证教训写入交接文档 §4，下次出现按日志定位，不凭猜加防御。
+- 2026-11-16（包2 批E·退役与状态报告，未部署）：按 06_STATUS_AND_RETIREMENT 输出 `docs/reports/PACKAGE2_RECEIPT_20261116.md`——逐编号实施状态（DBG-01..12+BIND-01..09，含 DBG-11 现行回执语义核证据：judge_mode 必需服务端下发/判层字段与 candidates 分开透传/WORDS_CHANNEL_DISABLED 先例"通道关闭≠无结果"，未新增 D12 测试并在报告如实标注）、验证分层（静态合同/隔离业务/真实服务/最终模型出站 NOT_EXECUTED/生产生效 NOT_EXECUTED）、退役清单（已删七项、因真实消费者保留四项、唯一待办=生产旧 I 占位文件清理归部署窗口）、保护项（M 来源领域/网关原文/审计历史等）、部署差异与三件待授权生产动作、包间交付。包2 至此施工完毕：剩余仅 §3.3 三件生产动作（白名单热更新/身份句写入/包2 部署重启）按裁定待她逐次授权 + BIND 启用需她配凭据；生产当前 `pkg1-final-87e793b`（包2 未上）。全量 241 文件全绿。
+- 2026-11-16（包2 批D·交叉联验，未部署）：`tests/unit/batch-d-cross.test.ts` 三组 + archives ARC-26，全走真实生产链（fake 只在 transport 边界；真实付费未调用）。**BD-1 SDK 投影（真实 ClaudeSdkRunner→runSdkHostQuery 转换链）**——H13 存量历史→选集确认→建窗恢复：捕获 SDK query 的 systemPrompt 不含引导语，prompt 流里引导语并回后继历史消息文本块头部且两段顺序保持（DBG-07 后双投影的 SDK 侧，scriptedSdkInput 按真实重放回执协议驱动）。**BD-2 API 投影**——同一选集场景 DS 信封：两段引导语以 system 块原位出现在各自历史消息之前，A 段正本不含引导语（DS wire 拍平 content 并剥内部标记——guide 是信封内部标记、SDK 转换消费，API 侧按文本+位置判别）。**BD-3 同时聊天×BIND（B12）**——聊天回合在途（模型响应未回）时午夜晚批照常处理并完成绑定写入（桩 M/假 GLM transport）：聊天不等待、回合正常完成；任务零聊天消息写入；window_toolsets/context_selections/window_trajectories 三表不被任务触碰（跨日不清窗口的包2 面）。**ARC-26 编辑冲突×定位三法**——所见版本被编辑→锚点 STALE（给具体冲突不静默写）；latest_completed_turn 按当前修订照常建档（钉 v2）；片段已见 v2 再编辑→先报 EXCERPT_ONLY（整条不可存与版本无关，比 STALE 更根本）；未见新修订文字→NOT_FOUND（不跨修订拼已见）。批E（状态/退役/部署差异回执）随后。
+- 2026-11-16（包2·DBG-04 存档直接范围写入·11-16 版新增能力，未部署）：conversation_archive 补第三种定位（与 message_ids/latest_completed_turn 三选一互斥）——**双边界锚点**：各给说话人（宿主用户/char）+该消息正文中一段连续逐字原话，宿主在 ctx.seenMessages（本次请求实际装载视野，D13 口径——模型不能自报"我看过"扩大范围）内解析为真实 (message_id,revision)。解析规则与 memory.resolveQuoteRefs 同源：同消息取最新已见修订、片段区间合并、任一整条装载=完整已见；匹配正文=effectiveRevisionText（语音可信转写同口径——记忆概述/模型转述天然不参与）。**如实语义**：边界完整已见→定位整条消息含首尾；只见节选的边界如实拒绝（ARCHIVE_ANCHOR_EXCERPT_ONLY——存档合同只收整条，不默取隐藏正文不扩范围）；内部节选成员如实排除计数；起止之间未携带序列保留缺口（段数/缺口计数进回执），不按库连续性补齐、不例行再问；同句多处/边界倒置/所见版本已被编辑→具体原因+最小消歧候选（ARCHIVE_ANCHOR_AMBIGUOUS/REVERSED/STALE，未唯一定位不写入、不静默选最新/第一项）；显式范围可含本回合已发布消息（草稿/未发布天然不在视野）。成功回执=短摘要（边界 ≤24 字摘录+段数+缺口/排除计数，不回显整段）；幂等沿既有 tool-archive 键（同 tool_call 重放同一存档）；解析内部读零副作用（D19 不产生已读/通知/投影）。写入链不变：validateRefs+M 同步收据门+协调器建档，不新建工具/表。配套 modelFailure 失败投影白名单放行 boundary/candidates/conflicts（旧白名单会剥掉消歧候选，模型收不到）。隔离验证 archives.test ARC-20..25：D14 唯一双边界一次调用定位+保存（不先读回/无付费判断）/D15 三态冲突均不写入/D16 本回合已发布可存、草稿不可见不可存/D17 滚窗缺口段数如实+节选边界拒绝+节选内部排除+未见区域引语不命中/D18 同键重放/D19 解析只读；frozen examples 的 conversation_archive 示例换锚点形态（新 schema 面经真实冻结包 invoke）。目录 +722B：golden 三件重建、容量五点按惯例平移 +≈400 token（soft 27_630/27_550/17_500、capacity 46_950、底座 16_010）；frozen 计数 56/54/47 不变；web dist 重建无变化（未动前端）。全量 240 文件全绿。批D 交叉联验/批E 退役文档待续。
+- 2026-11-16（包2 批C·午夜来源绑定 BIND-01..08 新功能，未部署未启用）：**落点（先行报告口径）**——M 无任何调度设施，E 维护 tick 为唯一调度点；任务与处理状态唯一正本=E 新表 `source_bind_jobs`（v74：UNIQUE(memory_id) 幂等、状态 pending/bound/no_match/source_unavailable/failed/version_conflict/skipped_existing、判断时版本落行、绑定 id 回执留存）；绑定写入只调 M 既有 `source.binding.bind` 领域服务。**分批依据（BIND-02）**——E 侧 `tool_side_effects` 的 committed hold 事实（settle 时刻=提交侧）；日界固定 Asia/Shanghai 上一 00:00，批内新写入不入本批；范围如实=E 工具发起路径（M 原生/导入无枚举能力，回执 scope 字段写明，不宣称全量新增）。**GLM 判断（BIND-04）**——新 `GlmChatAdapter`（OpenAI 兼容 chat/completions，独立凭据 env 引用、transport 可注入、超时/断连不自动重发防重复计费）；输入=记忆正文+有界候选（hold 回合锚 ±30 条、≤60 条、双方消息当前修订）；只在候选真实 id 中选范围+短依据或无可靠匹配（合法终态不重复重判）；引用不存在 id 直接拒绝（防幻觉写入）。**写入（BIND-05）**——范围→真实消息/修订→M 同步收据 members（与 memory_source_bind 同口径）→source.binding.bind；EVENT_SOURCE_OVERLAP=已有人工绑定跳过不覆盖；版本冲突按冲突语义待重处理；未同步消息=source_unavailable 待原文落 M 下批重试。**解耦（BIND-06/07）**——维护 tick 60s 检查 due（enabled 才装配，凭据缺失=如实 skipped 零调用）；全程零聊天消息写入、不进调度器模型串行链、不唤醒不浮现不发气泡；启用不回填历史。配置节 `source_binding`（默认 disabled——生产启用需她配凭据并明确开启，BIND-09 真实评估待授权）。隔离验证 source-binding.test 五组：日界分批归属/任务幂等/无匹配终态/命中→members→绑定写入（含整段路径 4 条）/幻觉 id 拒绝/OVERLAP 跳过/传输失败如实 failed/凭据缺失零调用/零消息写入。全量 240 文件全绿。批D 联验/批E 退役文档待续。
+- 2026-11-16（包2 批B·统一正本与装配 DBG-05/06/07/08/09/10，未部署）：**DBG-05 旧 I 占位退役**——A 段不再复制注入 I（历史缺陷：占位文件"i_documents 为空"与 B 段 bootstrap 真实 I 同时注入）；I 唯一注入点=B 段（M 的 I 版本体系，03_SYSTEM）；manifest 空槽/占位文件名（i-snapshot-pending.md）时 gate 跳过该校验、materials 不装载；撤 OR/DS 信封缺 I 的 IDENTITY_NOT_READY 阻断（F02 旧政策测试按新合同改写）。**DBG-06 运行规则单一正本**——FIXED_RUNTIME_FRAGMENT 代码常量退役（旧与文件版 runtime-rules 双注入、两副本措辞分叉）；唯一正本=manifest 文件版（gate 校验、A 段/SDK 同读一份）。**DBG-07 SDK 引导语位置**——引导语 system 块带 guide 结构标记：systemPrompt 组装排除之，SDK 输入组装把引导语并回后继历史消息文本块头部（保"引导语→原文"相邻与顺序）；OR 路径本就原位不受影响。**DBG-08 里程碑写显式化+称谓统一**——identity_milestone_write 的 operation 必填显式（旧缺省=write 整版替换）；配置默认称谓 用户/助手→宿主用户/char（03_SYSTEM §2）；相册携带留言称谓经参数从身份配置注入（旧硬编码"乔乔"）。**DBG-09 开窗最小对象引用**——记忆行带〔id memory_id〕（memory_update/memory_open 真实接受；不伪造过不了已见回执门的 sf_ ref）；计划行带〔plan_id vN〕；I 行注明条目入口 memory_i_read。**DBG-10 计划对账**——开窗计划沿既有 bootstrap.next('plans') 有界续取（≤5 页/≤100 条），取尽不打"还有更多"，达限/失败如实披露已载数+plans_read 入口；不再出现"还有更多…已载 2/2"自相矛盾文案。旧断言按新合同改写（F02/or-supervisor/carry 称谓/milestone operation/R11 措辞）；golden 重建；F03 容量校准 47050→46550。全量 239 文件全绿（隔离 ESTOMAGO_HOME）。批C（BIND 午夜来源绑定）待续。
+- 2026-11-16（包2 批A·错误/授权/正文修改 DBG-01/02/03/12，未部署）：按 `02_RUNTIME_DEBUG_AND_SOURCE_BINDING_20261116` 执行包实施（实施前对照报告先行，完整版见执行包目录 PRE_IMPLEMENTATION_ALIGNMENT.md）。**DBG-01 供应商具体错误原因不再丢失**——OR/DS runner 非 2xx 有界读响应体取 `error.message`（旧只留 `HTTP {status}`）；supervisor 失败事件 payload 附脱敏 `detail`（≤200 字）与 `evidence` 白名单字段（旧只发错误码，errorMessage/errorEvidence 全程未发布）；前端有 detail 直接展示不再一律"可在活动日志查看状态"。隔离验证：脚本 transport 502+JSON 错误体/429+纯文本——errorMessage 含供应商原因、状态码语义不丢。**DBG-02 计划完成/取消授权补齐（源头）**——M 领域 complete/cancel 早已实现、E 工具面已接，唯一缺口是 `estomago_builtin` 白名单生成源：`update_estomago_builtin_allowlist.py` 与 `issue_estomago_hold_token.py` 补 `plan.complete`/`plan.cancel`（M 仓配套提交）。**生产绑定热更新=生产 M 库写入，待她授权时机执行**（本批零生产写入）。**DBG-03 记忆正文修订入口**——新增 `memory_update` 工具（baselineOrder 5）：M `memory.update` 领域能力（已实现已授权）此前无模型入口，写错字只能再 hold 一条、旧错误正文继续参与检索；参数沿 M 合同（memory_id+expected_version CAS，text/original_title/categories/memory_date/date_confidence 省略=不变）；`VERSION_CONFLICT` 如实给 memory_read_full 重读指引不覆盖；传输结果未知不盲重试。隔离验证 batch-a-debug（成功/冲突/未知/参数门四路径）。**DBG-12 Unicode**：全仓确认零转义处理代码——已满足无需实现，保留取证路线。目录 +1361B（C 组 46→47 共 56 工具）：golden 三件重建、容量预算按惯例平移（+≈780 token：soft 26_450→27_230/26_370→27_150/16_320→17_100、capacity 46270→47050、底座 14_830→15_610）、frozen 计数 55→56/53→54/46→47；web dist 重建。全量 238 文件全绿（隔离 ESTOMAGO_HOME）。批B（DBG-05..10 装配与正本）/批C（BIND 午夜来源绑定）待续。
+- 2026-11-16（反例3 处置·按验收裁定 04d1964 复审，未部署）：**受保护文件计入实占**——上一版 `planCacheEviction` 把受保护文件从 totalBytes 一并剔除（实占 208B/预算 150B 误判不超、一个不删）；改为 totalBytes=按物理文件去重的**全部现存文件**（受保护同样占预算），可删候选仅排除受保护（任一引用仍需本地字节=整文件受保护）。`evictCacheOverBudget` 与运维 CLI 同口径生效；CLI 输出改"磁盘实占/受保护 n 个/可逐候选 m 个"分列。验收 PM-13（验收原文场景）：文件1（synced+pending 共享，受保护）+文件2（仅 synced，可删）各 104B、预算 150B——后台删 1（文件2）、受保护留存、cacheBytes=104；M 恢复后正式重试（attemptMSync）使 pending 补 synced、字节 hash 一致。反例1（升级存量误发）/反例2（URL-only 重放）按同日裁定退出必修——已修实现保留为兼容路径，不追加历史兼容补丁；生产 13 次真实生图工具调用核对（9 成功各 1 次调用、成功后同键 0 再调；1 拒后 0 重试；1 未确认操作 3 次调用=工具层重试，不据此认定供应商画 3 次）。全量 238 文件全绿。
+- 2026-11-15（二轮返修·按 GLM 返修复审 P1×3+P2×2 两批实施，未部署）：**批1（生图重放与上游响应）P1-1 升级存量不误发**——v72 前旧记录 `request_fingerprint` 为 NULL，无原请求证据时本次 prompt/deliver 不能补成发布授权：saved 早退与 stored→saved 恢复统一加发布门（旧记录回读保存结果+`chat_send_attachment` 显式发送入口，回执 note 写明无法核对；有指纹新记录照常发布/冲突）。验收：审计取证脚本 prod-schema-upgrade（真实 v70→v73 迁移路径）通过——同键换 prompt 默认 send 重放，新增聊天消息 0、生成请求 0、原作品可定位。**P1-2 URL-only 应答不再重新生成**——200+完整 JSON 只含 data[0].url（旧落 failed_generation、同键重试再次付费）：适配器先就地取回结果 URL 字节（https-only/环回 http 放行、50MiB 上限、魔数须图片）；取不回落新状态 `url_pending`（v73 `result_url` 留存），同键重放只重取 URL 永不重新生成；IG-18+取证脚本验证（断取期间重放×2 生成计数仍 1；URL 恢复后同键收口保存+发布恰好 1 条消息）。**P2-3 完整错误应答保留重试语义**——defaultTransport 区分"读取中断"（连接断→body_truncated→未确认）与"完整收到但非 JSON"（按状态码分类：429 空正文→RATE_LIMITED、502 纯文本→UPSTREAM_ERROR 均可重试；2xx 非 JSON→按缺字节路径）；IG-19+取证脚本（429 重试成功上游累计 2 次；断流对照累计 1 次不重发）。**批2（缓存逐出共用规则）P1-4 运维 CLI 与后台同一套**——逐出逻辑抽为模块级 `planCacheEviction`/`deleteCacheFiles`（物理文件去重计量、LRU 按各引用最近使用、保护仍需本地字节的有效引用），`MediaService.evictCacheOverBudget` 与 `scripts/media-cache-evict.mjs` 共用；CLI 保留预演/至预算/全部候选三模式，预演与执行同一批候选、输出按实际文件数与字节。PM-12 真启动 CLI 验证（pending 保护下三种模式 0 删；M 恢复正式重试补 synced；预演目标=实际执行；执行后 M 回源 hash 一致）。**P2-5 标删别名不再保护**——blocked 集合排除 `state='missing'` 行（标删=不再是文件活跃依赖；pending/out_of_scope 保护不变）：PM-12/取证脚本 cache-delete 验证（标删 B 后 104B 超预算正常逐出 1 份、A 回源 hash 一致、B 维持 missing）。定向：imagegen/mariposa-media-master 全过（新增 IG-17/18/19、PM-12）；全量 238 文件全绿（隔离 ESTOMAGO_HOME）。复审交接的四个架构差异项（旧库携带行分类、多选文案、作品发送归属、R32/35 存档检索）未在本批范围。
+- 2026-11-15（包1审计返修·按 an-z diff 审计 P1×5+P2×2，未部署）：**P1-a 滚窗携带图漏投**——携带片段在 system 块内，SDK 路径 system 只出文本+输入流滤掉 system，图片被静默丢、成功回合仍消费 next_once；修复：`sdk-host-query` 输入组装层把 system 消息的非文本块抬升为首条 user 消息（文本留 systemPrompt 不重复、账本/锚点哈希不动），装配层把携带图键入跨消息去重键集（选集同图不再双投）；无 readImage 维持未核实门。**P1-b carry-set 读失败仍滚窗**——`resolveWindowCarry` 对"content 已配置但读不到清单"（不可达/非200/正文截断/形状不对）从 warn 降级改为抛 `CARRY_SET_UNREADABLE` 明确失败（旧窗/选集保留可重试，不再冻结空计划）；content 未配置=无携带能力照常空携带；200+空清单仍合法滚窗。**P1-c 生图同键**——①`imagegen_operations` 增 `request_fingerprint`（v72：prompt/格式/尺寸/帧参数/交付选择），同键异参=`IDEMPOTENCY_CONFLICT`（旧：save_only 后同键换 prompt+send 会把第一张图发进聊天）；②外呼前登记 `calling` 行——同进程并发第二个 `IMAGEGEN_IN_PROGRESS`（实测恰一次外呼）、进程死亡后残留 calling 按结果未确认收口不自动重发（D03/D08）；③适配器新增 `body_truncated`（收到 200 头后正文断流——旧实现吞成 json:null 落 failed_generation、重试即第二次付费）→ 结果未确认。**P1-d 恢复漏发**——stored→saved 恢复分支接默认发布（与首次成功同一交付分支，旧实现直接 ok 且像 save_only）；`modelFailure` 投影放行 asset_id/creation_id（发布失败回执带已保存引用）。**P1-e 逐出按物理文件**——同字节别名共享一个文件：容量按去重文件计（旧按行重复计账）；共享文件存在未落正引用（pending/out_of_scope 如 derived_view）时本地是其唯一字节，不逐。**P2-a SDK 锚判定**——基准从"无输出块"改为"会话是否实际接收输入帧"：已送入输入未出块的打断=删锚（会话已前进）；准入拒绝/0帧0派发=保留（会话未触碰）；`no_final_result` 0 帧=保留。**P2-b stickers 拒携带**——content POST/PUT 对 stickers+carry_mode≠none 返 422 `carry_kind_incompatible`（不进共享携带集/不占十张限额）。**合同小差**——chat-client work 附件改走沙箱 /preview+iframe 渲染（不再映射 /content 下载头）；争吵存档确认文案对齐 11-15 停止裁定；media_import 回执补 asset_ref+导入回合房间内可看（资格按操作身份 turnId→房间，不放开任意 asset）；content_creations_read 预览引用只给 svg/html（video 等如实标不支持）；README 首段未部署队列补 4cfedab/189c84d；web dist 重建。测试：IG-15/16、PM-11、CARRY-ASM-4、P2-b 新增；IG-GIF 重放断言按指纹合同改全参重放；全量 238 文件全绿（隔离 ESTOMAGO_HOME）。审计关闭项（W1/留言/封存取消/通知一份/M 排除撤销）未触碰。
+- 2026-11-15（包1媒体增量 M02-M07·`01_MEDIA_INCREMENTAL_20261115` 执行包实施，未部署）：**M04** 生图适配器收到完整 5xx 应答=明确失败（`IMAGEGEN_UPSTREAM_ERROR` retryable，同键重试重新请求上游）——不再永久卡 unknown（生产实证 11-12 一次 500 后同键死锁、被迫换键重新付费）；超时/ECONNRESET 维持未确认防重复计费。**M05** GIF 拼接 sheet"最长边≤3840"（生产样本：8帧@1024² 拼法 4096 被拒）进本地校验——枚举全部整格拼法取最长边最小值仍超限才付费请求前拒绝（16@1024 必拒）；存在可放拼法的组合不本地拒绝（拼法集合未知不编造，失败原因照常透传供应商原文）。**M03** `image_generate` 默认 生成→保存→发布当前聊天（`deliver=send|save_only`；发布幂等键 `tool-imagegen:<opKey>:publish` 确定性——发布失败只补发布不重新生成、重放返回原消息不重发 D06；回执 sent/message_id；描述改为"成功即已发送，不再调用 chat_send_attachment 补发"）。**M02** 附件 presentation +`work`（迁移 v71 整表重建 CHECK）——SVG/HTML 作品经 `chat_send_attachment` 隔离交付：`validateForSend` 按用途白名单分支（work 只收 svg/html、普通图片白名单不放宽）；模型投影为文本引用+沙箱预览入口（`/api/v1/assets/:id/preview`）不投位图块；`creation_save_artifact` 回执附 preview_ref/deliver_hint；前端气泡渲染留给前端重建（后端引用真实可授权）。**M06** 新增 `content_creations_read` 作品集分页读取（图片作品给 asset_ref、SVG/HTML 给 preview_ref+如实限制——F01/F02 跨窗口可达，不再依赖生成回执记忆）；`media_view` 对 svg/html 如实报限制+入口（E06）；media_search 描述指向新入口不混 scope。**M07**（宿主用户 2026-11-15 裁定"修改留言是修改不是新增，可修改/编辑/删除"）：content POST 撞已有 (kind,asset) 分支补 caption/meaning 显式更新——空串=清空、省略=保留原值，不算新增一张不占携带名额（FEED-06 旧"幂等不更新"断言按新合同改写，revision/updated_at 随实际变化推进）；工具说明写清三态。容量预算按惯例平移（目录 +2059B 以中文为主：soft 25_280→26_450/25_200→26_370/15_150→16_320、capacity 45100→46200、底座 13_660→14_830）；golden 三件重建（C 组 45→46 共 55 工具）；frozen-tool-package 计数 54→55/52→53/45→46。验收：IG-12/13/14、MEDIA-M02、M07 全链（真实 ContentServer+fake M+真服务）+ 全量 238 文件 0 失败；未调用真实付费生图（GIF 真机/客户端播放待验）。
+- 2026-11-15（W1 落地·旧收藏改携带先补身份，她授权"现在可以做了"，未部署）：林石见口径"用户修改那条旧收藏、准备加入携带集合时，先补齐它的图片身份，再计算是否超过十张"——① content 新增单条相册条目 GET（`/album-entries/:id`，与存档详情同款，墓碑 404）；② host 代理对 PUT 相册条目先读条目取 asset_id、按 E 资产行补注 content_sha256（服务端事实，自报值先删；预读截断两 flavor→如实不带）；③ content PUT 分支：行内 NULL 且请求带合法 sha → 仅补身份（不动 updated_at=consume-next-once 基线）再 `assertCarryWithinLimit`——满 10 张下同字节别名改携带不再被错拒（旧缺陷 422）。附带把 W0 上传序号修复应用到 carry-hash-authority 测试文件（旧写法使别名复用同资产）。验收：真实代理+协调器+content 全链，两条 NULL 旧行改携带 200、身份=真实 hash（假自报被覆盖）、去重身份仍 10；F1-2/3 不回归。
+- 2026-11-15（RR4 残留收口·`contentForward` 全调用方扫描，未部署）：她追问"你确定吧"后自查——A 类截断故障在 undici 有**两种表现**（连接销毁→fetch reject；干净半包 FIN→2xx 可解析但 JSON 失败走 bodyFailed），直连消费者两种都必须接住。逐点收口：`fetchReferenceSnapshot` 截断→null（不喂脏快照给确认事务）；`resolveContentOperation` 截断→抛错走既有 503 不可达分支（截断的 resolve 结果不是任何 outcome，防"空 200"假成功）；supervisor carry-set 读取截断→warn 降级（不静默丢携带）、consume-next-once 截断→不标已消费（同键幂等重放补）；`content_albums_read` 截断→ALBUM_READ_FAILED（不冒充空相册）；`media_view` 两个授权反查截断→503 CONTENT_UNREACHABLE（不误判无权读）；archives 路由列表/详情截断→503；`creation_save_artifact`/`imagegen` 建条目 2xx 截断→ENTRY_PENDING 保 pin 同键重试（不冒充 saved 也不提前放 pin）。验收 +C 项：半包 FIN flavor 下工具读相册报错、media_view 503；共享读取器两 flavor 均已接（catch+bodyFailed）。
+- 2026-11-14（RR4 收尾 A/B·按 ALBUM_RR4_FOLLOWUP 复审，未部署）：两处闭合——**A 正文传输失败当空页**：`contentForward` 新增 `bodyFailed`（正文读取/JSON 解析失败不再伪装空对象，旧调用方按 status 语义不变）；共享分页读取器把截断/坏 JSON/形状缺失（items 非数组）一律判分页失败——封存口 unreachable+incomplete（不冒充完整空排除集）、存档搜索 unavailable（非 no_match、不发 M 检索）；建档 2xx 但正文缺字段→`CONTENT_UNPARSEABLE` 可原键重试（协调器 unknown 收口后 replay 取回真实结果）。**B 自动浮现取消贯穿**：封存清单读取纳入既有 bounded（作业取消 abort+剩余期限同时约束），signal 经端口/Host 装配传到共享分页器；prepare/validate/check 三跳 M 调用发起前均复核作业状态（取消落在竞态窗口不再发下一跳）；supervisor 终投递复核传本回合 abort 控制器。自查追加同类残留：validate/check 竞态守卫、建档截断守卫。验收（surfacing-quarrel-gate 5 项）：截断代理→封存 unreachable/搜索 unavailable 且零 M 调用；空列表/多页正例不回归；真实链第一页期间 cancelForTurn→零后续页+零 prepare+作业收口，正例多页读完+完整排除集（150 条两页）下推。E 全三组 238 文件全绿（终版树复跑）；typecheck host 过。
+- 2026-11-11（RR4 补修 F1-F4·按 ALBUM_RR4_REAUDIT 复审，未部署）：四处闭合+一类根因收口——**F1** 封存清单当次不可核对→prepare 阶段即暂缓（既有 blocked 状态路径，`QUARREL_SCOPE_*`；不再"不带排除集继续检索"——派生桶无 source_ref，终检兜不住，复审两阶段时序独立复现）；**F2** `in_context_source_ids` 按 M 合同 maxItems=128 有界（W2e 去 cap 时误放开该去重提示字段，128 消息+1 编辑=129 来源曾致 prepare 整单被拒；excluded=正确性仍全量——发送点按各字段合同分治）；**F3** aria-label 改"撤销存档"并 `build:web` 重建已提交 dist（旧包 ea06a1d4c490→新包含分页/撤销文案；make-release 不自动建前端，dist 是发布正本）；**F4 根因收口**：新增共享分页读取器 `readAllContentPages`（取消贯穿每页+HTTP 合并 signal、游标停滞/非200=失败、next_cursor=null 唯一终点——语义单点定义），archives 两读者与 media 三 scope 集合读取全部改用，`contentForward` 接可选 signal，archives 工具链路把 ctx.signal 传到 content 分页与 M 检索。验收：F1 准备失败→零 prepare+blocked、恢复后新作业完整下推；F2 129 来源→in_context=128 且 excluded 不截断；F4 第一页取消→不再请求第二页/不进编码（复审同款时序）。
+- 2026-11-10（RR4 整改·按林石见二次修正稿，未部署）：Codex 复审（ALBUM_REAUDIT_20261110）四组闭合+图片检索落地——**W2e 完整排除**：E 去 64/192 截断（`syncedSourceIdsFor`/prepare 全量并入），M 合同 `excluded_source_ids` 去 maxItems、规范化不截断、source.search 分块 NOT IN（>64 全量生效；验收含"无关合格记忆仍正常浮现"）；**W2 全量覆盖**：媒体集合 scope 候选分页以 next_cursor=null 为止（stickers/photos/creations 三集合；无页数上限、游标停滞按失败、检索补索引尝试即计数），补索引 tick 增相册+作品游标续进枚举（每跳 ≤3 页拉取+≤5 张编码，到尾换源），存档检索/封存读到底且 `complete` 接 prepare 下推+supervisor 终检两消费者（可达≠读全分开），content creations 补真游标+archives 路由透传+面板四 tab 加载更多；**W3 通知恰一份**：登记正本=新叶 `archive-notice.ts`，绑 content 写入成功回执（快照失败不拖延已确定的通知），协调器首次成功/恢复确认/同键重放三点幂等（dedupe 沿用原幂等键，防升级窗口双条），前台分支删；**W4 撤销按存档粒度**：M `_archived_marks_for` 两步（live 按本页、撤销跨消息按 archive_id 查整档）——部分推送/翻页标记一致；**W0** 别名测试换真正不同上传 ID（Codex 证据修正）。存档确认文案改"撤销…（只取消存档关系）"。golden 三件重建复跑；media_search 目录 +290B 致三处容量预算按惯例重标定（25_200→25_280、45_000→45_100）。方案与 v2 修订见 `docs/reports/PLAN_RR4_20261110.md`；W1（旧收藏身份）按裁定后放。E 全三组 237 文件/1318 项全绿；M 1551 过/13 存量。
+- 2026-11-10（`7594272`，**已部署**）：移除聊天输入框下常驻的来电终态记录（已接听/已拒接等），保留来电横幅和接拒操作；Siren 无需修改。独立源码副本前端类型检查、构建通过，生成产物同步；未连接真实通话验证。经用户本次重启授权，生产宿主从 `fable-vision-c0087d5` 切至 `call-ui-20261110-1363302`，live/ready 均 200、实际提供的 JS 与 release SHA-256 一致；content/Siren 未重启。
+
+- 2026-11-08（PLAN_NOT_FOUND 契约小修，`c9ec10c`，**已部署**，2026-11-08 林石见裁定）：plan_ids 契约修复——M 侧（mariposa `af0ed5b`）绑定失败独立成码 PLAN_NOT_FOUND 带全部无效 id、同事务整回滚（不自动建 plan/不静默丢弃）；E 侧 transport 透传 error.detail、薄转译 `{error_code,invalid_ids,fix}`、modelFailure 白名单放行、plan_ids 说明三句英文约束；golden 三基线按脚本重建。部署 E=plan-not-found-c9ec10c + M=plan-not-found-af0ed5b（均含此前全部未上线内容：语音条恢复 dcada7d、主页清理 832c84f、相册 P3-P5）；content 服务代码与新版逐字节一致未重启。生产实测：伪造 plan id → HTTP 404 PLAN_NOT_FOUND+invalid_ids、零落库；E/M health 200、归档同步恢复。回归：M 单测含四场景（真实/伪造/无 plan_ids/混绑回滚），E 新增 4 例+旧码兼容；est 235/237（2=并行代理 home WIP 存量）、M 1542 passed（13 失败=stash 对照证实的存量）。
+- 2026-11-09（复审整改 R5/R6，`20e2917`+M 配套，未部署）：R5 四入口闭环（聊天图片星标收藏/表情上传归类/作品入表情/模型写工具 content_album_entry_write）+creation_save_artifact 保存即入作品（content v6 +svg 免桶）+非图片作品沙箱预览链接；R6 双标记（存档后 observation 推 M）/精确封存（quarrel sm 集 prepare 下推检索层排除+终检降级语义+分页全量）/存档打开链（/archives/:id/messages+面板展开原文）/同图多条留言逐条保留（carry-set 逐关系返回，去重权威归规划器）。工具包目录 +1285B：golden 三件重建+frozen 计数 52/54/45+换窗夹具软线 15.15k/25.2k。全量 235/237（2 败=隔壁 home WIP 在案）。
+- 2026-11-10（Fable 5.1/5.2 临时路由，`43cea97`，**已随 `album-rr-236bee3` 上线**——在 unified-main 谱系内，随三轮整改批一同部署）：补齐 SDK 选择、SDK↔API 映射和五档思考；类型检查与两份离线定向测试通过，未动生产或发付费请求。
+- 2026-11-10（Fable 5.1/5.2 SDK 图片准入修复，`f6f5de0`，**未部署**）：Anthropic 已确认两型号支持图像；在现有媒体门为 SDK 的精确型号补静态核实，不改 OR 未知型号的目录验证/拦截规则；离线 SDK 真图片块、Base64 不落库、订阅身份及已有媒体回归通过。typecheck 与两份相关测试 50/50 绿，未请求真实供应商、未重启生产。
+- 2026-11-10（三轮整改上线，`236bee3`+M`b1752b0`，**已部署** E `album-rr-236bee3`/M `album-rr-b1752b0`，她授权"自检后切生产"）：自检=E 三组 237 文件/1316 项全绿（含 43cea97 Fable 路由遗留的 SDK 型号过时断言修正 `236bee3`）、M 全量 1549 过/13 存量（改动前提交复现）、合同 `--check`+字节一致（`8b730c3`/M`b1752b0` 补 source_commit 再生成）。部署：make-release 官方脚本建 E 制品；content plist bootout/bootstrap（v6→v7）、host kickstart（v69→v70）、M start.sh 改向+kickstart（release 含新 dist）。冒烟：E live/ready 200+cwd 核对、M health 200+新前端 hash、RR5 对象元数据回填 60s 内自动补齐（28 项）、归档链 6515 行全 acked、无 WARN/ERROR。部署前备份：E chat(391MB)+content 与 M formal 库（`~/Backups/20261110-pre-album-rr` + `20261110-pre-fts-reindex`）。GIF 新冻结工具定义待既有受控滚窗自然装载（不手改 window_toolsets）；真实供应商 GIF/账号预览权限与她指定的 17 场景终验收仍待她真实路径验证。
+- 2026-11-10（三轮整改 F1-F3+GIF 证据修正，`fd70497`）：按二轮复审报告（用户目录 ALBUM_FULL_AUDIT 2026-11-09）闭合三组根因——**F1 携带身份**：`assertCarryWithinLimit` 去默认参数，POST 已有/PUT 两调用点显式传行内 `content_sha256`（满 10 张时同原件别名可选/真第 11 张拒/改模式不误增），代理 hash 无条件按 E 资产行覆盖（客户端自报不采信），存量 NULL 行经携带集对账幂等补齐（仅补身份不动业务时间）；**F2 固定版本合同**：E 三读者（建档门槛/检索/封存）统一按 `(message_id,revision)` 对键解析收据（检索分页续全量+500-ID 分批；封存不连带未选修订；存档原文返回固定修订附件），M `include_ids` 固定集内已发布旧修订可见、`source_fts/search_docs` 不再随换代删除（合同描述同步+重生成）；**F3 存档投影**：建档/删除经 ContentOperationCoordinator（确认同事务登记 `mariposa.archive_projection` outbox），content 存档快照读墓碑（删除确认不再永远 404），ArchiveSyncService 既有 60s 周期消费投影（M 暂败自动恢复/重启沿原键收口），M 总览与原文标记统一**撤销终态**折叠（先归并全部 observation 再分页；新增后端派生 `archived_marks`，前端不再按到达顺序折叠）；**GIF 证据修正**：仓内夹具换真实双帧（Pillow 157B/2 帧/loop=0），fake M 落实际字节+魔数 MIME，缓存逐出后经真实资产 HTTP 路由验证回源与字节保真；`size=auto` 官方形态放行、`frame_duration_ms` 下限对齐官方 20ms（golden 三件重建并无开关复跑）。M 配套同批（query/ingest/合同/前端）。
+- 2026-11-09（二轮交接协议）：她判定二轮未全过、开新窗续作——剩余工作面/待授权部署队列/薄弱点清单/提交史全录 `docs/reports/ALBUM_HANDOFF_20261109_RR.md`，接手先读它+向她要最新复审结论。
+- 2026-11-09（孤儿测试清理，`全量恢复 235/235`）：她授权顺手清理夏季改版遗留的 home-butterfly/home-cords 孤儿测试（源文件已删、测试未跟，§0.4 在案的 2 败即此）；此后全量基线为 235/235。
+- 2026-11-09（复审二轮自查，`5715db4`，未部署）：对抗自查修正三处——存档撤销链死路（删后读详情必 404，改删前快照）、携带身份被本地查询抹 null（改 content 兜底）、GIF 帧时长自造上限（收窄正整数）；补 RR5 回推与代理 hash 补注两处测试缺口。全量 235/237。
+- 2026-11-09（复审二轮 RR1-RR7+GIF，`3323671`+M`af60c87`/`901cdee`，未部署）：语音预派发失败不再被改写 unknown（M 恢复后可重试）；同字节别名图三口径（配置/规划/装配）统一按 M 对象身份去重；存档收据门槛按精确修订+删除推撤销投影；creation_save_artifact 补 M 落正/快照双门；附件对象元数据周期回推（存量 22 项缺口同链闭合）；表情编码失败不再伪装 no_match；生图快照恢复分支真实可达；**GIF 动图**：生成请求补 output_format/frame 参数（旧缺省静态 PNG=根因）+creation_work 白名单收 gif，本地全链零付费验证。golden 三件重建+夹具 8/8。全量 235/237（2 败=隔壁 home WIP 在案）。
+- 2026-11-09（交接协议）：R5/R6 剩余、生产操作队列、工具目录标定/golden 再生成/测试隔离等陷阱全录——`docs/reports/ALBUM_HANDOFF_20261109.md`，接手先读它。
+- 2026-11-09（复审整改 R6部分/R8/R9，`531a4ae`+M 合同，未部署）：存档 M 同步收据门槛（未同步=可重试拒绝，不提前成功）；生图快照未确认保持 stored 可补确认（R8）；M 合同生成物同步（R9）。R5（收藏/归类 UI+模型写工具）与 R6 其余（双标记/封存精确化/分页）继续排队。全量 235/237。
+- 2026-11-09（复审整改 R2/R3/R4/R7，`8e37a09`+M`(R1)`，未部署）：语音回源失败收口可重试（原卡 processing 且 ASR 零调用）；通知注入从初始化信封移除（存档→滚窗→丢通知根因）；生产装配按 M hash 去重相册/选集跨来源同图+选集跨消息去块；表情集合 scope 免先发消息（成员即授权+检索前有界补索引）。R1：M conversation.get 附 attachments_meta+前端类型修复+dist 已装回 release（503 需重启 M）；R5/R6/R8/R9 排队。全量 235/237。
+- 2026-11-08（语音进 M + 双份清理，`42b09da`+M webm，部分已执行）：宿主用户裁定语音同图片进 M 唯一正本（代码 v69/voice 认领先行回源取字节/oido 回源/M 白名单+webm）；存量 23 条已迁 M（23/23 双侧核验，M 限流三轮退避收尾）；**图片 38 条 E 副本已物理清理**（38/38 核验后删 36.3MiB，回源 hash 一致验证）；**语音 23 条 E 副本待部署后删**（当前生产同步读，先删断深听）。全量 235/237。
+- 2026-11-08（相册审计整改第三批切片二/三，`78a099c`+`9940fd7`+M`d21908a`，未部署）：ALB-10 争吵封存自动浮现抑制（quarrel 权威集→sm 映射，注入点扣留命中来源的冻结 augment；无法定位来源的不凭相似封禁）；ALB-13 存档文本检索（M source.search+include_ids 候选限定，E archives_search 工具带有限摘录，Qwen dense 不在 source 层如实只用 BM25）；ALB-04 四入口 UI（AlbumPanel 四标签+选集栏争吵/甜蜜存档动作+携带模式切换；过时文案清理）。四个换窗夹具软线 24k→24.8k。全量 235/237。待授权：部署、M 白名单热更（+source.search）、存量缓存清理。
+- 2026-11-08（相册审计整改第三批切片一，`0ec2641`+M`bc025a6`，未部署）：ALB-03 M 原文页实际看图（E 归档 ack 后补附件对象元数据 sha；M 前端 blob 渲染，失败如实不可读）；ALB-13 R33 切片（media_search scope=stickers 集合过滤，空集/不可达不放开全域）。四入口 UI、封存抑制、存档文本检索仍未做。全量 235/237（余 2=并行 home WIP）。
+- 2026-11-08（相册审计整改 1/2 批，`f8c6739`+`a8f9af3`，未部署）：ALB-06 幂等键=client_operation_id+断连两类分类；ALB-05 M 落正与作品条目为成功条件（分状态重试不二次生成）+pin/commit 引用保护+media_view 作品分支；ALB-01 缓存有界化（预算+LRU 逐出+一次性脚本待授权）；ALB-07 hash 去重/选集图不进片段/同图留言保留（6+6=6 反例）；ALB-08 计划即落库+投递后停止也消费；ALB-11 通知进正常轮尾部按投递证据收口；ALB-12 停止优先 running；App.tsx 过时文案+产物重建。全量 235/237（余 2=并行 home WIP）。第三批（四入口 UI/M 原文看图/封存抑制/检索 scope）与生产部署/缓存清理待授权。
+- 2026-11-08（部署协作提示，致后续部署的任何一路代理）：**HEAD `832c84f` 已是合流版**（相册全批 dcada7d 及之前 + 主页资产清理 832c84f，生产正跑 homepage-clean-832c84f）。后续部署一律 `bash deploy/macos/make-release.sh HEAD <label>` 从当前 HEAD 建新检出；**不要把 start.sh 切回 album-full-dcada7d 或更早**——那会把已上线的主页旧资产删除挤掉（直链复活，清理失效）。生图 Key 已配（ESTOMAGO_IMAGEGEN_KEY，model=gpt-image-2.6-sunburst，冒烟 18s 通过）。
+- 2026-11-08（相册重构 P3 生图，`62e4384`，未部署）：OpenAI 图片生成适配——服务端 Key（credential_ref 模式，未配置=如实 UNCONFIGURED）、ImageGenAdapter（魔数校验/错误分类/超时=结果待确认不自动重发/只回 URL 不当已保存）、两阶段恢复（v67：生成成功暂存字节，入库失败重试不二次付费生成）、自动进作品（content v5 免桶图片作品）；image_generate 工具+冻结包/golden 52 项同步+三夹具容量重标定。真实远端联调未执行（无 Key）。测试 5 例+全量 234/237（2=并行代理 WIP，1=并行 flake 单跑绿）。
+- 2026-11-08（相册重构 P4，`3ba33bc`，未部署）：对话存档（争吵/甜蜜）——content v4 conversation_archives 正本（非连续引用集合保序）+ E 双入口（conversation_archive 工具：精确定位二选一/最近完整回合/无定位如实拒绝；POST /api/v1/archives：争吵先停当前回合双状态分开）+ 通知单通道（工具=回执；用户=host_notices v66 装配期投递一次）+ 测试装配/golden 三基线同步。封存自动浮现抑制（跨 M）与前端 UI 待续。全量 234/236（余 2=并行代理 home WIP）。
+- 2026-11-08（相册重构 P5，`b4a2364`，未部署）：滚窗真实携图——撤销 2026-10-18 textOnly（宿主用户裁定开窗包按最新）；carry-images 规划器（选集图∪相册携带去重合并 ≤CARRY_IMAGE_LIMIT=10，超限结构化阻断）；携带片段独立 system 块随首请求冻结进轨迹；next_once 窗内首次成功投递后消费（before 过滤防误吞，幂等）；估算器 1600/图同源计费；全量 233/235（2 失败=并行代理 home WIP）。P4 存档与前端四入口待续。
+- 2026-11-08（相册重构 P3 切片一，`9db2dba`，未部署）：携带设置合同——packages/contracts 唯一常量 CARRY_IMAGE_LIMIT=10 + content v3 carry_mode(none|next_once|always) + 跨相册去重写入校验 + GET carry-set / POST consume-next-once（幂等）+ content-carry 5 例。部署与 P5 装配消费（撤销 textOnly、三模式合并、派发双检、next_once 消费时点）待续；同日生产已切 E=album-p2a-7e9f8ea、M=album-p2a-e3ad5c5（venv 迁 ~/Data/mariposa/venv-album-p2a），存量 31/31 媒体已落正 M。
+- 2026-11-08（相册重构 P0/P1/P2a，提交号见 git log；生产切换仅 media-embedding 单服务，E host 未部署）：P0 media-embedding 已脱离开发树、跑 release `audit-fix-20261108-70c7609`（plist 备份可回滚；指纹/向量验证一致）；P2a 新媒体经 M prepare/stage/finalize 落正（MariposaMediaStore+media_assets m_* 列 v64+读回源+后台退避同步+存量迁移脚本 media-master-backfill.mjs；chat_voice 不纳入）；M 侧 mime 白名单 +svg/html、estomago_builtin 白名单 +media.*（生产库已热更，44→46）。232/232 绿。生产迁移闭环/物理清理/P3-P6 未执行——详见 `docs/reports/ALBUM_P0_P2a_MEDIA_MASTER_20261108.md`。
+- 2026-11-07（第三轮复审修复：R3-M01/M02/C01/B01/B02/V01/V02，`9580e69`，**已随 `c9ec10c` 部署上线**，生产 schema 已至 v63）：迁移 v61 按哈希规则从序列移除、v62 条件重建保留 seen_sequence（v61 曾把 7 条生产 committed 行清空；committed 无消费者不回填，复审已撤销恢复建议）；v63 纠正 v59 占位误回填（生产命中 0）。i_write 崩溃缝启动归 unknown + 恢复 401/403/冲突类保持 unknown（本次恢复失败≠原远端未提交）；upsertIntent 事务内同键异参→409；finishRun run/task 同一短事务；邀请取消即收口镜像、接听准备期活动连续（归属/call/镜像同事务）；find/compare 改按实际 analysis_id 后验资格（显式新分析不再被旧自动历史封死）。配套 O `621d710`（围栏前置，已部署 lifecycle-startup-20261107-621d710）。全量 231/231。
+
+- 2026-11-07（复审补做：R2-M04+RVO-03，`e762ff2`，**已随 G4 切换部署**）：memory_i_write 接纳即落 effect 账本（原操作身份+参数快照，迁移 v61 当时引入 i_write kind），recoverUnknownEffects 按原身份重放恢复原成功；CallPanel 挂断读取 media_close 如实展示。全量 230/230。
+
+- 2026-11-07（用户授权同步）：沿既有 git-anon 导出推送本地 `e44cb40`..`af687f7`（结构整改 R1-R4b 六个代码提交+文档）→ 远端 `1673be1..33ff007` 快进；副本重写全量复查通过、原仓零重写；脱敏映射后本地↔远端 24 文件 45/45 行差异全部由姓名映射解释、无未解释差异。
+
+- 2026-11-07（`88a4963`，未部署）：R4b 换窗/选集纯函数抽离——工作集估算（D06/F25/1024 裁定②/F-J-33/R21 口径）→ runtime/rotation-estimate.ts、选集容量估计三助手 → context/selection-estimate.ts，supervisor 2814→2778 行；勘察确认选集状态正本本就在 ManualSelectionService，编排视图不整体搬迁。选集/换窗 8 个定向+全量 230/230 绿。R5 memory 域待续。
+
+- 2026-11-07（`77f2aaa`，未部署）：R4a 后台域拆分——保温派发资格门（runtime/background-keepwarm-gate.ts）与结果分类收尾（runtime/background-outcome.ts）迁出 supervisor（2910→2814 行），runBackgroundTurn 收敛为前置检查+尾部装配+循环编排；后台域定向+全量 230/230 绿。S1 让位策略经实读降级（单一闭包源已存在，四处消费点失败语义各异，合并属机械翻牌）；R4b 换窗/选集与 R5 memory 域待续。
+
+- 2026-11-07（`e44cb40`，未部署）：四仓结构审计整改 R1-R3——删 cancelledBeforeRun/window.changed/React 死代码组；MockRunner 并入信封工具循环并退役 dv=null prompt 单请求分支（测试替身全迁移零删除，新增 HostOptions.runnerOverride 测试接缝仅 mock+TEST_MODE）；启动恢复与 Mariposa bootstrap 分页机迁出 supervisor 至 runtime/recovery.ts 与 runtime/window-bootstrap.ts（3325→2910 行）。typecheck/build:web 通过，全量 230/230 绿×3。生产仍跑 release 检出未动；R4/R5 待续，R0 裁定项未决。
+
+- 2026-11-06（`f63c20c`，已部署）：I 写入按真实 HTTP 状态区分首次拒绝与未知结果恢复，删除泛 `CONFLICT` 判断；邀请建呼准备改由原有 handoff 执行位统一承担，初次/失败重试/成功交接/释放同源，移除路由中借响铃 pending 表示准备的补丁。删除假重启、复制恢复 SQL 及重复窄测试，换为真实 M HTTP/进程中断 4 项、邀请正式 HTTP 3 项；相关回归 22 项与宿主类型检查通过。M 联调使用既有 `scripts/verify-mariposa-bootstrap.py --case i-recovery --mariposa-repo <M仓目录>`，不会被普通 `npm test` 自动覆盖；生产 7 条 committed 历史字段无需回填。
+
+- 2026-11-06 23:56 PST（用户授权发布/重启）：E Host 切到 `lifecycle-consolidated-20261107-ee4f9fc`，O 切到 `lifecycle-startup-20261107-621d710`，各重启一次，live/ready 均200；M/S/Content版本未变。既有备份已保存，副本预演及生产61→63迁移后核对1782条消息、4857条修订、35条附件、8条内容引用、4条书签、7条已完成执行记录和2条声音观察均未改。沿既有 git-anon 导出，修复提交本地 `f63c20c` 对应远端 `44d5459`；四仓已跟踪文件在既定脱敏映射后无未解释差异，未重写本地历史或姓名文案。未运行真实模型/真人通话验收。
+
+- 2026-11-06（`17cf2ef`，未部署）：按反馈重画夏季水印为深蓝潮汐月弧、星点与一体英文花体，清除大面积底色；两句英文逐词核对，DOM保留无障碍正文。新构图放在动物上方留白，保留春定稿与各入口；浏览器核对图片、正文、三个原夏季热点及4项隔离主页测试通过。
+
+- 2026-11-06（`d7a7485`，未部署）：新增与春季不同的夏天水流/湿云/星光水印，两句英文以紧凑花体分行避让图案；水印独立前景层防止草叶遮断，动物遮挡保持。春夏各自拖动/缩放/存储/显隐，春定稿保留；夏日历占位返回夏天。浏览器核对正文、原热点、显隐、独立缩放与穿窗交接，4项隔离主页测试通过。
+
+- 2026-11-06（`d3e2264`，未部署）：修复桌面全景cover裁切导致水印开关移出左边界的问题；开关位置补偿相机横纵裁切，花瓣标记略放大加深，44px点击区不变。浏览器确认按钮从x=-41移回可见x=8并实点显隐往返，4项隔离主页测试通过。
+
+- 2026-11-06（`551e4d6`，未部署）：固化用户定稿的春季水印位置与77%宽度，新增7.2秒轻漂浮/呼吸及左下小花瓣显隐按钮；隐藏同时移除水印点击区，按钮保留；调整模式停止动效，减少动态效果设置下禁用。浏览器显隐往返、精确布局与编辑暂停检查及4项隔离主页测试通过。
+
+- 2026-11-06（`d7fe80d`、`0d8e8c9`，未部署）：春季新增透明水彩签名导航，图标走 chat、花体走日历占位；新增 `?adjust=signature&preview=phone` 水印专用调整模式，支持拖动、30–100%缩放、微调、复制、保存与普通预览恢复，既定动物布局不变。浏览器实测拖动/缩放/保存/刷新恢复，4项隔离主页集成测试通过；正式日历到按写入日查询记忆仍待接入。
+
+- 2026-11-06（`df585c4`，未部署）：夏季最低引导萤火虫改为唯一相册入口；删除冬季三处相册及旧双鸟语音热点，书架改共读、雪窗改语音深听，二楼红线不变。相册返回夏天，共读/深听返回冬天，仍为明确标示待接入的占位页；浏览器实点新入口、二楼及检查窗口不与红线重叠，4项隔离主页测试通过，并补充窗口交接清单。
+
+- 2026-11-06（`18be0dc`，未部署）：夏季许愿星/共读入口分别绑定最高金星与最低大萤火虫，以44px独立点击区和柔和亮闪引导替代整片热区；秋季朋友圈改绑右上枫叶。装饰萤火虫保留在引导点上方，动物透明包围空白不再抢走草地点击；浏览器实点三入口、检查旧热区无误触与动物转场、4项隔离主页测试通过。
+
+- 2026-11-06（`8c5f2cd`，未部署）：补齐四季预留入口的可见跳转：日历、共读等进入明确待接入的统一占位页，星星沿用许愿星页；扩大樱花/星空/萤火虫热区，返回时按季节恢复画面，修复静态演示许愿星返回根目录的问题。既定插画与动效保持，浏览器实点三入口及返回、4项隔离主页测试通过。
+
+- 2026-11-06（`9c49584`，未部署）：借参考视频前景掠过与远近视差节奏，冬转春改为靠近雪窗、玻璃内显现春景、穿窗后接回主页；保留全部插画和角色定稿，手机落到单春，桌面回四季。视口遮罩与相机同步，交接先恢复春景再淡出，resize取消恢复可用；浏览器逐帧/手机完整循环/缩放中断检查及4项隔离主页测试通过。
+
+- 2026-11-06（第二轮复审修复：RF2/RV2/RB2，`01455f6`/`9b6d485`/`9f7a46e`+`b9ad57f`，未部署）：按 reaudit2 第二轮复审七个反例修复。RF2-01/02 content：advanceAccepted 让重试/恢复共用推进路径（先核对原操作事实再重放），鉴权层 401/403≠原操作未提交（保 unknown 与 pin），失败重开重新取得有效 pin——复审两反例资产 DELETE 由 200→409。RV2 深听三事实分离（迁移 v59）：analysis_adopted 逐行落定采纳，统一消费端口贯穿 get/view/analyze/find/compare 与 Source，超时占位轮的迟到结果不再可消费；取消响应读业务 body；E 重启收口全部未决观察+O 启动围栏终结未封版作业（迁移配套 O `85c613a`）。RB2-01 通话活动补齐生产者与期限：模型 invite 落 E 投影（迁移 v60、TTL 读时解释）、dial 无轮询自然到期、accept/decline 共用到期规则；RB2-02 finishRun 共同收尾（stopRun 旁路删除，run/task 资格一致）；RB2-03 让位按控制类型（kind+origin）贯穿。全量 229/229 零失败；S 424、O 单元全绿。
+
+- 2026-11-06（复审反例修复批 2：通话/深听/后台/SDK/工具合同，`99e9828`/`e4f3359`/`d529715`/`0106c78`/`291e6f6`，未部署）：RV02 S end 通知携带 had_session 正本事实、E 按"从未连接预留≠真实通话"判定（配套 S `87ff1d7`）；RB01 Sol 门控统一——活动事实单一判定（响铃+准备+已建立）贯穿登记/请求/装配三道门+事实写入触发在途失效；RV01 深听资格贯穿——迟到 analysis_id 归属+补发 cancel、get/view 消费门、编辑/停止/未派发/重启死轮各入口 abandoned 收口、cancelAnalysis 如实返回；RB02 SDK 完成工具在 runner 控制层归一 completed（不再 failed turn/跳过维护回执）；RB03 维护轮不再 fork、成功后锚前进（协议保留合同统一）；RB04 once 任务（含 reminder）真实收口+取消终态待核+投递身份取冻结 scheduled_for+零派发恢复还原 daily 本次 due；RB05 自由活动路由接通正式分派（修 INSERT 错位+origin CHECK 迁移 v58）并经真实调度验收；RT01 工具公开 schema 与直接执行事实一致（definition_id 可选+新窗 41C/7D 完整定义预送）；RT02 Wishstar body 取消纳入未知边界；RM02 E 合同副本同步 M 重生成正本。配套 M `f1f6908`（RM01 I 领域唯一 payload——真实 SIGKILL 后同请求恢复原成功不再 409；MT-05 暂存启动收尾）、O `f88d6c0`（RV03 临时文件受登记键约束，真实 fsync 后 SIGKILL 的 .tmp 由既有消费者回收）。收口 `ce65a22`：RT01/RV01 合同变化的 golden 重录（快照 baselineNote 记录合同变化）、F03 容量再标定 44k、A06 断线断言更新为 RV01 合同。全量 227/227 零失败；S 424/424、M 19 项定向（含真实 60 秒 stale 门与真实 SIGKILL）、O 131 项单元全绿。
+
+- 2026-11-06（复审反例修复批 1：F06/F07 RF01/RF02/RF03，`7ff0b59`，未部署）：按 20261106 只读复审四个反例修复——恢复消费者单飞标记 finally 真正释放（启动空批后运行中未知提交由真实 15 秒 timer 收口）+MAX_ATTEMPTS 筛选下推 SQL；coordinator 本地已接受身份边界（pending/unknown 同键异参 409，不再因远端无回执改写已接受操作）；模型业务幂等键去 provider requestId（续轮重试复用原操作，未知提交回 CONTENT_POST_UNKNOWN）；旧回执兼容需正面类型证据（形状同型或域ID前缀+对象事实），删 album 豁免。新增 content-rf-recovery 4 反例回归（真实 Host/ef6698b 冻结夹具），F11 补 available 退出后再引用正例。
+
+- 2026-11-06（审计复核批：C07/C08/C09+O 补证+SDK 宿主侧，`b779842`/`3325b25`，未部署）：C07 自醒包装携带设置/原due/递交时间（迟到不重算）；C08 纯1心跳协议保留（探针首差 4→-1）；C09 工具心跳后继维护恢复（occurrence key 随维护回执变化，增量 0→1）；新增 cache-maintenance 集成测试与包内探针入库。O `3018b09`：DELETE 失败/写库崩溃/真实 SIGKILL 三故障形态隔离补证——均有既有消费者（幂等重入/cleanup_orphans），零产线改动、不新增启动清扫。C08-SDK 宿主侧 anchor/fork 本地验收（3325b25）；真实 SDK 序列与上游缓存计量单列外部。全量 226/226 零失败。
+
+- 2026-11-06（收尾批：C03+P6+P7，`c7971de`，未部署）：C03 工具失败轮保留已发协议（下一输入接续工具往来，不重放副作用）；P6 工具直接性（tool_invoke 免读定义直接执行、过期版本拒绝）、自由活动显式入口（POST /background/free-activity，现有 task/run 有界窗口）、深听电话入口（CallPanel mode=deep_listen 全程绑定）；P7 Wishstar 取消贯通（未发出/已发出未知分开）。配套 S `8663e62`（multipart 全出口临时文件清理）、M `c075c26`（暂存目录 TTL 磁盘回收）。O 侧按审计要求需先补真实故障证据，未加推测性防御。全量 224/224 零失败。
+
+- 2026-11-06（P2–P5 修复 + 全量收绿，`8926b6b`/`7aa9cbd`/`2493767`/`fac597e`/`4236c72`/`7e60150`/`9cbd4a5`，未部署）：四仓审计 P2 深听资格同轮终结（决定持久化 v57、终态失败、O 取消接线、助手自动分析移除）；P3 通话终局与 Sol 门控（E CallClient 幂等终局、已结束通话拒流、通话期浮现门控；S `2a5fe2f` 预留期挂断由正本承接）；P4 I 写链稳定操作身份（E 双通道幂等键 + M `5a7281a` 领域事务同提交回执）；P5 后台收尾（complete 后停发新模型请求、提醒投递 task+due 幂等、无执行者 stopRun 直接收口、HTTP 提醒旁路收口）。存量 22 个失败测试文件按现行合同对齐（容量标定重校准、退役接口勘误、golden 分类重录），全量套件 223/223 全绿。未做：P6 深听页/自由活动入口、P7 资源收尾、C03 协议保留深修——待后续批次。
+
+- 2026-11-06（`859d500`，未部署）：四仓合并审计 F06/F07 P1 批次——content 15 条写路由统一类型化命令身份（指纹 v2；回执解析先于存在性/作者/CAS；旧 13 条回执按旧算法+资源形状受限兼容，不足待核冲突）；新增权威引用快照端点与相册最小墓碑（带版本零集合）；Host 新增内容写协调器：HTTP 前本地事务持久意图+protected pin、成功后按快照原子确认（owner 版本锚单调准入）、未知结果由恢复消费者按原身份收口，浏览器/模型/恢复共用同一实例；引用登记/解除 HTTP 入口收回（410）。隔离验收 14 项（F01—F15）全绿；存量只读 dry-run 复核生产 4 有效作品/8 成员、3 墓碑 rev2-4、13 旧回执、外部引用 0；真实回填与部署需另行授权。
+
+- 2026-11-06（`1b3cad0`，未部署）：按用户定稿固化春夏冬角色的位置/大小/角度/图层；局部重绘秋冬窄接缝并裁切冬景右侧，秋天新增独立水彩探头姿势和原画麦穗前景遮挡。沿现有路进屋，侧滚按新起终点分道，冬季按双角色实际中心放大；旧草稿只重置已换姿势的秋天。浏览器手机比例完整四季循环、桌面拼接及4项隔离主页集成测试通过。
+
+- 2026-11-06（`90e3110`，未部署）：四季编辑器新增每只动物独立旋转、零度回正及前后遮挡选择；保存和导出新增角度/图层，旧草稿保留原位置大小。渲染和出入场读取配置，资源版本同步防止新控件配到旧脚本；浏览器实测旋转、换层、回正、保存恢复与旧草稿迁移，4项隔离集成测试通过。
+
+- 2026-11-06（`1ea4f13`，未部署）：位置编辑器改为水獭/小浣熊独立图像选择卡，默认单只；锁定已选对象，重叠处不再自动换选，放大后的可见区域也能拖动；一起移动/缩放改为额外勾选。浏览器验证重叠处只移动浣熊、单只缩放和原草稿恢复，语法检查通过。
+
+- 2026-11-05（`bb892f4`，未部署）：主页新增 `?adjust=1` 临时位置/大小调整模式，支持手机/全景、四季切换、单只或一起拖动与缩放、本地保存及复制数据；两只默认视觉大小对齐，春天贴靠，春秋/步态素材改柔和同色边缘。实际浏览器验证拖动、独立尺寸、同比缩放与刷新恢复，普通主页侧滚及4项隔离集成测试通过。
+
+- 2026-11-05（`eabd78e`，未部署）：新增春季醒趴、秋季正坐及六帧四足步态；保留夏坐/冬睡原素材，夏秋浣熊放大10%。春侧滚到夏，夏四脚走入秋；秋沿S路慢慢缩小进门消失后推镜入室；冬床中心睡姿整组放大回春。素材脚线按alpha实测，浏览器完整循环、实际步态帧与同步放大检查及4项隔离集成测试通过。
+
+- 2026-11-05（`f4d00fa`，未部署）：按用户参考视频先修主页图层；四季改用可见脚底/床面接触点落位，原画局部草叶、麦穗和被褥形成前景遮挡，秋季前后沿既有S形小路走向门口且脚印共用路线。PNG原图、转场总时长与镜头时点保持；脚线按素材alpha实测，浏览器定格/入路检查及4项隔离集成测试通过。
+
+- 2026-11-05（`5d20fd5`，未部署）：手机与桌面统一使用依据认可原图重构的连续水彩全景，移除底图角色并更新冬日床铺；手机取消额外放大，按四等份显示并保留自然交叠。独立角色动效与接口继续沿用，冬景热点重新对齐；430×932预览与4项主页隔离集成测试通过。
+
+- 2026-11-05（`5cae7c7`，未部署）：四季水彩主页替换固定 iframe；手机单季全屏、桌面四季画布、独立角色侧滚/跳跃/走路/醒来循环与隐藏功能接口。430×932 手机及桌面浏览器验证、主页隔离集成测试通过；保留现有聊天/许愿星路由，其余入口留事件接口，原生 iOS 实机未验收。
+
+- 2026-11-05（`22065bb`，未部署）：记忆保存、原文读取、来源绑定及原话摘录解耦；`memory_hold` 无需已读或同步来源，`memory_source_bind` 独立补绑，`memory_words_write` 独立补话，绑定失败不撤销记忆。旧冻结窗口携附件参数仍保存并明确告知附件未执行，新工具定义随新窗口冻结。类型检查、相关隔离回归及真实本地 HTTP 两服务联调通过；生产数据库、窗口和服务未改。
+
+- 2026-11-04（`3df190a`，显示文案已部署）：聊天标题、工作台、活动日志、预约及记忆说话人恢复“char”，前端按现有流程重建；五个修复文件与当前 `call-fixes-20261104-c343808` 发布目录一致，前端类型检查、构建及宿主连续性回归通过。临时新增的 Opus 4.6 `[1m]` 选项已全部撤销，用户确认空档后重启验证完成；当前选择普通 Opus 4.6 / medium，未开启额外付费。
+
+- 2026-11-04（已核对运行实例）：E/Content `8bbb246`、M `db3669f`；正式设置 revision 1，预约与心跳开启、额外自由活动关闭，日费用为明确 unlimited。旧 42 项窗/历史不改；新窗包 40 C/7 D/2 T 的生产请求尚未实测，现有后台报价门保持。[发布与限制](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
+
+- 2026-11-04（`8bbb246`，P5 已部署）：独立控制预约/心跳/自由活动，明确无日上限，保留其余限制；真实隔离宿主完成再次预约与重启 noop，长正文分片保真。[本轮证据](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
+
+- 2026-11-04（`ae95541`，P4）：registry 生成 40 C/7 D/2 T 冻结目录、同源 M 合同和日常前门；五分支许愿星读取含已批准 requests，旧窗薄兼容。
+
+- 2026-11-04（`a6b915d`，已随 `8bbb246` 部署）：相册/朋友圈稳定分页，SDK MCP/API 真实图块与授权回放；草稿和撤销条目拒读，现有媒体回归通过。
+
+- 2026-11-04（`f76d13f`，已随 `8bbb246` 部署）：P2 贯通主动召回到详情、最终交付回执和结构化续查；配套 M `0d684d0` 修原文证据、缓存身份与 runtime 19。
+
+- 2026-11-04（`69364ad`，已随 `8bbb246` 部署）：P1 修复 emotion/trace/计划链接结果与分类多选，里程碑覆盖保护、冻结 schema 完整校验；两仓真实隔离 HTTP 验收通过。[施工记录](docs/reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
+
+## 2026-11-15 · 停止与缓存锚裁定（她裁定，未部署）
+
+- 2026-11-15（`189c84d`，未部署）：她裁定"模型开始生成回复后没有打断的地方"——supervisor.stop 对已派发（attempts running × dispatch_started_at）回合返回 409 generation_in_flight 本轮跑完；停止只在派发前有效，且此时打断不再删 SDK 会话锚（interrupted 且 !activityStarted → anchorOutcome='kept'，下一次请求照常 resume 不掉缓存），收口 RB03 注释与实现删锚的背离。已开始产出后的中断/失败仍删锚保守重建。用例对齐：mock-turn 停止改派发前停止+新增 409 闸门；F07/F20 改经关机路径 stopAll 验证工具批 fence/usage 记账（语义保留，用户停止不再可达）；A04 语音客户端断开不再打断生成（回复完成落迟到关联，Siren 侧照实 partial）。全量 238 文件 + typecheck 全绿。
+
+## 2026-11-03 · 自动浮现预算与交付合同（裁定批次1+2，本地未提交、未部署）
+
+依据《ESTOMAGO_MARIPOSA_BUDGET_RULING_20261103》（她 13 项裁定）：**R1/R3** 投递预算 `delivery_budget_bytes=min(4096×3, 24576)` 随 prepare/validate/check 载荷过线（同 job 同值，M 端 payload_hash 幂等校验），E 终检仍权威；跨线统一 UTF-8 bytes、量最终投影。**R5/R6** 记忆与原文分开交付——"我们的话"/事件命中只投记忆本体（原话+日期+说话人），原文模式命中投真实锚词前后各 300 字节选（〔原文节选〕标识；定位失败保持全文逐字；不随预算缩放）；复核侧邻文窗保留（R3 裁定③，相邻纠正仍达 JEV），交付侧剥离。**R2 已知后果**：不可截断且超 12KiB 投影预算的长正文永不自动完整注入，走既有主动深读入口，不视为缺陷。**R4/R8** 删除从未执行的 `max_retained_tokens_per_window`（schema/示例 yaml/RETIRED_CONFIG_KEYS 结构化披露）；M 端同步删除 AUTO×3/union60/256KiB/delivery_same_occurrence 四组死配置并升 `SURFACE_POLICY_REVISION` 6→7（在途 run 失效、判断缓存换键）。**R9** 作业调度身份改由配置 `memory_surfacing.job_policy_revision/job_prompt_revision`（默认 1/`e_surface_v1`）承担，删除冒充 M 的硬编码 1/`surface_prepare_v2`；新增迁移 v52——M 响应真实执行版本落 `surfacing_jobs.m_policy_revision/m_prompt_revision` 并记 `surface_m_versions` 日志；`integrations.mariposa.contract_version` 退役（transport 从未消费，F15；siren 侧有真实消费者保留）。验收：11-02"明明哥哥"生产数据只读重放 18,661B/6,221tokens（丢弃）→ 333B/111tokens（双门通过）。
+
+## 2026-10-31 · Sol 自动浮现整合修复（本地未提交、未部署）
+
+基于当前 SDK 发布源 `164b7d9` 整合 `cf7d2bf` 的 Sol 浮现功能，保留订阅优先、统一请求账本、原生历史和工具续轮。删除 SDK prompt/retain 旁路；Sol v2 仅收原话与角色，输出原话依据由宿主映射消息/修订，同需完成事实留在原有 surfacing job（不另建判断状态池）。普通空结果消费，容量/技术拒绝不消费；新对象、日期、原句及明确重查正常放行。来源详情支持前后逐片续读。新增迁移 v51，既有 v1–v50 SQL不变；生成前端按现有构建流程更新。实际 OR/CC/CLI、产品 Sol/JEV API 均未调用，生产配置与数据库未改。该整合代码不能用旧 GLM 分支的单元失败清单代替验证。
+
+
+- **2026-10-31 · 麦克风入口与工具过程显示（`f003811` 已部署）**：区分 HTTP 安全环境、权限拒绝和设备错误，提供同站 HTTPS 链接，拨号前检查采集环境；工具过程按真实调用合并开始/结束，映射业务工具中文名与标识并展示错误码，刷新可从既有事件恢复。SDK 请求追加用户要求的中文思考摘要语言偏好，不翻译或改写旧记录，不改窗口与授权。隔离回归和原生回环序列化验证通过；真实手机录音及模型语言遵从由用户验收。
+
+- **2026-10-30 · 现有窗口语音目录修复（运行版本 `af1a538`）**：生产当前窗口仍冻结在 10 月 22 日的 38 项目录，缺少接听与主动语音能力；按用户要求仅补入 call_control、chat_send_voice、transcript_read，旧定义、三工具入口、历史与窗口均不变。新增正式 HTTP→SDK→MCP→接听建呼隔离回归，证明旧目录拒绝、补齐后单次建呼。浮现开关与专用权限正常，实际消息仍由回忆意图门跳过，尚待用户给出漏判例句。
+
+- **2026-10-30 · SDK 长效订阅凭据接线（`af1a538` 已部署启用）**：用户在手机完成官方 `setup-token` 授权，生产以私有环境文件向 SDK 传入 `CLAUDE_CODE_OAUTH_TOKEN`，继续排除 API key、其他 Bearer token、云厂商开关和上游覆盖；不启用 bare。固定 runtime 的无模型输入检查确认令牌来源、API key 未使用，相关隔离回归与类型检查通过；真实令牌不进入代码、回执正文或测试材料，实际聊天由用户重试验收。
+
+- **2026-10-30 · SDK 订阅归属修复（`e6ea301` 已部署）**：撤掉最终 system 整体覆盖，恢复官方 SDK 自己生成的计量归属和最小身份前缀，纠正此前将订阅识别元信息一并清掉的做法；保留 est 自定义 system、原生历史适配及环境/型号/日期提醒清理。原生本机抓包、相关回归与类型检查通过；无真实模型测试，实际供应商接受情况由用户验收。
+
+- **2026-10-29 · SDK 原生历史适配（`36b099f` 已部署）**：去掉 `<est_history>` 包装，按固定 runtime 的 stream-json 协议顺序回放真实 user/assistant/tool 记录；非生成回执不进入聊天、用量或工具执行。保持真实回合的控制通道，保留 est system 分块、原窗口、选集及规范轨迹。原生本机验证包含冷重建、历史并行工具结果、后台、评审、取消和 flag；真实供应商运行由用户自测。
+
+- **2026-10-29 · SDK 提示清理（`e8fd7a1` 已部署）**：最终 system 覆盖为 est 原内容；仅过滤 runtime 生成的环境、型号和日期附件，保留用户原文及工具结果。官方 runtime 本机合成抓包 26 笔清理验证、工具/resume/后台/取消/flag 回归通过；HTTP 客户端仍为 sdk-ts。system 内技术计量文本会同时移除，使用 2.1.283 的早期 function hook；真实订阅端接受情况和计量影响未验证。
+
+- **2026-10-29 · 用户修订切换语义**：替代旧“切模型即换窗”约定；SDK/API 和型号、思考等级是下一回合执行选择，当前窗口/轨迹/选集不变。SDK 按需冷重建，API 历史守卫保留内容与工具一致性；仅主动换窗或容量原因进入选集。`768472b` 为本批前基线。
+
+- **2026-10-29 · Opus 默认与 SDK 思考等级纠正**：在 `fca1a43` 上恢复 Opus 4.6 为生产默认；SDK 思考等级贯穿原设置、型号校验和真实请求装配。Opus 4.6 四档、5.5 五档；保持 Fable 未接入和 sdk-ts。
+
+- **2026-10-29 · SDK Opus 型号选择**：基于 `667220a`，前端 Opus 4.6/5.5 分别使用 SDK 精确型号；选择复用 runtime_settings，贯穿请求装配、窗口指纹和记录。Fable 不开放，入口标识按用户选择保留 sdk-ts；隔离模型边界验证，无真实模型测试。
+
+- **2026-10-29 · 用户自行设置网页登录名与密码**：在已上线的 `0089cdf` 上加入“账号与密码”页和受认证保护的保存接口；密码以 scrypt 哈希保存在 0600 文件，换密更新浏览器凭据，已有 API 配对不变。登录、会话变更、SDK/API 设置及备份恢复经隔离验证；生产密码只由用户本人填写。
+
+- **2026-10-29 · SDK / API key 自主切换页面**：在 `f2236c8` 启用规则上补独立 `/settings/model-access` 页面，聊天“更多”直达；继续使用既有 runtime-settings 正本和安全回合边界。完整 Host 登录、切换、冷重启后选择保留及零模型派发通过隔离验证，真实模型测试由用户进行。
+
+- **2026-10-28 · 用户批准 SDK 启用规则**：额度/额外使用状态缺失不再单独阻断；明确开启或正在使用额外付费仍拒绝，API 凭据和明确 `tokenSource=none` 仍不准入。订阅型号计划为此前独立验证过的 `claude-sonnet-5`，默认策略将切 subscription-first，真实模型测试留给用户。
+
+- **2026-10-28（SDK 思考/flag 适配，`3ca3f1b` 已上线，SDK 未启用）**：明确的 SDK refusal 接入现有路由票据，已发生 fallback 保留事实并暂停；思考缺失本身不触发路由。修正重复 flag 的终态、订阅首次切换型号显示和路由提示文案；新增原生本机思考/中断/flag 证据及 `probe-capabilities --local --apply`（只登记本机适配能力，不冒充供应商验收）。全程无真实模型测试；费用未知的准入策略尚待用户确认。18:15 PDT 已部署至 `sdk-thinking-flag-20261028-3ca3f1b`，默认 OR/生产配置不变，健康200，735条消息与442次模型请求不变。
+
+- **2026-10-28 16:25 PDT（已部署，SDK未启用）**：代码 `3d510f6` 上线至 `~/Projects/estomago-releases/sdk-integration-20261028-3d510f6`，沿原 LaunchAgent 切换目录并重启；ready/live均200，735条消息、序号735、442次模型请求、窗口及schema50不变。配置保留 configured/OpenRouter；16:21官方只读usage仍为rate_limits=null，B01未解除。恢复点 `~/Backups/pre-estomago-sdk-20261028-3d510f6`；无真实模型验证请求。[接入与部署记录](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
+
+- **2026-10-28（候选，未部署）专项修复收口**：F01 `b73ef06`、F02 `5377849`（记录面补齐 `7cbd8db`）、F03 `138bb44`；`778067b` 验证完整 Host 登录/冷重启/角色与更正记录/工具回执/人工选集。相关 19 文件 138 项通过，官方 SDK 假 API 抓包 26+20 笔；本轮零真实模型输入。10:35 PDT 官方只读 usage 仍无 rate_limits，B01 维持 SDK_EXTRA_USAGE_UNVERIFIED；正式模型理解与真实缓存未验收。[接入记录](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
+
+- **2026-10-28（候选，未部署）F03 `138bb44`**：SDK 会话累计估值及 modelUsage/costBasis 进入既有 cumulative/raw 观测；请求 token、上下文与真实收费保持独立。原生 resume/fork 抓包和单/多请求计量回归通过；正式订阅准入仍待官方额外使用状态证据。
+
+- **2026-10-28（候选，未部署）F02 `5377849`**：每笔派发保留入口、请求型号、上游响应型号与 provider；聊天、自醒、容量评审按实际请求计量，订阅优先策略不被单次 OR 回退改写。
+
+- **2026-10-28（候选，未部署）F01 `b73ef06`**：单请求输入按来源归一化，SDK 缓存输入进入容量和记录显示；回合/会话累计不作上下文长度，缺失分项保持未知。定向 SDK/换窗/usage 回归通过。
+
+- **2026-10-28（候选，未部署）**：Claude 订阅 SDK 接回既有宿主、MCP 工具、额度回退与设置页；合成抓包、回退/网络隔离、当前家宽 HTTP 出口及设置页已验收。代码 `1f667b9`；`13ff61e` 修正 OAuth 的 tokenSource 误判，`d9b5d33` 删除套餐名称硬匹配。官方登录完成，一笔独立 SDK 合成短消息成功，消耗订阅输入 500／输出 11 tokens，服务端报告未用额外付费；完整宿主的自动准入和真实缓存等验收未完成，新增模型请求已停止。[验收、残留与回滚](docs/reports/CLAUDE_SDK_SUBSCRIPTION_20261028.md)。
+
 - 2026-10-27（**已部署并重启**，代码 `36d14a8`，发布目录 `~/Projects/estomago-releases/voice-reply-finalization-20261027`）：回复音频缺失仅在 Siren 明确 `audio_finalized` 后收口，迟到音频沿原 worker/操作身份补齐；旧服务缺字段时保留恢复资格。同批 Siren `a258592` 已上线；正式入口回归、四个真实 est↔Siren HTTP/WS 隔离场景、类型检查及发布目录验证通过。生产 ready=true、health 200、库 v50；735 条消息、序号水位、442 条模型请求和当前窗 38 工具均未变，零收费验证请求。回退备份：`/Users/owner/Backups/pre-voice-reply-finalization-20261027-201518`。
 
 - 2026-10-27（**已部署并重启**，代码 `b167284`，发布目录 `~/Projects/estomago-releases/voice-backend-20261027`）：回复音频与 Source 同步失败可恢复，打断后的正式回复保留关联；正文断流按同一操作找回资产，旧未接机会在回拨后及派发前失效。13 个相关回归文件（56 项）及类型检查通过。配套 Siren `6505648` / oído `8d74ee1` / Mariposa `7d0e002` 已同批切换；四服务健康为 200，est ready=true，数据库 v50，原 735 条消息及水位未变，验证新增模型请求为 0。Siren→est 复用既有 Core 令牌，归档 worker 仅补 `source.attachments.sync`。当前聊天窗仍冻结旧 38 工具，新语音工具须经既有换窗流程生效；没有自动换窗。回退资料：`~/Backups/pre-voice-backend-20261027-160943`。未做真机或真实收费语音验收。
@@ -139,6 +427,15 @@ LaunchAgent 常驻（凭据经 ~/Data/estomago-secrets/start.sh wrapper 注入 e
 
 ## 2026-10-05 深夜批次（在上述 WP 状态之后；按时间序，多路并行）
 
+- 2026-11-21 · `1a85fc2` 聊天存档加入新窗默认常驻，画图继续常驻；Claude SDK 隔离首包 17 项，两工具各出现一次，完整回归 1,609 项通过。尚未部署。
+- 2026-11-21 · `0ccd418`、`7e645ee` 与 M `f0681ae` 将自动回忆按真实标题、日期、正文、心情和原话呈现；`a549983` 新窗使用「我可以……」清单，精确查参数后启用按需工具。隔离全量 266 个文件、1,609 项通过，Claude SDK 回环验证 16 → 16 → 17 → 17。尚未部署。
+- 2026-11-21 · `51ef3e3` 与 Mariposa `d4a13ce` 成对实现「我们的话」命中整条记忆交付；姓名、前端详情、同桶去重和发送前复核均已隔离验证，尚未切生产。
+- 2026-11-21 · `94b2c68` 自主唤醒与换窗测试修正预约创建和容量触发条件；隔离全量 266 个文件、1,605 项测试通过。
+- 2026-11-21 · `6349bf5` 新窗常驻工具与 MCP Map 按需直调。本机 Claude SDK 实发 16 → 17 → 17 项，中文原名调用写入一次；同输入工具及指南合计减少 29,913 字符。本地已验证，未部署。
+- 2026-11-21（上海，联合审计）· `ac5cc65` 核验 API/SDK 心跳续接、朋友圈映射、候选池扩展与相册遗留，结论有阻断。[审计与复验清单](docs/reports/JOINT_AUDIT_20261121/AUDIT.md)
+- 2026-11-21（本机实施，未部署）· `76c81175c0c3` 修复联合审计 F01—F10 代码链，补独立午夜 Sol 日选与可扩展候选源；Host schema v87，45 个相关文件 228 项、25 个联合探针及隔离迁移/浏览器复验通过。[实施交付与未决边界](docs/reports/JOINT_AUDIT_20261121/IMPLEMENTATION.md)
+- 2026-11-21（上海，独立复审）· `4042b1f` 确认回复原星与第七来源已接通，复现中途重启丢协议等四项剩余问题。[复审结论与复验](docs/reports/JOINT_AUDIT_20261121/REVIEW_76c8117.md)
+- 2026-11-21（本机复审修复，未部署）· `d5b6c03663c1` 保全中途重启已确认协议、修正预留话回应归属、接通预约动作回执并分离客厅候选与历史读权；21 个文件 92 项、25 个主链探针、5 个原复审观测及 SDK 双冷启动通过。[本批修复与复验证据](docs/reports/JOINT_AUDIT_20261121/REPAIR_REVIEW_76c8117.md)
 - **d4884d7（2026-10-21，交接根因修复）**：前端请求取消/迟到响应与终态栏杆、启动测试合同纠偏、同轮记忆 source=target 与接受起绝对 deadline；保留 P2 与新历史/编辑交互，重建 React dist。全量 136/136 文件、918/918 断言通过，前后端 typecheck 通过；[修复与验证说明](docs/reports/CODEX_HANDOFF_FIX_20261021.md)。
 
 - **2026-10-19 联合审计架构清理（独立审计分支，未部署）**：默认会话常量归消息领域以消除 Host/HTTP 运行时循环；删除无调用方的 MCP 客户端/静态集成表、退役事件信封及草案 ReasoningEnvelope，真实事件正本与历史迁移保留。通用 MCP/SDK 宿主工具桥继续 **BLOCKED**；[当前入口与历史能力勘误](docs/current-architecture-20261019.md)。
@@ -269,3 +566,20 @@ node scripts/ds-smoke.mjs --dry-run   # DS 直连冒烟自检（零网络）
 - 2026-10-21 event-source (`60c6998`): hold 事件选区与 quotes 分离，完整原文修订校验；契约见 [event-source-hold](docs/event-source-hold.md)。
 
 - 2026-10-21 OpenRouter 自动浮现修通（`06075e5`）：同轮尾部宿主数据注入，保留旧缓存；[验收](docs/reports/2026-10-21-openrouter-surfacing.md)。
+
+## 2026-11-07 G4 生产切换记录
+
+- 时间：2026-11-06 17:2x PST；授权：用户本轮明确批准（"允许做完后你切生产和push远端"）。
+- release：E `audit-r2-20261107-e762ff2`（含未提交 home 并行工作快照）、S `unified-20261107-87ff1d7`、M `unified-20261107-7c16a8e`、O `unified-20261107-85c613a`。
+- 切换方式：O/M/E 改 secrets start.sh 与 content plist 指向新 release 后 launchctl kickstart/bootout+bootstrap；S 同命令 nohup 重启（8790）。
+- 备份：`~/Backups/20261107-pre-g4/`（E chat+content+media、M/S/O sqlite VACUUM INTO），E 备份另在 estomago/backups 轮转内。
+- 部署后只读核对：四服务健康（E host 302→登录页/content 401 鉴权、S 200、M 200、O 200）；chat schema 迁移至 v61；content schema 1,2（13 旧回执/7 creations 原样）；voice_invites/tool_side_effects(args_json) 新列就位；O 无 queued/running 残留。
+- 已知既有：M web 静态页 RuntimeError 为旧问题（本仓无 dist，API 正常）；estomago tunnel 为 TUNNEL_TOKEN 远端配置形态，本机只核对进程存活。
+- 未做：G5 真实存量回填（需单独数据处理授权；生产 content_owner_state 仍为 0，按 G3 dry-run 走 reconcileOwner）。
+
+### G5 存量回填执行记录（2026-11-07，用户授权）
+
+- 驱动：`scripts/content-stock-backfill.mjs`（owner 清单来自 content 库只读枚举；确认走 `reconcileOwner`——live 快照→单调准入→版本锚+committed 引用，与正常写同一路径；`--dry` 先行）。
+- 结果：7 owner 全部 confirmed——4 有效作品落 8 条 committed 引用（各资产恰 1 条、available 保持）；3 墓碑落零集合版本锚（rev2/3/4）。
+- 不变式核对：13 旧回执（fingerprint v0）原样、35 消息附件原样、幂等重跑零新增、守卫等价检查 43 资产受引用保护（未发真实 DELETE）。
+- F06/F07 关闭条件（G6）逐项：运行链已切换（G4）✓、存量已保护 ✓、墓碑版本锚 ✓、旧回执可解释保留 ✓、丢响应沿原身份收口（RF2 回归）✓、迟到版本不撤新关系（F02/F13 回归）✓、直接 API/模型/浏览器共用身份语义（F14/RF2-B 回归）✓。

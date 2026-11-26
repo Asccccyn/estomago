@@ -16,6 +16,9 @@ export type ThinkingConfig = {
 export const RUNTIME_PROVIDER_ENUM = ['claude-agent-sdk', 'openrouter', 'mock', 'deepseek'] as const;
 export type RuntimeProvider = (typeof RUNTIME_PROVIDER_ENUM)[number];
 
+const TOOL_SCHEMA_MODES = ['legacy', 'deferred', 'direct'] as const;
+export type ToolSchemaMode = (typeof TOOL_SCHEMA_MODES)[number];
+
 export type OrModelId = string; // 形状校验见 orModelIdIssue()；null=未配置（selectRunner 阻断，不猜默认型号）
 
 export type OpenRouterConfig = {
@@ -49,6 +52,11 @@ export type DeepSeekConfig = {
   estimate_chars_per_token: number; // 中文场景默认 1.5（DS 主用途为中文对话；粗估+真实 usage 校准）
 };
 
+export type DailyCostCap = number | 'unlimited' | null;
+export function isDailyCostCap(value: unknown): value is DailyCostCap {
+  return value === null || value === 'unlimited' || (typeof value === 'number' && Number.isFinite(value) && value > 0);
+}
+
 export type Config = {
   project: { display_name: string; slug: string; spec_version: string };
   deployment: {
@@ -63,8 +71,10 @@ export type Config = {
     supervisor: string;
   };
   runtime: {
-    tool_schema_mode: 'legacy' | 'deferred';
+    tool_schema_mode: ToolSchemaMode;
     provider: string;
+    access_policy: 'configured' | 'subscription-first';
+    subscription_proxy_url: string | null;
     language: string;
     node_version: string | null;
     sdk_version: string | null;
@@ -152,6 +162,11 @@ export type Config = {
   };
   // JOINT-VOICE-20261022（07）：媒体 embedding worker（est 归属叶子；null=未配置零行为）
   media_embedding: { base_url: string | null; credential_ref: string | null };
+  /** 相册重构 P3（GLM_ALBUM_REFACTOR_EXECUTION 20261108 R12）：图片生成——Key 只在
+   *  服务端（环境变量名引用，不进日志/DB/工具参数）；api_key_env 未配置=能力如实
+   *  不可用，不切其他供应商。model 是请求中的真实 ID（gpt-image-2.6-flare/
+   *  sunburst），不是前端显示名。 */
+  image_generation: { base_url: string; api_key_env: string | null; model: string };
   integrations: {
     mariposa: IntegrationConfig;
     siren: IntegrationConfig;
@@ -211,20 +226,22 @@ export type Config = {
   // config/policy-constants.ts，不盲目展开成可改配置。旧配置升级后
   // autonomous/keepwarm 默认关闭（enabled=false 是交付状态，不是缺陷）。
   background: {
+    free_activity: { enabled: boolean; daily_cost_cap_usd: DailyCostCap };
     autonomous: {
-      enabled: boolean; // 三开关之一：自主活动（模型生成类后台）
+      enabled: boolean; // 自设预约唤醒；非预约自主任务由 free_activity 控制
       max_model_requests_per_run: number;
       max_output_tokens_per_run: number;
       max_tool_calls_per_run: number;
       max_run_ms: number;
       paid_tools_enabled: boolean; // deprecated：只兼容旧YAML；不是有效权限来源。现有工具授权+可信报价+金额cap决定准入。
-      daily_cost_cap_usd: number | null; // null=未配置→该用途后台付费禁止；不是无限
+      daily_cost_cap_usd: DailyCostCap; // null=未配置→该用途后台付费禁止；不是无限
     };
     keepwarm: {
-      enabled: boolean; // 三开关之一：缓存保温（与自主独立）
+      enabled: boolean; // 心跳保温，与两类自主任务独立
+      include_living_room: boolean; // 独立显式准入，默认关闭；不含 family
       max_output_tokens_per_run: number; // deprecated：只兼容旧YAML；实际使用主回合输出上限。
       max_run_ms: number; // deprecated：只兼容旧YAML；有效时限由正常background.autonomous.max_run_ms决定。
-      daily_cost_cap_usd: number | null; // 与自主日预算独立
+      daily_cost_cap_usd: DailyCostCap; // 与自主日预算独立
       sleep_window: { enabled: boolean; start: string; end: string; timezone: string }; // 仅暂停心跳；不取消显式自主预约
     };
     reminders: {
@@ -253,13 +270,36 @@ export type Config = {
     max_body_bytes: number; // JSON 草稿+资产 ID 上限；无图像 base64/旧历史全文
   };
   memory_surfacing: {
-    enabled: boolean; // EST_MARIPOSA_AUTO_SURFACING_V1：默认关闭（零作业/零网络/零凭据读取）
+    enabled: boolean; // 默认关闭（零作业/零网络/零凭据读取）
     surfacing_credential_ref: string | null; // 专用受限 service binding（环境变量名；不回退聊天/归档凭据）
-    delivery_deadline_ms: number; // 本轮复核+check 总预算（同轮总预算 15000；含准备/交付/check）
+    delivery_deadline_ms: number; // 同轮总预算（Sol 判断+检索+JEV+复核+check 总和）
     max_added_tokens_per_turn: number; // 本轮自动新增上限（estimated）
-    max_retained_tokens_per_window: number; // 同窗自动保留上限
     max_packet_bytes: number; // 注入块字节上限
+    job_policy_revision: number; // R9（2026-11-03）：E 自身调度政策版本——作业唯一键成分；换值=同消息重登记
+    job_prompt_revision: string; // R9：E 自身调度提示词版本（同上；不是 M 的远端版本）
     worker_concurrency: number; // 全局 worker 并发上限（每房间恒串行）
+    recent_user_messages: number; // Mariposa 核对近文的先前用户消息数
+    recent_window_bytes: number; // 近文窗口字节预算（整轮移除最旧，不截断单条）
+    sol: {
+      api_key_env: string | null; // OpenAI Responses 独立凭据（环境变量名；不与主模型/M/JEV 复用）
+      base_url: string;
+      model: string; // 判断模型（默认 gpt-6.1-sol）
+      reasoning_effort: string; // low（Sol 档位；不传 none/minimal）
+      verbosity: string;
+      max_output_tokens: number; // 含推理开销的总输出上限
+      cache_ttl: '12h' | '30m'; // 固定判断前缀的显式缓存期限
+      decision_template: string | null; // 判断模板覆盖（null=内置默认模板）
+      user_display_name: string; // 模板占位称呼（运行时身份；公开默认为通用称呼）
+      assistant_display_name: string;
+    };
+  };
+  source_binding: {
+    enabled: boolean; // BIND-07：任务开关；未配凭据=如实未启用
+    api_key_env: string | null; // 独立 GLM API 凭据（环境变量名；不用char会话/SDK/Sol/JEV 凭据，BIND-04）
+    base_url: string;
+    model: string;
+    max_batch: number; // 单批记忆条数上限（有界工作）
+    max_candidates: number; // 单条记忆候选消息上限
   };
   media: {
     max_image_bytes: number; // 存储上限≠供应商请求上限
@@ -269,7 +309,9 @@ export type Config = {
     max_attachments_per_message: number;
     import_timeout_ms: number;
     max_redirects: number; // 每跳重校验目的地；禁私网/本地元数据地址
-    auto_physical_gc_enabled: boolean; // 首版保守保留
+    /** ALB-01（审计 2026-11-08）：E 本地媒体缓存的字节预算——M 已落正(synced)的非语音
+     *  资产超预算按 LRU 逐出本地文件（行保留，读取回源 M）；语音/未 synced 不逐。 */
+    cache_budget_bytes: number;
   };
 };
 
@@ -279,7 +321,10 @@ export type IntegrationConfig = {
   // 审计 F11（LC-050）：归档 worker 用独立的受限 stream 凭据（环境变量名）。
   // null=回退共用 credential_ref（仅限开发/联调；生产必须配置受限 token——联合契约 §8）
   archive_credential_ref: string | null;
-  contract_version: string | null;
+  // siren 有真实消费者（voice.ts：≠'1.1.1' 阻断）。mariposa 侧已退役
+  // （R9/F15，2026-11-03）：可选字段，mariposa 默认值不带——退役剥离后
+  // Config 回灌不再自我披露
+  contract_version?: string | null;
 };
 
 // —— 默认值：与 config/estomago.example.yaml 语义一致 ——
@@ -298,8 +343,10 @@ export const CONFIG_DEFAULTS: Config = {
     supervisor: 'launchagent',
   },
   runtime: {
-    tool_schema_mode: 'deferred',
+    tool_schema_mode: 'direct',
     provider: 'claude-agent-sdk',
+    access_policy: 'configured',
+    subscription_proxy_url: null,
     language: 'typescript',
     node_version: null,
     sdk_version: null,
@@ -406,8 +453,9 @@ export const CONFIG_DEFAULTS: Config = {
     semantic_auto_binding_enabled: false,
   },
   media_embedding: { base_url: null, credential_ref: null },
+  image_generation: { base_url: 'https://api.openai.com/v1', api_key_env: null, model: 'gpt-image-2.6-flare' },
   integrations: {
-    mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
+    mariposa: { base_url: null, credential_ref: null, archive_credential_ref: null },
     siren: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     oido: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
     superposition: { base_url: null, credential_ref: null, archive_credential_ref: null, contract_version: null },
@@ -463,6 +511,7 @@ export const CONFIG_DEFAULTS: Config = {
   // ESTOMAGO_CHAT_EXEC_V1 policy-defaults：新增段默认值（adjustable 面）。
   // autonomous/keepwarm enabled=false 是首版交付状态；费用上限 null=未配置。
   background: {
+    free_activity: { enabled: false, daily_cost_cap_usd: null },
     autonomous: {
       enabled: false,
       max_model_requests_per_run: 4,
@@ -472,7 +521,7 @@ export const CONFIG_DEFAULTS: Config = {
       paid_tools_enabled: false,
       daily_cost_cap_usd: null,
     },
-    keepwarm: { enabled: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null, sleep_window: { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' } },
+    keepwarm: { enabled: false, include_living_room: false, max_output_tokens_per_run: 128, max_run_ms: 30000, daily_cost_cap_usd: null, sleep_window: { enabled: true, start: '23:00', end: '08:00', timezone: 'Asia/Shanghai' } },
     reminders: { enabled: true, delivery_grace_ms: 300000, default_local_time: '09:00' },
   },
   content: { enabled: false, port: 18788 },
@@ -488,12 +537,30 @@ export const CONFIG_DEFAULTS: Config = {
   memory_surfacing: {
     enabled: false,
     surfacing_credential_ref: null,
-    delivery_deadline_ms: 15000,
+    delivery_deadline_ms: 25000,
     max_added_tokens_per_turn: 4096,
-    max_retained_tokens_per_window: 8192,
+    // R4/R8（裁定 2026-11-03）：max_retained_tokens_per_window 删除——
+    // 从未接入执行；窗口级抑制由 coverage 去重（coveredInWindow）承担。
     max_packet_bytes: 24576,
+    job_policy_revision: 1,
+    job_prompt_revision: 'e_surface_v1',
     worker_concurrency: 2,
+    recent_user_messages: 3,
+    recent_window_bytes: 24576,
+    sol: {
+      api_key_env: null,
+      base_url: 'https://api.openai.com/v1',
+      model: 'gpt-6.1-sol',
+      reasoning_effort: 'low',
+      verbosity: 'low',
+      max_output_tokens: 2048,
+      cache_ttl: '12h',
+      decision_template: null,
+      user_display_name: '宿主用户',
+      assistant_display_name: 'char', // 03_SYSTEM（包2 2026-11-16）：模型可见说话人标签统一真实姓名（旧默认 用户/助手）
+    },
   },
+  source_binding: { enabled: false, api_key_env: null, base_url: 'https://open.bigmodel.cn/api/paas/v4', model: 'glm-4.7', max_batch: 50, max_candidates: 60 },
   media: {
     max_image_bytes: 20971520,
     max_audio_bytes: 33554432,
@@ -502,13 +569,13 @@ export const CONFIG_DEFAULTS: Config = {
     max_attachments_per_message: 8,
     import_timeout_ms: 30000,
     max_redirects: 3,
-    auto_physical_gc_enabled: false,
+    cache_budget_bytes: 1073741824,
   },
 };
 
 // —— 显式类型树（AUD-19 修复）：每个叶子的类型显式声明，不从默认值推导 ——
 // 'json?' = 可选任意 JSON 值（openrouter.reasoning：未批准覆盖=null；不假装理解其内部结构）
-type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | 'json?' | { section: Record<string, Leaf> };
+type Leaf = 'string' | 'string?' | 'number' | 'number?' | 'boolean' | 'string[]' | 'json?' | 'budget?' | { section: Record<string, Leaf> };
 type SectionSpec = { section: Record<string, Leaf> };
 
 const SHAPE: SectionSpec = { section: {
@@ -518,7 +585,7 @@ const SHAPE: SectionSpec = { section: {
     bind: 'string', port: 'number', public_origin: 'string?', public_enabled: 'boolean', supervisor: 'string?',
   } },
   runtime: { section: {
-    tool_schema_mode: 'string', provider: 'string', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
+    tool_schema_mode: 'string', provider: 'string', access_policy: 'string', subscription_proxy_url: 'string?', language: 'string?', node_version: 'string?', sdk_version: 'string?', runtime_version: 'string?',
     model: 'string?', authentication_profile_ref: 'string?', system_prompt_mode: 'string', setting_sources: 'string[]',
     require_identity_manifest: 'boolean', disable_auto_memory: 'boolean', strict_mcp_config: 'boolean',
     automatic_flag_switch: 'boolean', automatic_availability_fallbacks: 'string[]', max_active_primary_runners: 'number?',
@@ -569,6 +636,7 @@ const SHAPE: SectionSpec = { section: {
     semantic_auto_binding_threshold: 'number?', semantic_auto_binding_enabled: 'boolean',
   } },
   media_embedding: { section: { base_url: 'string?', credential_ref: 'string?' } },
+  image_generation: { section: { base_url: 'string?', api_key_env: 'string?', model: 'string?' } },
   integrations: { section: {
     mariposa: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
     siren: { section: { base_url: 'string?', credential_ref: 'string?', archive_credential_ref: 'string?', contract_version: 'string?' } },
@@ -599,14 +667,15 @@ const SHAPE: SectionSpec = { section: {
     stop_transcript_main_capture: 'boolean', capability_state: 'string?',
   } },
   background: { section: {
+    free_activity: { section: { enabled:'boolean',daily_cost_cap_usd:'budget?' } },
     autonomous: { section: {
       enabled: 'boolean', max_model_requests_per_run: 'number', max_output_tokens_per_run: 'number',
       max_tool_calls_per_run: 'number', max_run_ms: 'number', paid_tools_enabled: 'boolean',
-      daily_cost_cap_usd: 'number?',
+      daily_cost_cap_usd: 'budget?',
     } },
     keepwarm: { section: {
-      enabled: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
-      daily_cost_cap_usd: 'number?',
+      enabled: 'boolean', include_living_room: 'boolean', max_output_tokens_per_run: 'number', max_run_ms: 'number',
+      daily_cost_cap_usd: 'budget?',
       sleep_window: { section: { enabled: 'boolean', start: 'string', end: 'string', timezone: 'string' } },
     } },
     reminders: { section: {
@@ -621,16 +690,25 @@ const SHAPE: SectionSpec = { section: {
   } },
   system_alerts: { section: { usage_settlement_grace_ms: 'number', summary_refresh_debounce_ms: 'number' } },
   token_estimates: { section: { debounce_ms: 'number', max_body_bytes: 'number' } },
+  source_binding: { section: { enabled: 'boolean', api_key_env: 'string?', base_url: 'string', model: 'string', max_batch: 'number', max_candidates: 'number' } },
   memory_surfacing: { section: {
     enabled: 'boolean', surfacing_credential_ref: 'string?',
     delivery_deadline_ms: 'number', max_added_tokens_per_turn: 'number',
-    max_retained_tokens_per_window: 'number', max_packet_bytes: 'number',
-    worker_concurrency: 'number',
+    max_packet_bytes: 'number',
+    job_policy_revision: 'number', job_prompt_revision: 'string',
+    worker_concurrency: 'number', recent_user_messages: 'number',
+    recent_window_bytes: 'number',
+    sol: { section: {
+      api_key_env: 'string?', base_url: 'string', model: 'string',
+      reasoning_effort: 'string', verbosity: 'string', max_output_tokens: 'number',
+      cache_ttl: 'string', decision_template: 'string?',
+      user_display_name: 'string', assistant_display_name: 'string',
+    } },
   } },
   media: { section: {
     max_image_bytes: 'number', max_audio_bytes: 'number', max_video_bytes: 'number',
     max_code_artifact_bytes: 'number', max_attachments_per_message: 'number',
-    import_timeout_ms: 'number', max_redirects: 'number', auto_physical_gc_enabled: 'boolean',
+    import_timeout_ms: 'number', max_redirects: 'number', cache_budget_bytes: 'number',
   } },
 } };
 
@@ -647,6 +725,9 @@ function checkType(v: unknown, t: Leaf, path: string, issues: ValidationIssue[])
         return;
       case 'number':
         if (typeof v !== 'number' || !Number.isFinite(v)) issues.push({ path, message: `需要数字，得到 ${String(v)}` });
+        return;
+      case 'budget':
+        if (!isDailyCostCap(v)) issues.push({path,message:'日费用上限必须为正数、unlimited 或 null（未配置）'});
         return;
       case 'boolean':
         if (typeof v !== 'boolean') issues.push({ path, message: `需要布尔，得到 ${typeof v}` });
@@ -694,6 +775,17 @@ export function dsModelIdIssue(model: string): string | null {
 
 // 产品硬规则（v0.2.1 固定，配置不得放宽；01 §6.2/§11.1、05 §2.1 + ESTOMAGO_OR_SELF_HOLD §6/§7）
 function checkHardRules(c: Config, issues: ValidationIssue[]): void {
+  if (!['configured', 'subscription-first'].includes(c.runtime.access_policy)) {
+    issues.push({ path: 'runtime.access_policy', message: '必须为 configured 或 subscription-first' });
+  }
+  if (c.runtime.subscription_proxy_url !== null) {
+    try {
+      const proxy = new URL(c.runtime.subscription_proxy_url);
+      if (!['http:', 'https:'].includes(proxy.protocol) || proxy.hostname !== '127.0.0.1' || !proxy.port || proxy.username || proxy.password || proxy.search || proxy.hash || proxy.pathname !== '/') throw Error();
+    } catch {
+      issues.push({ path: 'runtime.subscription_proxy_url', message: '必须是 127.0.0.1 上带端口、无凭据或路径的 HTTP/HTTPS 代理地址' });
+    }
+  }
   const fixed: Array<[boolean, string]> = [
     [c.input.multiline === true, 'input.multiline 必须为 true（v0.2.1 产品规则）'],
     [c.input.enter_behavior === 'newline', 'input.enter_behavior 必须为 newline：回车只换行'],
@@ -740,7 +832,6 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
     ...(() => {
       const posInt = (v: number) => Number.isSafeInteger(v) && v >= 1;
       const posMs = (v: number) => Number.isFinite(v) && v > 0;
-      const capOk = (v: number | null) => v === null || (typeof v === 'number' && Number.isFinite(v) && v > 0);
       const timezoneOk = (v: string) => { try { new Intl.DateTimeFormat('en-GB', { timeZone: v }).format(0); return v.length > 0; } catch { return false; } };
       const a = c.background.autonomous, k = c.background.keepwarm, r = c.background.reminders;
       const checks: Array<[boolean, string]> = [
@@ -748,10 +839,8 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
         [posInt(a.max_output_tokens_per_run), 'background.autonomous.max_output_tokens_per_run 必须是 ≥1 的整数'],
         [Number.isSafeInteger(a.max_tool_calls_per_run) && a.max_tool_calls_per_run >= 0, 'background.autonomous.max_tool_calls_per_run 必须是 ≥0 的整数'],
         [posMs(a.max_run_ms), 'background.autonomous.max_run_ms 必须为正数'],
-        [capOk(a.daily_cost_cap_usd), 'background.autonomous.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止该用途后台付费，不是无限）'],
         [posInt(k.max_output_tokens_per_run), 'background.keepwarm.max_output_tokens_per_run 必须是 ≥1 的整数'],
         [posMs(k.max_run_ms), 'background.keepwarm.max_run_ms 必须为正数'],
-        [capOk(k.daily_cost_cap_usd), 'background.keepwarm.daily_cost_cap_usd 必须为有限正数或 null（null=未配置即禁止保温付费，不是无限）'],
         [/^([01]\d|2[0-3]):[0-5]\d$/.test(k.sleep_window.start), 'background.keepwarm.sleep_window.start 必须是 HH:MM'],
         [/^([01]\d|2[0-3]):[0-5]\d$/.test(k.sleep_window.end), 'background.keepwarm.sleep_window.end 必须是 HH:MM'],
         [k.sleep_window.start !== k.sleep_window.end, 'background.keepwarm.sleep_window.end 必须与 start 不同（无需睡眠门时设 enabled=false）'],
@@ -790,8 +879,11 @@ function checkHardRules(c: Config, issues: ValidationIssue[]): void {
  *  剥离并在 config.retiredKeys 披露（不进运行时、不静默忽略、不阻断启动；
  *  读取处负责把披露写进日志/启动报告）。
  *  WP-03（2026-10-09，JFA-005）：6h 静默/零点换窗/bootstrap_target_tokens
- *  三键并入退役——唯一自动换窗基线=容量软线（红线 E-18；现行 600k 兜底） */
-export const RETIRED_CONFIG_KEYS = ['digest', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens'] as const;
+ *  三键并入退役——唯一自动换窗基线=容量软线（红线 E-18；现行 600k 兜底）
+ *  R4/R8/R9（裁定 2026-11-03）：memory_surfacing.max_retained_tokens_per_window
+ *  （从未接入执行）与 integrations.mariposa.contract_version（transport 从未
+ *  发送/消费，F15）退役。siren.contract_version 不在此列——voice.ts 有真实消费者 */
+export const RETIRED_CONFIG_KEYS = ['digest', 'media.auto_physical_gc_enabled', 'windows.recent_dialogue_budget_tokens', 'windows.warning_tokens', 'windows.idle_before_next_user_ms', 'windows.rotate_on_business_date_change', 'windows.bootstrap_target_tokens', 'memory_surfacing.max_retained_tokens_per_window', 'integrations.mariposa.contract_version'] as const;
 
 export function validateConfig(raw: unknown): { config: Config; issues: ValidationIssue[] } {
   const issues: ValidationIssue[] = [];
@@ -824,9 +916,19 @@ export function validateConfig(raw: unknown): { config: Config; issues: Validati
   // ESTOMAGO_OR_SELF_HOLD §1.1：provider 枚举（新增 openrouter 驱动；未知值不得静默落到 SDK）
   const provider = (patched as { runtime?: { provider?: unknown } })?.runtime?.provider;
   const toolMode = (patched as { runtime?: { tool_schema_mode?: unknown } }).runtime?.tool_schema_mode;
-  if (toolMode !== undefined && toolMode !== 'legacy' && toolMode !== 'deferred') issues.push({path:'runtime.tool_schema_mode',message:'必须是 legacy|deferred'});
+  if (toolMode !== undefined && !TOOL_SCHEMA_MODES.some(mode => mode === toolMode)) {
+    issues.push({ path: 'runtime.tool_schema_mode', message: `必须是 ${TOOL_SCHEMA_MODES.join('|')}` });
+  }
   if (provider !== undefined && !(typeof provider === 'string' && (RUNTIME_PROVIDER_ENUM as readonly string[]).includes(provider))) {
     issues.push({ path: 'runtime.provider', message: `必须是 ${RUNTIME_PROVIDER_ENUM.join('|')}（新增驱动走显式枚举，不猜默认）` });
+  }
+  // SOL_RECALL_REFACTOR：Sol 缓存期限/推理档位枚举（非法值不得静默落到默认）
+  const solCfg = (patched as { memory_surfacing?: { sol?: { cache_ttl?: unknown; reasoning_effort?: unknown } } })?.memory_surfacing?.sol;
+  if (solCfg?.cache_ttl !== undefined && solCfg.cache_ttl !== '12h' && solCfg.cache_ttl !== '30m') {
+    issues.push({ path: 'memory_surfacing.sol.cache_ttl', message: '必须是 12h|30m' });
+  }
+  if (solCfg?.reasoning_effort !== undefined && solCfg.reasoning_effort !== null && typeof solCfg.reasoning_effort !== 'string') {
+    issues.push({ path: 'memory_surfacing.sol.reasoning_effort', message: '必须是字符串（如 low）' });
   }
   if (issues.length > 0) return { config: structuredClone(CONFIG_DEFAULTS), issues };
   const config = deepMergeConfig(patched);

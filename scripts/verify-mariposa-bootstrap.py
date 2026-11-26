@@ -33,6 +33,7 @@ def main():
     ap.add_argument('--python',type=Path)
     ap.add_argument('--port',type=int,default=18882)
     ap.add_argument('--output',type=Path)
+    ap.add_argument('--case', choices=['bootstrap', 'memory-tools', 'i-recovery', 'autonomy-loop'], default='bootstrap')
     args=ap.parse_args()
     mariposa=args.mariposa_repo.resolve()
     python=args.python or mariposa/'.venv/bin/python'
@@ -43,13 +44,17 @@ def main():
     with socket.socket() as check:check.bind(('127.0.0.1',args.port))
     output=(args.output or Path(tempfile.mkdtemp(prefix='mariposa-cross-result-'))).resolve();output.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='est-mariposa-contract-') as tmp:
-        base=Path(tmp);fixture=ROOT/'tests/cross-project/mariposa_bootstrap_fixture.py'
+        base=Path(tmp);fixture=ROOT/'tests/cross-project'/('mariposa_bootstrap_fixture.py' if args.case == 'bootstrap' else 'mariposa_tools_fixture.py')
         env={key:os.environ[key] for key in ('PATH','HOME','TMPDIR','LANG','LC_ALL') if key in os.environ}
         env.update(ESTOMAGO_TEST_MODE='1',ESTOMAGO_HOME=str(base/'estomago'),CROSS_PROJECT_TEMP_ROOT=str(base),
                    PYTHONPATH=str(mariposa/'backend'),PYTHONDONTWRITEBYTECODE='1',MARIPOSA_ROOT=str(base/'mariposa'),MARIPOSA_ALLOW_CREATE='1',
                    MARIPOSA_SEMANTIC_PROVIDER='',MARIPOSA_RECALL_JUDGE_PROVIDER='disabled',
                    ESTOMAGO_TEST_MARIPOSA_TOKEN='synthetic-est-bootstrap',CROSS_MARIPOSA_URL=f'http://127.0.0.1:{args.port}',
                    CROSS_MARIPOSA_PYTHON=str(python),CROSS_MARIPOSA_FIXTURE=str(fixture),CROSS_MARIPOSA_EXPECTED=str(base/'expected.json'),CROSS_MARIPOSA_RESULT=str(output/'result.json'))
+        if args.case != 'bootstrap':
+            env.update(ESTOMAGO_TEST_MARIPOSA_WORKER_TOKEN='synthetic-w', MARIPOSA_RECALL_ENABLED='1', MARIPOSA_WORDS_RECALL_ENABLED='1', MARIPOSA_RAW_FALLBACK_ENABLED='1')
+        if args.case == 'autonomy-loop':
+            env['AUDIT_FRONTEND_OUT']=str(output)
         if baseline:env['CROSS_ESTOMAGO_BASELINE']=str(baseline)
         subprocess.run(['node','scripts/test-guard.mjs'],cwd=ROOT,env=env,check=True,timeout=10)
         subprocess.run([str(python),'-B',str(fixture),'seed'],cwd=ROOT,env=env,check=True,timeout=30)
@@ -63,7 +68,12 @@ def main():
                             if response.status==200:break
                     except OSError:time.sleep(.05)
                 else:raise TimeoutError('Isolated Mariposa did not become ready')
-                child=subprocess.Popen(['node','tests/cross-project/bootstrap-pagination.test.ts'],env=env,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
+                scripts = {'bootstrap': 'tests/cross-project/bootstrap-pagination.test.ts',
+                           'memory-tools': 'tests/cross-project/memory-tools.test.ts',
+                           'i-recovery': 'tests/cross-project/i-write-recovery.test.ts',
+                           'autonomy-loop': 'scripts/audit/background-product.ts'}
+                command = ['node', scripts[args.case]] + (['--autonomy-loop'] if args.case == 'autonomy-loop' else [])
+                child=subprocess.Popen(command,env=env,cwd=ROOT,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,start_new_session=True)
                 try:
                     text,_=child.communicate(timeout=90)
                     (output/'test.log').write_text(text);print(text)

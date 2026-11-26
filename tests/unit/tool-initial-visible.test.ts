@@ -1,111 +1,97 @@
-// 她 1022 指令：初始可读工具（首批=identity_milestone_write，原本整版 write 与新增
-// 条目化一起）——定义随 B 段注入；新窗直接 invoke 免 define 三跳；旧窗零回退。
-import { test } from 'node:test';
-import { assembleTestTools, fullToolCatalog, makeDb, makePaths, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import { openDatabase } from '../../apps/host/src/db/connection.ts';
-import { migrate } from '../../apps/host/src/db/migrations.ts';
-import { sha256Hex } from '../../apps/host/src/util/id.ts';
-import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { IdentityService } from '../../apps/host/src/identity/service.ts';
-import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
-import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
-import { buildDeferredTools, definitionId, storedToolset } from '../../apps/host/src/runtime/tool-discovery.ts';
-import { initialVisibleTools, renderInitialVisibleText, initialDefinitionSeen, DEFAULT_INITIAL_VISIBLE } from '../../apps/host/src/runtime/tool-initial-visible.ts';
+import {assembleTestTools,makeDb} from '../helpers.ts';
+import {MessageService} from '../../apps/host/src/messages/service.ts';
+import {MariposaClient} from '../../apps/host/src/integrations/mariposa/client.ts';
+import {RotationReviewService} from '../../apps/host/src/context/rotation-review.ts';
+import {HoldCheckpointService} from '../../apps/host/src/memory/hold-checkpoint.ts';
+import {freezeWindowTools,storedToolset,definitionId,recordToolContext,taskDefinitionContext,buildDeferredTools} from '../../apps/host/src/runtime/tool-discovery.ts';
 
-function setupDb() {
-  const root = tempRoot('tiv-');
-  const { db } = makeDb(root);
-  return { db, root };
+function fixture(t:any){
+ const {db,root}=makeDb();t.after(()=>{db.close();fs.rmSync(root,{recursive:true,force:true});});
+ const messages=new MessageService(db);messages.ensureConversation('c1');
+ db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('w1','c1','ACTIVE','now','now')").run();
+ const sub=messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成上下文',clientMessageId:'synthetic'});
+ const calls:any[]=[];
+ const mariposa=new MariposaClient({transport:async(cap,args)=>{calls.push({cap,args});return {ok:true,result:cap==='emotion.context.get'?{vocabulary:['合成'],mood_tag_counts:{合成:0},mood_text_memories:0,retrieval_enabled:false}:cap==='episode.list'?{episodes:[{episode_id:'ep',state:'OPEN',revision:1}]}:cap==='episode.get'?{episode_id:'ep',state:'OPEN',revision:1}:cap==='memory.relations.trace'?{memory_id:'m',earlier:[],later:[],visited:1,truncated:false,max_depth:5}:{relations:[],corrections:[]}};}});
+ const reviews=new RotationReviewService(db);
+ const {tools,registry}=assembleTestTools({db,messages,media:{} as any,mariposa,reviews,checkpoint:new HoldCheckpointService(db),wishstar:{forward:async(method:string,path:string)=>{calls.push({method,path});return {status:200,body:path==='/api/offers'?{incoming:[],outgoing:[]}:{items:[],unread_count:0,consumed:0}};}} as any});
+ const ctx={roomId:'c1',windowId:'w1',turnId:sub.turnId,requestId:'r1',purpose:'chat' as const,activeReviewId:null,seenSequence:1,seenMessages:[]};
+ const persist=(messages:any[],task?:{name:string;id:string},sent=true)=>{
+  db.prepare("INSERT OR REPLACE INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,sent_at,created_at) VALUES ('r1','w1',?,?,'chat','[]',?,?,'now')").run(sub.attemptId,sub.turnId,JSON.stringify({tools:buildDeferredTools(),messages}),sent?'now':null);
+  recordToolContext(db,'r1','w1',messages,task);
+ };
+ const invoke=(name:string,args:Record<string,unknown>,context:any=ctx)=>tools.execute('tool_invoke',{name,definition_id:definitionId(storedToolset(db,'w1')!.catalog.find(s=>s.function.name===name)!),arguments:args},context);
+ return {db,tools,registry,ctx,persist,invoke,calls,reviews,sub};
 }
 
-test('清单与渲染：默认=她 1022 首批（里程碑整版+条目化一起）；文本含 definition_id 与完整参数', () => {
-  const { db } = setupDb();
-  assert.deepEqual(initialVisibleTools(db), [...DEFAULT_INITIAL_VISIBLE]);
-  assert.deepEqual(DEFAULT_INITIAL_VISIBLE, ['identity_milestone_write']);
-  const text = renderInitialVisibleText(db, fullToolCatalog())!;
-  assert.ok(text.includes('[tools/initial'), '段落头');
-  const spec = { type: 'function', function: buildDeferredTools()[0]!.function } as never;
-  void spec;
-  // 里程碑工具定义同源（host-tools buildHostTools）——文本含其两种用法描述
-  assert.ok(text.includes('identity_milestone_write'));
-  assert.ok(text.includes('definition_id:'));
-  assert.ok(text.includes('operation'), '条目化用法在描述里');
-  assert.ok(text.includes('write'), '原本整版用法在描述里');
-  // runtime_settings 覆盖（她可改清单）
-  db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES ('tools_initial_visible', ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(JSON.stringify(['memory_i_write']), new Date().toISOString());
-  assert.deepEqual(initialVisibleTools(db), ['memory_i_write']);
-  // 空清单=不注入
-  db.prepare("UPDATE runtime_settings SET value = '[]' WHERE key = 'tools_initial_visible'").run();
-  assert.equal(renderInitialVisibleText(db, fullToolCatalog()), null);
+test('P6/U01：定义阅读不再是授权——合法身份直接执行；伪造版本拒绝；公开 schema 与执行事实一致',async t=>{
+ const f=fixture(t);freezeWindowTools(f.db,'w1',f.registry.currentCatalog(),'deferred',f.registry.currentGroups());
+ const set=storedToolset(f.db,'w1')!;
+ // RT01（复审 20261106）：新窗公开 schema 不再必填 definition_id——与直接执行事实一致
+ const invokeSpec=set.tools.find(s=>s.function.name==='tool_invoke')!;
+ assert.deepEqual(invokeSpec.function.parameters.required,['name','arguments'],'tool_invoke 公开 schema：definition_id 可选');
+ // 无任何交付（B 段未发送、define 未做）：直接执行（参数仍按冻结 schema 校验）
+ assert.equal((await f.invoke('memory_i_read',{what:'emotion'})).ok,true,'未读定义直接执行');
+ // 不带 definition_id 同样直接执行
+ const bare=await f.tools.execute('tool_invoke',{name:'memory_i_read',arguments:{what:'emotion'}},f.ctx);
+ assert.equal(bare.ok,true,'缺省 definition_id 直接执行');
+ // 伪造/过期 definition_id=版本不符，如实拒绝（冻结版本校验保留）
+ const forged=await f.tools.execute('tool_invoke',{name:'memory_i_read',definition_id:'td_deadbeef',arguments:{what:'emotion'}},f.ctx);
+ assert.equal(forged.output.error_code,'TOOL_DEFINITION_STALE');
+ // 按需项首次 define 返回完整 schema；常驻的简明用法亦不冒充完整定义
+ f.persist([{role:'system',content:set.initialText}]);
+ const definition = (await f.tools.execute('tool_define',{name:'memory_i_read'},f.ctx)).output;
+ assert.equal(definition.already_available,undefined);
+ assert.ok(definition.parameters);
+ // D 组工具不经 define 直接执行（真实断言——替换旧恒真 `!==false||true`）
+ const direct=await f.tools.execute('tool_invoke',{name:'memory_correct',arguments:{action:'corrections'}},f.ctx);
+ assert.equal(direct.ok,true,'D 组工具未读定义直接执行——阅读与执行解耦');
 });
 
-test('invoke 旁路：初始工具的定义随窗请求真实发出→免 define 直接 invoke；旧窗（无注入）仍走旧门', async () => {
-  const root = tempRoot('tiv-invoke-');
-  writeApprovedIdentity(root, { seedProbes: false });
-  const paths = makePaths(root);
-  const { db } = makeDb(root);
-  const svc = new IdentityService(buildConfig({}), paths);
-  // 里程碑夹具（工具会真实执行 read）
-  fs.writeFileSync(path.join(paths.identityDir, 'longterm-milestones-v1.md'), '条目一\n\n条目二', { mode: 0o600 });
-  const mp = path.join(paths.configDir, 'identity-manifest.json');
-  const m = JSON.parse(fs.readFileSync(mp, 'utf8')) as Record<string, unknown>;
-  m.approved_source_ref = 'longterm-milestones-v1.md'; m.identity_version = 'longterm-milestones-v1'; m.approved_source_hash = sha256Hex('条目一\n\n条目二');
-  fs.writeFileSync(mp, JSON.stringify(m, null, 2));
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), identity: svc });
-
-  // 新窗：冻结 deferred 工具集 + 首个"已发送"请求携带 B 段注入文本（含 definition_id）
-  db.prepare("INSERT OR IGNORE INTO conversations(id, owner_service, scope, created_at) VALUES ('c1','estomago','private',?)").run(new Date().toISOString());
-  const winNew = 'win-tiv-new';
-  db.prepare("INSERT OR IGNORE INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,'c1','ACTIVE',?,?)").run(winNew, new Date().toISOString(), new Date().toISOString());
-  const realSpec = fullToolCatalog().find((t) => t.function.name === 'identity_milestone_write')!;
-  const milestoneSpec = realSpec; // 同一 identity_milestone_write 定义
-  const catalog = [realSpec];
-  db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
-    .run(winNew, 'deferred', JSON.stringify(buildDeferredTools()), JSON.stringify(catalog), new Date().toISOString());
-  
-  const injected = renderInitialVisibleText(db, fullToolCatalog())!;
-  assert.ok(injected.includes(definitionId(milestoneSpec)), '注入文本含真实 definition_id');
-  const fakeRequest = JSON.stringify({ messages: [{ role: 'system', content: [{ type: 'text', text: injected }] }] });
-  db.prepare("INSERT INTO turns(id, conversation_id, trigger, state, created_at) VALUES ('turn-tiv','c1','user_message','completed',?)").run(new Date().toISOString());
-  db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, state, window_id) VALUES ('att-tiv','turn-tiv',1,'completed',?)").run(winNew);
-  db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, sent_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)")
-    .run('prq-tiv-1', winNew, 'att-tiv', 'turn-tiv', 'chat', '[]', fakeRequest, new Date().toISOString(), new Date().toISOString());
-  assert.equal(initialDefinitionSeen(db, winNew, milestoneSpec), true, '定义已真实进入已发送请求=已见');
-
-  const ctxNew = { roomId: 'c1', windowId: winNew, turnId: 't1', purpose: 'chat' as const, activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'r1' };
-  const direct = await tools.execute('tool_invoke', {
-    name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
-    arguments: { operation: 'read' },
-  }, ctxNew);
-  assert.equal(direct.ok, true, '新窗直接 invoke 成功（免 define 三跳）');
-  assert.ok(String(JSON.stringify(direct.output)).includes('条目一'), 'read 真实执行');
-
-  // 旧窗：工具集在但从未发送过注入文本 → 旁路不成立 → 仍拒绝（零回退）
-  const winOld = 'win-tiv-old';
-  db.prepare("INSERT OR IGNORE INTO windows(id, conversation_id, status, created_at, updated_at) VALUES (?,'c1','ACTIVE',?,?)").run(winOld, new Date().toISOString(), new Date().toISOString());
-  db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
-    .run(winOld, 'deferred', JSON.stringify(buildDeferredTools()), JSON.stringify(catalog), new Date().toISOString());
-  void realSpec;
-  const ctxOld = { ...ctxNew, windowId: winOld };
-  const refused = await tools.execute('tool_invoke', {
-    name: 'identity_milestone_write', definition_id: definitionId(milestoneSpec),
-    arguments: { operation: 'read' },
-  }, ctxOld);
-  assert.equal(refused.ok, false, '旧窗无注入=仍走 catalog→define 旧门');
-  assert.equal((refused.output as { error_code: string }).error_code, 'TOOL_DEFINITION_NOT_SEEN');
-  db.close();
+test('T 可信任务附加与 define 共用已见谓词；真正完成仍核验活动检查',async t=>{
+ const f=fixture(t);freezeWindowTools(f.db,'w1',f.registry.currentCatalog(),'deferred',f.registry.currentGroups());
+ const set=storedToolset(f.db,'w1')!;
+ const review=f.reviews.create('w1','c1',1,[{id:f.sub.message.id,revision:1,seq:1}]);
+ const task={name:'context_review_complete',id:review.id};
+ const messages=[{role:'system',content:set.initialText},{role:'user',content:taskDefinitionContext(set,task.name,task.id)}];
+ f.persist(messages);
+ // P6/U01：未附带任务上下文也直接执行——资格核验由 review 活动检查承载（下一行）
+ f.persist(messages,task);
+ f.db.prepare("UPDATE provider_requests SET purpose='pre_rotate_review' WHERE id=?").run(f.ctx.requestId);
+ const scopedContext = {...f.ctx,turnId:null,purpose:'pre_rotate_review',activeReviewId:review.id} as const;
+ const ordinaryCatalog = await f.tools.execute('tool_catalog',{},f.ctx);
+ assert.ok((ordinaryCatalog.output.tools as Array<{ name: string }>).some(item => item.name === 'memory_hold'));
+ assert.ok(!(ordinaryCatalog.output.tools as Array<{ name: string }>).some(item => item.name === task.name || item.name === 'background_complete'));
+ assert.equal((await f.tools.execute('tool_catalog',{query:task.name},f.ctx)).output.state,'no_match');
+ assert.equal((await f.tools.execute('tool_define',{name:task.name},f.ctx)).output.error_code,'TOOL_NOT_IN_ALLOWLIST');
+ const scopedCatalog = await f.tools.execute('tool_catalog',{query:task.name},scopedContext);
+ assert.equal((scopedCatalog.output.results as Array<{ name: string }>)[0]?.name,task.name);
+ assert.equal((await f.tools.execute('tool_define',{name:task.name},scopedContext)).output.already_available,true);
+ assert.equal((await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'})).output.error_code,'REVIEW_NOT_ACTIVE');
+ const result=await f.invoke(task.name,{review_id:review.id,decision:'no_new_hold'},scopedContext);
+ assert.equal(result.ok,true,JSON.stringify(result));assert.equal(f.reviews.get(review.id)!.status,'completed');
+ assert.equal((await f.tools.execute('tool_define',{name:task.name},scopedContext)).output.error_code,'TOOL_NOT_IN_ALLOWLIST');
 });
 
-// R1′（2026-10-23，D2 裁定）：空工具清单回归——显式配置空数组=如实无 tools/initial 段
-// （renderInitialVisibleText 返回 null），空资料窗不带占位 B；B 是否携带仅由清单决定
-test('空工具清单：显式配置 [] → 无 tools/initial 段（renderInitialVisibleText=null）', async () => {
-  const { makeDb } = await import('../helpers.ts');
-  const { db } = makeDb(tempRoot('tiv-empty-'), { seed: false });
-  db.prepare("INSERT INTO runtime_settings(key, value, updated_at) VALUES ('tools_initial_visible','[]','2026-10-23T00:00:00Z')").run();
-  assert.equal(renderInitialVisibleText(db, fullToolCatalog()), null, '空清单=无注入');
-  db.close();
+test('旧窗旧名/动作沿同一 handler 执行一次；新窗目录无重复旧入口，费用键保留',async t=>{
+ const f=fixture(t);
+ const old=JSON.parse(fs.readFileSync(new URL('../fixtures/window-tools-before-autonomy.json',import.meta.url),'utf8')).catalog;
+ f.db.prepare('INSERT INTO window_toolsets(window_id,protocol,wire_tools_json,catalog_json,created_at) VALUES(?,?,?,?,?)').run('w1','deferred',JSON.stringify(buildDeferredTools()),JSON.stringify(old),'now');
+ const aliases=[['episode_list',{},'episode.list'],['episode_get',{episode_id:'ep'},'episode.get'],['memory_correct',{action:'trace',memory_id:'m'},'memory.relations.trace'],
+  ['wishstar_hidden_stars',{},'/api/stars/hidden/mine'],['wishstar_special_dates',{},'/api/special-dates'],['wishstar_list_offers',{},'/api/offers'],['wishstar_notifications',{},'/api/notifications']] as const;
+ for(const [name,args,target] of aliases){
+  const def=await f.tools.execute('tool_define',{name},f.ctx);
+  f.persist([{role:'assistant',tool_calls:[{id:'d',function:{name:'tool_define',arguments:JSON.stringify({name})}}]},{role:'tool',tool_call_id:'d',content:JSON.stringify(def.output)}]);
+  const before=f.calls.length;assert.equal((await f.invoke(name,args)).ok,true,name);
+  assert.equal(f.calls.length,before+1);assert.equal(f.calls.at(-1).cap??f.calls.at(-1).path,target);
+ }
+ for(const name of ['episode_list','episode_get','wishstar_hidden_stars','wishstar_special_dates','wishstar_list_offers','wishstar_notifications'])assert.ok(!f.registry.currentCatalog().some(s=>s.function.name===name));
+ f.db.prepare("INSERT INTO runtime_settings(key,value,updated_at) VALUES('background_tool_prices',?,'now')").run(JSON.stringify({episode_list:{max_cost_micro_usd:1},episode_get:{max_cost_micro_usd:2},wishstar_special_dates:{max_cost_micro_usd:3}}));
+ assert.equal(f.registry.get('episode_read')!.quote(f.db,{}).maxCostMicroUsd,1);
+ assert.equal(f.registry.get('episode_read')!.quote(f.db,{episode_id:'ep'}).maxCostMicroUsd,2);
+ assert.equal(f.registry.get('wishstar_read')!.quote(f.db,{what:'dates'}).maxCostMicroUsd,3);
+ assert.deepEqual(storedToolset(f.db,'w1')!.catalog,old);
+ assert.ok(Object.values(storedToolset(f.db,'w1')!.groups).every(group=>group==='D'),'不能从今天的配置倒填旧窗已见');
 });

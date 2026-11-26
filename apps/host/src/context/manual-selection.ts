@@ -203,21 +203,24 @@ export class ManualSelectionService {
 
   /** 粗估 token（§6.2：选集+A/B 系统段+待回答输入；未知 tokenizer 标 rough；
    *  预计装下仍由请求级容量终检兜底）。
-   *  R05（2026-10-24 根因修复）：历史选集现行合同是 textOnly 投影（正文+图片占位+
-   *  caption+可信转写首页，不产视觉块）——估算与发送同源：直接消费同一投影器
-   *  projectRevisionBlocks 与同一 guides 生成，不再维护第二个近似模型；
-   *  历史图片按占位文本如实计费，不再加每张 1600 的虚假视觉成本（旧链会把
-   *  纯文本装得下的选集错误拒绝）。当前输入的真实视觉计量不受影响（§8 estimator/
-   *  视觉门各自独立）。旧持久选集 items_json 含 image_count 键时自然忽略。 */
+   *  相册重构 P5（宿主用户 2026-11-08 裁定）：选集历史图片恢复真实视觉输入（撤销
+   *  2026-10-18 textOnly）——估算与发送继续同源：同一投影器非 textOnly 产出，
+   *  每个图片块按保守视觉成本计费（§8 estimator 口径的 1600/张），文本块照旧
+   *  按字符。R05 的"不维护第二个近似模型"原则不变（本方法仍只消费投影器输出）。 */
   estimateTokens(items: SelectionItem[], est: EstimateContext): number {
     const loaded = this.loadContents(items).loaded;
+    const IMAGE_BLOCK_TOKENS = 1600; // 保守视觉成本：与 §8 estimator 的图片口径一致（标 rough，终检兜底）
     let chars = est.systemChars + est.tailInputChars;
+    let imageBlocks = 0;
     for (const m of loaded) {
-      const proj = projectRevisionBlocks(m.content, m.attachments.map((a) => ({ ...a, presentation: a.presentation as 'image' | 'sticker' | 'voice' })), { textOnly: true });
-      for (const b of proj.blocks) if (b.type === 'text') chars += b.text.length;
+      const proj = projectRevisionBlocks(m.content, m.attachments.map((a) => ({ ...a, presentation: a.presentation as 'image' | 'sticker' | 'voice' })), {});
+      for (const b of proj.blocks) {
+        if (b.type === 'text') chars += b.text.length;
+        else imageBlocks += 1;
+      }
     }
     for (const guide of selectionGuides(loaded).values()) chars += guide.length;
-    return Math.ceil(chars / est.charsPerToken);
+    return Math.ceil(chars / est.charsPerToken) + imageBlocks * IMAGE_BLOCK_TOKENS;
   }
 
   /** preview：只读核验（不写库、不跑模型、不 hold、不换窗）。 */

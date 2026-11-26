@@ -3,13 +3,19 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {tempRoot, writeApprovedIdentity, readyRuntimePatch, assembleTestTools } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { ContentServer } from '../../apps/content/src/service.ts';
 import { contentForward } from '../../apps/host/src/integrations/content/client.ts';
 import type { ToolExecContext } from '../../apps/host/src/capabilities/contracts.ts';
+import { createEstSdkMcp } from '../../apps/host/src/runtime/sdk-mcp.ts';
+import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { ContentOperationCoordinator } from '../../apps/host/src/integrations/content/coordinator.ts';
+import { Logger } from '../../apps/host/src/observability/logging.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
@@ -145,20 +151,23 @@ test('FEED-06/ALBUM：相册条目幂等归档+our_words 反查+caption 更新',
   const add = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/chat_screenshots/entries', actor: 'qiaosheng', body: { asset_id: 'asset_test_screenshot_1', caption: '聊天截图', refs: [{ service: 'mariposa', kind: 'our_words', source_id: 'ow_test_1' }] }, headers: { 'Idempotency-Key': 'alb-1' } });
   assert.equal(add.status, 201);
   const entry = add.body as { id: string; kind: string; caption: string | null };
-  // 同 kind+asset 幂等返回既有
+  // M07（包1 2026-11-15 宿主用户裁定）：同 (kind,asset) 返回既有条目身份；同资产新键显式
+  // 给出的 caption 按同条目更新（空串=清空/省略=保留），revision/updated_at 推进。
   const add2 = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/chat_screenshots/entries', actor: 'qiaosheng', body: { asset_id: 'asset_test_screenshot_1', caption: '重复添加' }, headers: { 'Idempotency-Key': 'alb-2' } });
-  const dup = add2.body as { id: string };
-  assert.equal(dup.id, entry.id, '同 (kind,asset) 幂等返回既有');
+  const dup = add2.body as { id: string; caption: string | null; revision: number };
+  assert.equal(dup.id, entry.id, '同 (kind,asset) 返回既有条目身份（不新建）');
+  assert.equal(dup.caption, '重复添加', '显式 caption=同条目更新');
+  assert.equal(dup.revision, 2, '实际更新推进修订');
   // our_words 反查
   const rev = await contentForward(client, { method: 'GET', path: '/api/v1/content/albums/chat_screenshots/entries?source_service=mariposa&source_kind=our_words&source_id=ow_test_1', actor: 'qiaosheng' });
   const revItems = (rev.body as { items: Array<{ id: string; refs: Array<{ service: string; kind: string; source_id: string }> }> }).items;
   assert.equal(revItems.length, 1);
   assert.equal(revItems[0]!.refs[0]!.source_id, 'ow_test_1');
   // 更新 caption
-  const upd = await contentForward(client, { method: 'PUT', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', body: { caption: '更新后的说明' }, headers: { 'If-Match': '"1"', 'Idempotency-Key': 'alb-u1' } });
+  const upd = await contentForward(client, { method: 'PUT', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', body: { caption: '更新后的说明' }, headers: { 'If-Match': '"2"', 'Idempotency-Key': 'alb-u1' } });
   assert.equal(upd.status, 200);
   // 移除归档（不删外部原文/文件）
-  const rem = await contentForward(client, { method: 'DELETE', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', headers: { 'If-Match': '"2"', 'Idempotency-Key': 'alb-d1' } });
+  const rem = await contentForward(client, { method: 'DELETE', path: `/api/v1/content/album-entries/${entry.id}`, actor: 'qiaosheng', headers: { 'If-Match': '"3"', 'Idempotency-Key': 'alb-d1' } });
   assert.equal(rem.status, 200);
   const afterRem = await contentForward(client, { method: 'GET', path: '/api/v1/content/albums/chat_screenshots/entries', actor: 'qiaosheng' });
   assert.equal((afterRem.body as { items: unknown[] }).items.length, 0);
@@ -205,10 +214,11 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   migrate(db, sha256Hex);
   const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
   const messages = new MessageService(db);
-  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token } });
+  const contentOps = new ContentOperationCoordinator({ db, client: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token }, media, logger: new Logger(null) });
+  const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages, contentClient: { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token }, contentOps });
   const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w1', turnId: 'turn-tool-test', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-tool-test' };
-  const r = await tools.execute('content_post_create', { body: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1' }, ctx);
-  assert.equal(r.ok, true);
+  const r = await tools.execute('content_post_create', { text: 'char发的帖', presentation: 'letter', title: '一封信', idempotency_key: 'model-1' }, ctx);
+  assert.equal(r.ok, true, JSON.stringify(r.output));
   const post = r.output as { id: string; author: string; presentation: string };
   assert.equal(post.author, 'jiaming', '模型工具派生 jiaming');
   assert.equal(post.presentation, 'letter');
@@ -218,7 +228,248 @@ test('模型工具：content_post_create（jiaming 身份发帖+letter）', asyn
   const items = (list.output as { items: Array<{ id: string; author: string }> }).items;
   assert.ok(items.some((i) => i.id === post.id));
   // 评论
-  const comment = await tools.execute('content_comment_create', { post_id: post.id, body: '自己的评论', idempotency_key: 'mc-1' }, ctx);
+  const comment = await tools.execute('content_comment_create', { post_id: post.id, text: '自己的评论', idempotency_key: 'mc-1' }, ctx);
   assert.equal(comment.ok, true);
   db.close();
+});
+
+
+// ── F06/F07/F08（四仓联合审计 20261104；夹具按复审 T1 修正：真实上传合同+不静默让位）──
+/** 真实上传合同：POST /api/v1/assets?purpose=…，二进制正文，Idempotency-Key 必带，返回 asset_id */
+const upload = async (bytes: Buffer, opKey: string): Promise<string> => {
+  const r = await fetch(`${base}/api/v1/assets?purpose=chat_image`, { method: 'POST', headers: auth({ 'Content-Type': 'image/png', 'Idempotency-Key': opKey }), body: new Uint8Array(bytes) });
+  assert.equal(r.status, 201, `上传成功（实际 ${r.status}: ${await r.clone().text().catch(() => '')}）`);
+  return ((await r.json()) as { asset_id: string }).asset_id;
+};
+
+test('F06/R2：相册引用进删除守卫；解除最后引用后可删（引用生命周期闭环）', async () => {
+  const a1 = await upload(PNG, 'f06-a1'); const a2 = await upload(Buffer.concat([PNG, Buffer.from([1])]), 'f06-a2');
+  const entry = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06-e1' }), body: JSON.stringify({ asset_id: a1, caption: '被引用' }) });
+  assert.equal(entry.status, 201, '相册条目（单值 asset_id）创建');
+  const e1body = (await entry.json()) as { id: string };
+  const del1 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(a1)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(del1.status, 409, '仍被相册引用→拒绝删除（旧实现 200/missing）');
+  // R2：删除最后一个相册条目 → 引用释放 → 资产可删（旧实现引用残留仍 409）
+  const rmEntry = await fetch(`${base}/api/v1/content/album-entries/${encodeURIComponent(e1body.id)}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f06-rm1', 'If-Match': `"1"` }) });
+  assert.equal(rmEntry.status, 200, `相册条目删除（实际 ${rmEntry.status}）`);
+  const del1b = await fetch(`${base}/api/v1/assets/${encodeURIComponent(a1)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(del1b.status, 200, 'R2：解除最后引用后可删（旧实现仍 409）');
+  const del2 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(a2)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(del2.status, 200, '无引用资产可删');
+});
+
+test('F06-A（复审 e45f01f）：只改正文不释放附件保护；F06-B：A→B→A 后保护恢复', async () => {
+  const imgA = await upload(PNG, 'f06a-A'); const imgB = await upload(Buffer.concat([PNG, Buffer.from([9])]), 'f06a-B');
+  // 帖子引用 A
+  const pc = await fetch(`${base}/api/v1/content/posts`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-p1' }), body: JSON.stringify({ body: '带图', asset_ids: [imgA] }) });
+  const post = (await pc.json()) as { id: string; revision: number };
+  // ── A：只改文字（不传 asset_ids）→ 保护保留 ──
+  const textOnly = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-t1', 'If-Match': `"${post.revision}"` }), body: JSON.stringify({ body: '只改文字' }) });
+  assert.equal(textOnly.status, 200);
+  const delA1 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(imgA)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delA1.status, 409, 'F06-A：字段缺席=保留附件→仍受保护（旧返修误释放）');
+  // ── B：A→B（显式替换）→ A 释放；再 B→A → A 保护恢复（新修订新引用行）──
+  const rev1 = ((await textOnly.json()) as { revision: number }).revision;
+  const toB = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-t2', 'If-Match': `"${rev1}"` }), body: JSON.stringify({ body: '换成B', asset_ids: [imgB] }) });
+  assert.equal(toB.status, 200);
+  const delA2 = await fetch(`${base}/api/v1/assets/${encodeURIComponent(imgA)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delA2.status, 200, 'A 被真实替换→释放→可删');
+  // B→A：A 已被删（missing 状态）——上传同字节会 dedup 指回 missing 资产……用新字节重新生成 A'
+  const imgA2 = await upload(Buffer.concat([PNG, Buffer.from([7])]), 'f06a-A2');
+  const rev2 = ((await toB.json()) as { revision: number }).revision;
+  const backToA = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06a-t3', 'If-Match': `"${rev2}"` }), body: JSON.stringify({ body: '换回A', asset_ids: [imgA2] }) });
+  assert.equal(backToA.status, 200);
+  const delA2b = await fetch(`${base}/api/v1/assets/${encodeURIComponent(imgA2)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delA2b.status, 409, 'F06-B：重新引用的 A2 恢复保护（旧实现命中 released 行→不保护）');
+});
+
+test('F06-C（复审 e45f01f）：未来留言删除释放引用；F07：留言编辑回执含资源身份', async () => {
+  const img = await upload(PNG, 'f06c-img');
+  // 未安排投递的留言带图
+  const nc = await fetch(`${base}/api/v1/content/future-notes`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06c-n1' }), body: JSON.stringify({ body: '给未来的话', asset_ids: [img] }) });
+  assert.equal(nc.status, 201, '留言创建（带附件）');
+  const note = (await nc.json()) as { id: string; revision: number };
+  // F07：同 key 跨资源（先建 B 留言）
+  const ncB = await fetch(`${base}/api/v1/content/future-notes`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06c-n2' }), body: JSON.stringify({ body: 'B 留言' }) });
+  const noteB = (await ncB.json()) as { id: string; revision: number };
+  const editHeaders = auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f06c-e1', 'If-Match': '"1"' });
+  const eA = await fetch(`${base}/api/v1/content/future-notes/${note.id}`, { method: 'PUT', headers: editHeaders, body: JSON.stringify({ body: '编辑A' }) });
+  assert.equal(eA.status, 200, '留言 A 编辑成功');
+  const noteAfterEdit = (await eA.json()) as { revision: number };
+  const eB = await fetch(`${base}/api/v1/content/future-notes/${noteB.id}`, { method: 'PUT', headers: editHeaders, body: JSON.stringify({ body: '编辑A' }) });
+  assert.equal(eB.status, 409, `F07：同 key 跨资源→冲突（旧实现 200 返回 A 的结果；实际 ${eB.status}）`);
+  // F06-C：删除留言 → 引用释放 → 图片可删
+  const dn = await fetch(`${base}/api/v1/content/future-notes/${note.id}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f06c-d1', 'If-Match': `"${noteAfterEdit.revision}"` }) });
+  assert.equal(dn.status, 200, '留言删除');
+  const delImg = await fetch(`${base}/api/v1/assets/${encodeURIComponent(img)}`, { method: 'DELETE', headers: auth() });
+  assert.equal(delImg.status, 200, 'F06-C：解除最后引用后图片可删（旧实现仍 409）');
+});
+
+test('F07：编辑成功后原样重放=同结果不增版本；同键异请求冲突；旧版本编辑被 CAS 拒', async () => {
+  const create = await fetch(`${base}/api/v1/content/posts`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-p1' }), body: JSON.stringify({ body: '初版' }) });
+  const post = (await create.json()) as { id: string; revision: number };
+  const editHeaders = auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-e1', 'If-Match': '"1"' });
+  const editBody = JSON.stringify({ body: '第二版' });
+  const e1 = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: editHeaders, body: editBody });
+  assert.equal(e1.status, 200);
+  const r1 = (await e1.json()) as { revision: number };
+  assert.equal(r1.revision, 2);
+  // 原样重放（响应丢失重试）：同结果、不增版本（旧实现：加载 rev2 计算指纹≠首次→409）
+  const e2 = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: editHeaders, body: editBody });
+  assert.equal(e2.status, 200, `原样重放成功（实际 ${e2.status}）`);
+  const r2 = (await e2.json()) as { revision: number; body: string };
+  assert.equal(r2.revision, 2, '重放不增版本');
+  assert.equal(r2.body, '第二版', '重放返回原结果');
+  // 同键异请求=冲突保持
+  const e3 = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: editHeaders, body: JSON.stringify({ body: '另一个请求' }) });
+  assert.equal(e3.status, 409);
+  // 新编辑带旧 If-Match=1 → CAS 拒绝（真实并发保护不放宽）
+  const e4 = await fetch(`${base}/api/v1/content/posts/${post.id}`, { method: 'PUT', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-e2', 'If-Match': '"1"' }), body: JSON.stringify({ body: '第三版' }) });
+  assert.equal(e4.status, 409, '旧版本编辑被 CAS 拒绝');
+  // R3-B：同 key 用到**另一个资源**=不同请求→冲突（旧实现错放 A 的成功回执给 B）
+  const createB = await fetch(`${base}/api/v1/content/posts`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-p2' }), body: JSON.stringify({ body: 'B 初版' }) });
+  const postB = (await createB.json()) as { id: string; revision: number };
+  const crossKey = auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f07-e1', 'If-Match': '"1"' });
+  const eB = await fetch(`${base}/api/v1/content/posts/${postB.id}`, { method: 'PUT', headers: crossKey, body: JSON.stringify({ body: '第二版' }) });
+  assert.equal(eB.status, 409, `同 key 不同资源→IDEMPOTENCY_CONFLICT（旧实现 200 返回 A 的结果）`);
+  // R3-A：删除重放——首次 200 后对象已删，同 key 同路径重放仍 200（旧实现 404）
+  const delFirst = await fetch(`${base}/api/v1/content/posts/${postB.id}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f07-d1', 'If-Match': `"${postB.revision}"` }) });
+  assert.equal(delFirst.status, 200, '删除首次成功');
+  const delReplay = await fetch(`${base}/api/v1/content/posts/${postB.id}`, { method: 'DELETE', headers: auth({ Origin: base, 'Idempotency-Key': 'f07-d1', 'If-Match': `"${postB.revision}"` }) });
+  assert.equal(delReplay.status, 200, `删除重放回放原 200（旧实现 404 entry/post not found；实际 ${delReplay.status}）`);
+});
+
+test('F08：无效 refs 零业务写零回执；成功重放不重复新增', async () => {
+  const assetId = await upload(PNG, 'f08-asset');
+  const listBefore = (await (await fetch(`${base}/api/v1/content/albums/important_photos/entries?limit=100`, { headers: auth() })).json() as { items: unknown[] }).items.length;
+  // 无效 refs（缺 source_id）→ 422 且条目不留（旧实现 422 后条目残留）
+  const bad = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-bad' }), body: JSON.stringify({ asset_id: assetId, refs: [{ service: 'est', kind: 'message' }] }) });
+  assert.equal(bad.status, 422);
+  const listAfter = (await (await fetch(`${base}/api/v1/content/albums/important_photos/entries?limit=100`, { headers: auth() })).json() as { items: unknown[] }).items.length;
+  assert.equal(listAfter, listBefore, '失败请求零业务写入（事务回滚）');
+  // 同键重放失败请求：无回执→再次 422（不是回放也不是 409 幂等冲突）
+  const bad2 = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-bad' }), body: JSON.stringify({ asset_id: assetId, refs: [{ service: 'est', kind: 'message' }] }) });
+  assert.equal(bad2.status, 422, '失败重放仍如实 422（零回执）');
+  // 合法创建 + 成功重放不重复
+  const ok1 = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-ok' }), body: JSON.stringify({ asset_id: assetId, caption: 'F08' }) });
+  assert.equal(ok1.status, 201);
+  const ok2 = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'f08-ok' }), body: JSON.stringify({ asset_id: assetId, caption: 'F08' }) });
+  assert.equal(ok2.status, 201, '成功重放回放原 201（withReceipt 回放原状态，不重复新增）');
+});
+
+// —— R5（复审 2026-11-08）：相册写工具 + creation_save_artifact 自动入作品 + 携带集合逐条目 ——
+
+async function toolHarness() {
+  const db = openDatabase(path.join(root, 'data'));
+  migrate(db, sha256Hex);
+  const media = new MediaService(db, path.join(root, 'media'), buildConfig({}));
+  const client = { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token };
+  const contentOps = new ContentOperationCoordinator({ db, client, media, logger: new Logger(null) });
+  const { tools, registry } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media, messages: new MessageService(db), contentClient: client, contentOps });
+  const ctx: ToolExecContext = { roomId: 'primary', windowId: 'w-r5', turnId: 'turn-r5', purpose: 'chat', activeReviewId: null, seenSequence: 0, seenMessages: [], requestId: 'prq-r5' };
+  return { db, tools, registry, ctx, media, client };
+}
+
+test('R5-工具：content_album_entry_write（收藏+携带模式一体；同键幂等重放）', async () => {
+  const { tools, ctx, media } = await toolHarness();
+  const asset = await media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'r5-op-asset-1', createdBy: 'qiaosheng', origin: 'upload' });
+  const r1 = await tools.execute('content_album_entry_write', { kind: 'important_photos', asset_id: asset.id, caption: '今晚的月亮', carry_mode: 'always', idempotency_key: 'r5-alb-1' }, ctx);
+  assert.equal(r1.ok, true, JSON.stringify(r1.output));
+  const e1 = r1.output as { id: string; carry_mode: string };
+  assert.equal(e1.carry_mode, 'always');
+  const r2 = await tools.execute('content_album_entry_write', { kind: 'important_photos', asset_id: asset.id, caption: '今晚的月亮', carry_mode: 'always', idempotency_key: 'r5-alb-1' }, ctx);
+  assert.equal(r2.ok, true);
+  assert.equal((r2.output as { id: string }).id, e1.id, '同幂等键重放=同一条目');
+  const bad = await tools.execute('content_album_entry_write', { kind: 'chat_screenshots', asset_id: asset.id, idempotency_key: 'r5-alb-2' }, ctx);
+  assert.equal(bad.ok, false, 'chat_screenshots 不在写工具白名单（只归截图归档链）');
+});
+
+test('相册：SDK 经冻结 tool_invoke 恢复参数对象，原有校验和幂等仍生效', async t => {
+  const { db, tools, registry, ctx, media, client } = await toolHarness();
+  const windowId = 'w-r5-album-sdk';
+  db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES(?,?,'ACTIVE','now','now')").run(windowId, ctx.roomId);
+  const spec = freezeWindowTools(db, windowId, registry.currentCatalog(), 'deferred', registry.currentGroups());
+  const mcp = createEstSdkMcp(spec, (name, args) => tools.execute(name, args, { ...ctx, windowId }));
+  const [sdkTransport, mcpTransport] = InMemoryTransport.createLinkedPair();
+  const sdk = new Client({ name: 'synthetic', version: '1' });
+  t.after(async () => { try { await sdk.close(); } finally { db.close(); } });
+  await mcp.instance.connect(mcpTransport);
+  await sdk.connect(sdkTransport);
+
+  const asset = await media.saveBuffer({ bytes: Buffer.concat([PNG, Buffer.from([9])]), purpose: 'chat_image',
+    operationId: 'r5-sdk-album-asset', createdBy: 'qiaosheng', origin: 'upload' });
+  const input = { kind: 'important_photos', asset_id: asset.id, caption: '合成照片 }',
+    carry_mode: 'next_once', idempotency_key: 'r5-sdk-album' };
+  const call = async (args: unknown, name = 'content_album_entry_write') => {
+    const result = await sdk.callTool({ name: 'tool_invoke', arguments: { name, arguments: args } });
+    assert.ok(Array.isArray(result.content));
+    const block = result.content[0];
+    assert.equal(block?.type, 'text');
+    return { isError: result.isError, output: JSON.parse(block.text) };
+  };
+  const encoded = JSON.stringify(input);
+  assert.equal((await call(encoded + '}}')).output.error_code, 'TOOL_ARG_TYPE');
+  assert.equal((await call('{}', 'content_albums_read')).output.error_code, 'TOOL_ARG_TYPE');
+  assert.equal((await call(JSON.stringify({ ...input, kind: 'chat_screenshots' }) + '}')).output.error_code, 'TOOL_ARG_ENUM');
+  const missing = await call(JSON.stringify({ ...input, asset_id: 'missing-synthetic-asset' }) + '}');
+  assert.equal(missing.isError, true);
+  assert.equal(missing.output.error_code, 'ALBUM_ENTRY_WRITE_FAILED');
+  assert.match(missing.output.detail, /asset_not_found/);
+
+  const saved = await call(encoded + '}');
+  assert.equal(saved.isError, false, JSON.stringify(saved.output));
+  assert.equal(saved.output.caption, input.caption);
+  assert.equal(saved.output.carry_mode, input.carry_mode);
+  assert.equal((await call(encoded)).output.id, saved.output.id);
+  assert.equal((await call(input)).output.id, saved.output.id);
+  const list = await contentForward(client, { method: 'GET', path: '/api/v1/content/albums/important_photos/entries',
+    actor: 'jiaming', headers: {} });
+  const entries = (list.body as { items: Array<{ id: string; asset_id: string }> }).items;
+  assert.deepEqual(entries.filter(entry => entry.asset_id === asset.id).map(entry => entry.id), [saved.output.id]);
+  assert.equal(entries.some(entry => entry.asset_id === 'missing-synthetic-asset'), false);
+});
+
+test('R5-工具：creation_save_artifact 保存即入作品（svg 免桶+icon=work；同 op 重放不重复建）', async () => {
+  const { tools, ctx, client } = await toolHarness();
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4"><animate attributeName="r" values="1;4;1" dur="2s"/></circle></svg>';
+  const r1 = await tools.execute('creation_save_artifact', { format: 'svg', content: svg, client_operation_id: 'r5-crt-1' }, ctx);
+  assert.equal(r1.ok, true, JSON.stringify(r1.output));
+  const out1 = r1.output as { asset_id: string; creation_id: string | null; saved: boolean };
+  assert.ok(out1.creation_id, '作品条目已建立');
+  const list = await contentForward(client, { method: 'GET', path: '/api/v1/content/creations?limit=10', actor: 'qiaosheng' });
+  const mine = (list.body as { items: Array<{ id: string; work_kind: string | null; work_asset_id: string | null; icon_asset_id: string | null }> }).items.find((c) => c.id === out1.creation_id);
+  assert.ok(mine, '作品列表可见');
+  assert.equal(mine!.work_kind, 'svg');
+  assert.equal(mine!.work_asset_id, out1.asset_id, '免桶：work=保存资产');
+  assert.equal(mine!.icon_asset_id, out1.asset_id, 'icon 以自身 work 资产充当（不复制字节）');
+  const r2 = await tools.execute('creation_save_artifact', { format: 'svg', content: svg, client_operation_id: 'r5-crt-1' }, ctx);
+  assert.equal(r2.ok, true);
+  assert.equal((r2.output as { creation_id: string | null }).creation_id, out1.creation_id, '同 client_operation_id 重放=同一作品（不重复建条目/资产）');
+});
+
+test('R6-携带（P2-b 后合同）：携带只属 important_photos；纯归档关系不入携带集、留言原样', async () => {
+  const client = { baseUrl: `http://127.0.0.1:${contentServer.port}`, token: contentServer.token };
+  // 携带关系一条（important_photos）；同 asset 在 stickers 再归档一条纯收藏
+  await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/important_photos/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '海边的落日', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-1' } });
+  const otherKind = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/stickers/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '风好大', carry_mode: 'always' }, headers: { 'Idempotency-Key': 'cm-2' } });
+  assert.equal(otherKind.status, 422, 'P2-b：stickers 传携带=分类拒绝');
+  const plain = await contentForward(client, { method: 'POST', path: '/api/v1/content/albums/stickers/entries', actor: 'qiaosheng', body: { asset_id: 'asset_carry_multi', caption: '风好大' }, headers: { 'Idempotency-Key': 'cm-2b' } });
+  assert.equal(plain.status, 201, '纯归档合法');
+  const set = await contentForward(client, { method: 'GET', path: '/api/v1/content/carry-set', actor: 'jiaming' });
+  const items = (set.body as { items: Array<{ asset_id: string; caption: string | null; kind: string }> }).items.filter((i) => i.asset_id === 'asset_carry_multi');
+  assert.equal(items.length, 1, '携带集只含 important_photos 的携带关系（stickers 纯归档不入）');
+  assert.equal(items[0]!.caption, '海边的落日', '携带关系留言原样保留（03 §7.2）');
+});
+
+// RR2（复审 2026-11-09）：浏览器路径（host 代理唯一入口）写入相册条目时补注 M 对象身份——
+// content 侧落 content_sha256，携带集随行返回（配置/规划/装配三口径统一的身份源头）。
+test('RR2: 浏览器经 host 代理收藏→条目落 content_sha256 且 carry-set 随行返回', async () => {
+  const a1 = await upload(PNG, 'rr2-px-1');
+  const assetId = a1;
+  const entry = await fetch(`${base}/api/v1/content/albums/important_photos/entries`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base, 'Idempotency-Key': 'rr2-px-e1' }), body: JSON.stringify({ asset_id: assetId, carry_mode: 'always' }) });
+  assert.equal(entry.status, 201);
+  const set = await fetch(`${base}/api/v1/content/carry-set`, { headers: auth() });
+  const items = ((await set.json()) as { items: Array<{ asset_id: string; content_sha256?: string }> }).items.filter((i) => i.asset_id === assetId);
+  assert.equal(items.length, 1);
+  assert.match(items[0]!.content_sha256 ?? '', /^[0-9a-f]{64}$/, '代理补注的 M 对象身份随携带集返回（前端不知道 hash，E 是身份持有方）');
 });

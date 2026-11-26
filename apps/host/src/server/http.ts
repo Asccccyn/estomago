@@ -31,7 +31,6 @@ import type { SystemAlertService } from '../observability/system-alerts.ts';
 import type { MediaService, IngestPurpose } from '../media/assets.ts';
 import { MediaError } from '../media/assets.ts';
 import { POLICY_CONSTANTS } from '../config/policy-constants.ts';
-import { contentProxyWithAssets } from '../integrations/content/client.ts';
 import { buildCalendarMonth, buildCalendarDayItems, shanghaiDayRange, type CalendarSource } from './calendar-routes.ts';
 import { fetchOrModelMeta, effortsForModel } from '../runtime/runtime-settings.ts';
 import { orModelIdIssue } from '../config/schema.ts';
@@ -46,8 +45,11 @@ import { sha256Hex } from '../util/id.ts';
 import { PRIMARY_CONVERSATION } from '../messages/constants.ts';
 import { keepwarmSleepState } from '../runtime/keepwarm-sleep.ts';
 import { storedToolset } from '../runtime/tool-discovery.ts';
+import { ZASHIDELE_MOMENTS_PATH, type ZashideleMoments } from '../integrations/zashidele/moments.ts';
 
 export type RequestDeps = {
+  sourceBinding?: import('../modules/sourcebinding/service.ts').SourceBindingService;
+  calendarMariposa?: import('../integrations/mariposa/client.ts').MariposaClient;
   config: Config;
   paths: EstomagoPaths;
   db: Db;
@@ -70,6 +72,8 @@ export type RequestDeps = {
   bgSettings?: import('../runtime/background-settings.ts').BackgroundSettingsService; // EXEC_V1 WP4
   scheduler?: import('../runtime/background-scheduler.ts').BackgroundScheduler; // EXEC_V1 WP4
   mediaIndex?: import('../media/index/service.ts').MediaIndexService; // R8′：后台补索引独立循环（不经会话串行链）
+  mediaMasterStore?: import('../integrations/mariposa/media-store.ts').MariposaMediaStore; // 相册重构 P2：M 唯一正本落正客户端
+  archives?: import('../modules/archives/service.ts').ArchiveService; // 相册重构 P4：对话存档（人类入口+通知投递）
   oido?: import('../integrations/oido/adapter.ts').OidoAdapter; // R6′：删除传播重试循环
   voiceObservations?: import('../modules/oido/observations.ts').VoiceObservationService; // GLMVoice：观察 sidecar 登记/查询
   callReplyLinks?: import('../modules/voice/call-links.ts').CallReplyLinkService; // A04：通话回复媒体关联 worker（完成/挂断 wake）
@@ -78,7 +82,10 @@ export type RequestDeps = {
   bgExecutorReady?: { autonomous: boolean; keepwarm: boolean }; // WP4：模型执行器就绪状态（自主/保温接线批落地前 false）
   taskService?: import('../runtime/background-task-service.ts').BackgroundTaskService; // WAKE_KEEPWARM_V1：预约管理正本（HTTP 与 wake_manage 共用）
   activity?: import('../runtime/wake-activity.ts').ConversationActivityService; // WAKE_KEEPWARM_V1：活动投影/保温状态派生
+  heartbeat?: import('../modules/heartbeat/runtime.ts').HeartbeatRuntime;
+  zashideleMoments?: ZashideleMoments;
   contentClient?: import('../integrations/content/client.ts').ContentClient | null; // EXEC_V1 WP5：内容服务薄代理
+  contentOps?: import('../integrations/content/coordinator.ts').ContentOperationCoordinator | null; // P1（F06/F07 20261106）：内容写协调（浏览器/模型/恢复共用）
   surfacing?: import('../memory-surfacing/service.ts').SurfacingService | null; // 自动浮现（默认 disabled）
   auth: AuthService;
   archiveSync?: {
@@ -94,6 +101,11 @@ const WEB_DIR = path.resolve(import.meta.dirname, '../../../web/src');
 const STATIC_FILES = new Map<string, { file: string; type: string; cache: string }>([
   ['/', { file: 'home/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/chat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/home/album', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/home/moments', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/home/heartbeat', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/settings/model-access', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
+  ['/settings/account', { file: '../dist/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ['/wishstar', { file: 'wishstar/index.html', type: 'text/html; charset=utf-8', cache: 'no-cache' }],
   ...HOME_STATIC_FILES,
   ['/chat-app.js', { file: '../dist/chat-app.js', type: 'text/javascript; charset=utf-8', cache: 'no-cache' }],
@@ -147,21 +159,31 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
       if (!d.auth.originAllowed(req, String(req.headers.host ?? ''))) {
         return json(res, 403, { error: { code: 'bad_origin', message: 'Origin 校验失败' } });
       }
-      const body = (await readJson(req, d)) as { token?: unknown } | null;
+      const body = (await readJson(req, d)) as { token?: unknown; username?: unknown; password?: unknown } | null;
       const token = typeof body?.token === 'string' ? body.token : null;
-      if (!d.auth.verifyToken(token)) {
+      const passwordLogin = typeof body?.username === 'string' && body.username.trim().length <= 64
+        && typeof body?.password === 'string' && body.password.length > 0 && body.password.length <= 256
+        && await d.auth.verifyPassword(body.username.trim(), body.password);
+      if (!d.auth.verifyToken(token) && !passwordLogin) {
         return json(res, 401, { error: { code: 'unauthorized', message: 'token 不正确' } });
       }
-      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(token!)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`); // 上方 verifyToken 已验证 token 为非空 string
+      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(d.auth.sessionToken())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`);
       return json(res, 200, { ok: true });
     }
-    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname.startsWith('/home/'));
+    const protectedPage = req.method === 'GET' && (url.pathname === '/' || url.pathname === '/chat' || url.pathname === '/settings/model-access' || url.pathname === '/settings/account' || url.pathname.startsWith('/home/'));
     if ((protectedPage && !d.auth.isAuthorized(req)) || (route === 'GET /login' && d.auth.isAuthorized(req))) {
       res.writeHead(302, { Location: url.pathname === '/login' ? '/' : '/login', 'Cache-Control': 'no-store' });
       res.end();
       return;
     }
     if (req.method === 'GET' && (STATIC_FILES.has(url.pathname) || url.pathname.startsWith('/login/'))) {
+      if (url.pathname === '/home/feature.html') {
+        const feature = url.searchParams.get('feature');
+        if (feature === 'calendar') return serveStatic(res, '/home/calendar.html');
+        if (feature === 'album') return serveStatic(res, '/home/album');
+        if (feature === 'moments') return serveStatic(res, '/home/moments');
+        if (feature === 'heartbeat') return serveStatic(res, '/home/heartbeat');
+      }
       return serveStatic(res, url.pathname);
     }
 
@@ -185,10 +207,24 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
     if (route === 'GET /api/v1/auth/session') {
       return json(res, 200, { authenticated: true });
     }
+    if (route === 'GET /api/v1/auth/account') return json(res, 200, d.auth.account());
+    if (route === 'PUT /api/v1/auth/account') {
+      const body = await readJson(req, d) as { username?: unknown; password?: unknown; confirm_password?: unknown } | null;
+      if (typeof body?.username !== 'string' || !body.username.trim() || body.username.trim().length > 64
+        || typeof body.password !== 'string' || body.password.length < 12 || body.password.length > 256
+        || body.confirm_password !== body.password) {
+        return json(res, 422, { error: { code: 'invalid_account', message: '账号须为 1–64 字，密码须为 12–256 字，两次密码须一致。' } });
+      }
+      await d.auth.setAccount(body.username.trim(), body.password);
+      res.setHeader('Set-Cookie', `estomago_session=${encodeURIComponent(d.auth.sessionToken())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=31536000`);
+      return json(res, 200, { ok: true, ...d.auth.account() });
+    }
 
     // —— 会话/消息/浮现视图组——P07.2 迁 server/routes/conversations.ts（逐字）。
     // 精确路由表委托（同 voice-call 模式）：未列出的 /api/v1/conversations/* 子路径继续走链尾 404，不被前缀抢占。
-    if (route === 'GET /api/v1/conversations'
+    if (route === 'GET /api/v1/memory-surfacing/settings'
+      || route === 'PUT /api/v1/memory-surfacing/settings'
+      || route === 'GET /api/v1/conversations'
       || /^GET \/api\/v1\/conversations\/([^/]+)\/messages$/.test(route)
       || /^GET \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.test(route)
       || /^POST \/api\/v1\/conversations\/([^/]+)\/messages$/.test(route)
@@ -253,20 +289,53 @@ export async function handleRequest(req: IncomingMessage, res: ServerResponse, d
 
 
     // —— 日历读聚合组——P07.2 迁 server/routes/calendar.ts（逐字）。
-    if (route === 'GET /api/v1/calendar/month' || route === 'GET /api/v1/calendar/day' || route === 'GET /api/v1/calendar/day/items') {
-      return handleCalendarRoutes(req, res, d, route, url);
+    if (route === 'POST /api/v1/calendar/memory/recalculate' || route === 'GET /api/v1/calendar/month' || route === 'GET /api/v1/calendar/day' || route === 'GET /api/v1/calendar/day/items') {
+      return await handleCalendarRoutes(req, res, d, route, url);
     }
 
 
     // —— EXEC_V1 §06.4/5（WP5）：content 薄代理——P07.2 迁 server/routes/content.ts（逐字）
+    if (req.method === 'GET' && (url.pathname === ZASHIDELE_MOMENTS_PATH || url.pathname.startsWith(ZASHIDELE_MOMENTS_PATH + '/'))) {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!d.zashideleMoments) return json(res, 503, { error: { code: 'zashidele_feed_unavailable', message: '扎西德勒客厅暂不可用。' } });
+      const suffix = url.pathname.slice(ZASHIDELE_MOMENTS_PATH.length);
+      if (suffix && !/^\/[^/]+$/.test(suffix)) return json(res, 404, { error: { code: 'zashidele_post_unreadable', message: '原帖当前不可读。' } });
+      let id: string | null;
+      try { id = suffix ? decodeURIComponent(suffix.slice(1)) : null; }
+      catch { return json(res, 400, { error: { code: 'zashidele_feed_query_invalid', message: '原帖地址无效。' } }); }
+      const result = await d.zashideleMoments.read(id, url.searchParams);
+      return json(res, result.status, result.body);
+    }
     if (url.pathname.startsWith('/api/v1/content/')) {
       return await handleContentProxy(req, res, d, url);
     }
 
+    // —— 相册重构 P4：对话存档人类入口（模型走 conversation_archive 工具，同服务异入口）
+    if (route === 'POST /api/v1/archives' || route === 'GET /api/v1/archives'
+      || /^GET \/api\/v1\/archives\/[^/]+$/.test(route)
+      || /^GET \/api\/v1\/archives\/[^/]+\/messages$/.test(route)
+      || /^DELETE \/api\/v1\/archives\/[^/]+$/.test(route)) {
+      return await handleArchivesRoutes(req, res, d, route, url);
+    }
+
     // —— EXEC_V1 §04.11（WP4）+ WAKE_KEEPWARM_V1 §08：后台设置/任务/运行——P07.2 迁 server/routes/background.ts（逐字）。
     // 精确路由表委托（同 voice-call 模式）：未列出的 /api/v1/background/* 子路径继续走链尾 404，不被前缀抢占。
+    // RB05（复审 20261106）：free-activity 显式入口接进分派（handler 已在 background.ts，
+    // 旧表漏列致正式 HTTP 404——功能不可达）。
+    if (route === 'GET /api/v1/background/heartbeat') {
+      if (!d.heartbeat) return json(res, 503, { error: { code: 'heartbeat_unavailable', message: '心跳服务暂不可用' } });
+      return json(res, 200, d.heartbeat.status(PRIMARY_CONVERSATION));
+    }
+    const heartbeatCard = /^GET \/api\/v1\/background\/heartbeat\/cards\/([\w-]+)$/.exec(route);
+    if (heartbeatCard) {
+      if (!d.heartbeat) return json(res, 503, { status: 'unavailable' });
+      const card = await d.heartbeat.cardForDisplay(heartbeatCard[1]!, PRIMARY_CONVERSATION);
+      return json(res, card ? 200 : 404, card ?? { status: 'unavailable' });
+    }
     if (route === 'GET /api/v1/background/settings' || route === 'PUT /api/v1/background/settings'
       || route === 'GET /api/v1/background/tasks' || route === 'POST /api/v1/background/tasks'
+      || route === 'POST /api/v1/background/free-activity'
+      || route === 'POST /api/v1/background/heartbeat/resume'
       || route === 'GET /api/v1/background/runs'
       || /^GET \/api\/v1\/background\/tasks\/([^/]+)$/.test(route)
       || /^PUT \/api\/v1\/background\/tasks\/([^/]+)$/.test(route)
@@ -355,6 +424,7 @@ function serveStatic(res: ServerResponse, pathname: string): void {
 // 本处转发 shim 保持既有 import 位置兼容调用点，P09 复核收口）。
 import { handleVoiceCallLifecycle } from './routes/voice-call.ts';
 import { handleContentProxy } from './routes/content.ts';
+import { handleArchivesRoutes } from './routes/archives.ts';
 import { handleBackgroundRoutes } from './routes/background.ts';
 import { handleConversationRoutes } from './routes/conversations.ts';
 import { handleOidoUiRoutes } from './routes/oido-ui.ts';

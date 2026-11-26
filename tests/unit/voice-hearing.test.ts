@@ -13,6 +13,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { projectRevisionBlocks } from '../../apps/host/src/media/model-input.ts';
 import { OidoAdapter } from '../../apps/host/src/integrations/oido/adapter.ts';
 import { oidoHearingAvailable } from '../../apps/host/src/application/voice-hearing-port.ts';
+import { buildDeferredTools } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 
@@ -57,8 +58,10 @@ test('V06: 无转写+听觉可用 → 结构化语音引用进入，不再阻断
     const r = projectRevisionBlocks('', [voiceAttachment('ast_voice1', null)], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice1', 2300]]) });
     assert.equal(r.hasVoiceWithoutTranscript, false, '门不再阻断');
     const text = r.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n');
-    assert.match(text, /audio_ref: est:ast_voice1/);
+    // P2 §6.5（现行合同）：audio_ref 不再入默认投影——宿主保管，oido_analyze 缺省即本条
+    assert.doesNotMatch(text, /audio_ref/);
     assert.match(text, /2300ms/);
+    assert.match(text, /原声已保留/);
     assert.match(text, /oido_analyze/);
   } finally { f.close(); }
 });
@@ -80,12 +83,13 @@ test('转写存在：只出现一次；听觉可用时附原声引用行（当�
     const r = projectRevisionBlocks('', [voiceAttachment('ast_voice3', '今天好累')], { isCurrentInput: true, hearing: { available: true }, voiceDurations: new Map([['ast_voice3', 4100]]) });
     const text = r.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n');
     assert.equal((text.match(/今天好累/g) ?? []).length, 1, '转写单份');
-    assert.match(text, /语音消息转写/);
-    assert.match(text, /audio_ref: est:ast_voice3/);
-    // 听觉不可用：不附引用行（工具不存在时引用是噪声）
+    assert.match(text, /\[语音转写\|siren:transcribe\|非亲笔\]/, 'B4 精简标记');
+    assert.doesNotMatch(text, /audio_ref/, 'P2 §6.5：audio_ref 不入默认投影');
+    assert.match(text, /oido_analyze/, '听觉可用时给按需深听指引');
+    // 听觉不可用：不附深听指引（工具不存在时引用是噪声）
     const r2 = projectRevisionBlocks('', [voiceAttachment('ast_voice3', '今天好累')], { isCurrentInput: true });
     const text2 = r2.blocks.map((b) => b.type === 'text' ? b.text : '').join('\n');
-    assert.doesNotMatch(text2, /audio_ref/);
+    assert.doesNotMatch(text2, /oido_analyze/);
   } finally { f.close(); }
 });
 
@@ -128,11 +132,11 @@ test('自审修复：旧窗冻结目录无 oido_analyze → 听觉判定 false�
       "INSERT INTO windows(id, conversation_id, status, active_generation, revision, created_at, updated_at) VALUES (?, 'primary', 'CLOSED', 0, 1, ?, ?)").run(id, new Date().toISOString(), new Date().toISOString());
     mkWindow('w_old'); mkWindow('w_new2');
     f.db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
-      .run('w_old', 'deferred', JSON.stringify([]), JSON.stringify(legacyCatalog), new Date().toISOString());
+      .run('w_old', 'deferred', JSON.stringify(buildDeferredTools()), JSON.stringify(legacyCatalog), new Date().toISOString());
     assert.equal(oidoHearingAvailable(f.db, true, 'w_old'), false, '旧窗无 oido 工具=不可听（阻断语义）');
     // 含 oido 的冻结目录 → true
     f.db.prepare('INSERT INTO window_toolsets(window_id, protocol, wire_tools_json, catalog_json, created_at) VALUES (?,?,?,?,?)')
-      .run('w_new2', 'deferred', JSON.stringify([]), JSON.stringify(fullToolCatalog()), new Date().toISOString());
+      .run('w_new2', 'deferred', JSON.stringify(buildDeferredTools()), JSON.stringify(fullToolCatalog()), new Date().toISOString());
     assert.equal(oidoHearingAvailable(f.db, true, 'w_new2'), true);
   } finally { f.close(); }
 });

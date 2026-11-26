@@ -9,11 +9,26 @@ import { shanghaiDayRange } from '../calendar-routes.ts';
 import { conversationSnapshot } from '../snapshot.ts';
 import { snapshotFor } from '../../usage/estimator.ts';
 import { MediaError } from '../../media/assets.ts';
-import type { SubmitMessageRequest, MessagePageDto } from '../../../../../packages/contracts/src/api.ts';
+import { validateAbsoluteIso } from '../../util/time.ts';
+import { isBlankContent, normalizeNewlines, type SubmitMessageRequest, type MessagePageDto } from '../../../../../packages/contracts/src/api.ts';
 import type { RequestDeps } from '../http.ts';
 
 /** 会话组：浮现详情视图（owner 只读）/会话列表/消息分页/单条/编辑/重试/发送/恢复快照。 */
 export async function handleConversationRoutes(req: IncomingMessage, res: ServerResponse, d: RequestDeps, route: string, url: URL): Promise<void> {
+if (route === 'GET /api/v1/memory-surfacing/settings') {
+  if (!d.surfacing) return json(res, 503, { error: { code: 'SURFACE_UNAVAILABLE' } });
+  res.setHeader('Cache-Control', 'no-store');
+  return json(res, 200, d.surfacing.settingsView());
+}
+if (route === 'PUT /api/v1/memory-surfacing/settings') {
+  if (!d.surfacing) return json(res, 503, { error: { code: 'SURFACE_UNAVAILABLE' } });
+  const body = await readJson(req, d) as { enabled?: unknown; model?: unknown; decision_template?: unknown } | null;
+  const result = d.surfacing.updateSettings({ enabled: body?.enabled, model: body?.model, decision_template: body?.decision_template });
+  if (!result.ok) return json(res, 422, { error: { code: 'INVALID_SURFACING_SETTINGS', message: result.error } });
+  res.setHeader('Cache-Control', 'no-store');
+  return json(res, 200, d.surfacing.settingsView());
+}
+
 // Owner-authenticated detail view; never a model request or new retrieval.
 const surfaceView = /^GET \/api\/v1\/conversations\/([^/]+)\/turns\/([^/]+)\/memories(?:\/([^/]+))?$/.exec(route);
 if (surfaceView) {
@@ -57,7 +72,7 @@ if (convMsgs) {
     result.messages = new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate(result.messages);
     if (snapshot) {
       result.active_turns = d.db.prepare(`
-        SELECT t.id AS turn_id, t.state,
+        SELECT t.id AS turn_id, t.state, t.trigger,
           (SELECT a.id FROM attempts a WHERE a.turn_id=t.id ORDER BY a.attempt_no DESC LIMIT 1) AS attempt_id
         FROM turns t WHERE t.conversation_id=? AND t.state IN ('pending','running','route_owner_pending') ORDER BY t.created_at,t.id
       `).all(conversationId) as NonNullable<MessagePageDto['active_turns']>;
@@ -76,7 +91,7 @@ if (convMsgs) {
 
 const getMsg = /^GET \/api\/v1\/conversations\/([^/]+)\/messages\/([^/]+)$/.exec(route);
 if (getMsg) {
-  const message = d.messages.getMessage(decodeURIComponent(getMsg[2]!));
+  const message = d.messages.getMessage(decodeURIComponent(getMsg[2]!), true);
   if (!message || message.conversation_id !== decodeURIComponent(getMsg[1]!)) return json(res, 404, { error: { code: 'not_found', message: '消息不存在或不属于该房间' } });
   return json(res, 200, { message: new MessageRetryService(d.db, d.messages, d.config.runtime.provider).decorate([message])[0] });
 }
@@ -180,17 +195,29 @@ if (postMsgs) {
     if (a.presentation !== 'image' && a.presentation !== 'sticker' && a.presentation !== 'voice') return json(res, 400, { error: { code: 'bad_attachment', message: 'attachments[].presentation 必须是 image|sticker|voice' } });
     parsedAttachments.push({ asset_id: a.asset_id, presentation: a.presentation, caption: typeof a.caption === 'string' ? a.caption : null });
   }
+  // D3（她批 2026-10-06）：首版单批准房间——凭空建房防护（先于暂存落正校验，避免无效请求先把附件上传 M）
+  const exists = d.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId);
+  if (!exists) return json(res, 404, { error: { code: 'conversation_not_found', message: '房间不存在（首版仅批准房间）' } });
+  if (isBlankContent(normalizeNewlines(body.content)) && parsedAttachments.length === 0) {
+    return json(res, 422, { error: { code: 'blank_content', message: '正文仅空白且无附件，拒绝发送（不 trim 重写用户正文）' } });
+  }
+  if (body.occurred_at !== null && body.occurred_at !== undefined && body.occurred_at !== '') {
+    const v = validateAbsoluteIso(body.occurred_at);
+    if (!v.ok) {
+      return json(res, 422, { error: { code: 'invalid_occurred_at', message: `INVALID_OCCURRED_AT: 客户端时间必须是带时区的合法 ISO 8601 日历日期（拒绝原因 ${v.reason}）` } });
+    }
+  }
   if (d.media && parsedAttachments.length > 0) {
-    try { d.media.validateForSend(parsedAttachments); }
-    catch (err) {
+    // Pre-validate every attachment locally before uploading any staged item to Mariposa.
+    try {
+      d.media.validateBeforeCommit(parsedAttachments);
+      await d.media.commitStagedAssets(parsedAttachments.map(a => a.asset_id));
+      d.media.validateForSend(parsedAttachments);
+    } catch (err) {
       if (err instanceof MediaError) return json(res, err.httpStatus, { error: { code: err.code.toLowerCase(), message: err.message } });
       throw err;
     }
   }
-  // D3（她批 2026-10-06）：首版单批准房间——凭空建房防护（房间必须
-  // 已存在；归档 grant 也按 primary 钉死，第二房间同步本就会拒）
-  const exists = d.db.prepare('SELECT 1 FROM conversations WHERE id = ?').get(conversationId);
-  if (!exists) return json(res, 404, { error: { code: 'conversation_not_found', message: '房间不存在（首版仅批准房间）' } });
   let submitted;
   try {
     // EXEC_V1 §05.7.2：随 revision 保存发送前估计快照（估计刷新不影响 content_hash/修订号）
@@ -208,8 +235,12 @@ if (postMsgs) {
   if (eventExists.n === 0) {
     d.events.publish('message.persisted', { conversationId, turnId: submitted.turnId, entityRef: message.id, entityRevision: message.sequence, payload: { message } });
   }
-  // EXEC_V1 §04.7.1（WP4）：用户消息入库即请求取消可取消背景步骤（聊天优先——不排在用户前面）
-  d.scheduler?.notePendingUserChat();
+  // EXEC_V1 §04.7.1（WP4）+ R3 修复：只对首次接受、修复出待执行任务、或当前仍待前台执行的请求
+  // 发送让位信号；已完成消息的幂等回执查询保持纯幂等，不打断正在执行的晨间/心跳抽卡。
+  const attemptState = (d.db.prepare('SELECT state FROM attempts WHERE id = ?').get(submitted.attemptId) as { state: string } | undefined)?.state;
+  if (!submitted.duplicate || submitted.repaired || attemptState === 'pending' || attemptState === 'running') {
+    d.scheduler?.notePendingUserChat();
+  }
   const startedExists = d.db.prepare('SELECT COUNT(*) n FROM runtime_stream_events WHERE kind = ? AND turn_id = ?').get('turn.started', submitted.turnId) as { n: number };
   if (startedExists.n === 0) {
     d.events.publish('turn.started', { conversationId, turnId: submitted.turnId, attemptId: submitted.attemptId, payload: {} });

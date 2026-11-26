@@ -13,6 +13,11 @@ const golden: Golden = JSON.parse(fs.readFileSync(goldenPath, 'utf8'));
 
 test('合成正常会话 wire 与 P01 基线逐字一致（工具目录/已见定义/同轮浮现/已发布语音投影）', async () => {
   const { records, facts } = await runSyntheticSession();
+  // 再生成开关与 envelope-golden 同款：目录变化（如新增工具）经显式重建更新基线
+  if (process.env.ESTOMAGO_UPDATE_GOLDEN === '1') {
+    fs.writeFileSync(goldenPath, JSON.stringify({ ...golden, records, facts }, null, 2) + '\n');
+    return;
+  }
   assert.deepEqual(records, golden.records, 'wire 记录（归一化 ID/时间戳后）与基线不一致');
   assert.deepEqual(facts, golden.facts, '关键事实（define/invoke 回执、语音消息、浮现绑定）与基线不一致');
   assert.ok(facts.hold_calls === 1, 'memory_hold 经 define→invoke 真实执行一次');

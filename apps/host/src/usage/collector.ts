@@ -7,7 +7,7 @@
 //    单列展示、绝不入总额，也不冒充本轮 0。缺观测/partial/口径冲突 → 总额 unknown，不补零。
 import type { Db } from '../db/connection.ts';
 import { genId } from '../util/id.ts';
-import type { RawUsage } from '../../../../packages/contracts/src/sdk-events.ts';
+import type { RawUsage, SdkCostEstimate } from '../../../../packages/contracts/src/sdk-events.ts';
 import type { SystemAlertService } from '../observability/system-alerts.ts';
 import { shanghaiDayOf, providerInputTotal, fieldTotalOf, type FieldTotal } from './attribution.ts';
 import { settleBackgroundUsage } from '../runtime/background-ledger.ts';
@@ -18,6 +18,14 @@ export class UsageCollector {
   constructor(db: Db, alerts: SystemAlertService | null = null) {
     this.db = db;
     this.alerts = alerts;
+  }
+
+  sdkCostEstimates(scope: 'turn' | 'window', id: string): Array<{ observation_id: string; request_id: string | null; attempt_id: string; observed_at: string; estimate: SdkCostEstimate }> {
+    const rows = this.db.prepare(`SELECT id,request_id,attempt_id,observed_at,raw_usage_json FROM usage_observations
+      WHERE ${scope === 'turn' ? 'turn_id' : 'window_id'}=? AND source='sdk_result' AND scope='cumulative'
+        AND json_extract(raw_usage_json,'$.kind')='sdk_cost_estimate'
+      ORDER BY observed_at,rowid`).all(id) as Array<{ id: string; request_id: string | null; attempt_id: string; observed_at: string; raw_usage_json: string }>;
+    return rows.map(({ id, raw_usage_json, ...row }) => ({ observation_id: id, ...row, estimate: JSON.parse(raw_usage_json) as SdkCostEstimate }));
   }
 
   record(o: {
@@ -94,6 +102,7 @@ export class UsageCollector {
 
   // 账本视图：每个 attempt 一行（所选口径）+ 汇总（已知值求和；任一未知则该项标 unknown）
   summaryForTurn(turnId: string): {
+    sdk_estimates: ReturnType<UsageCollector['sdkCostEstimates']>;
     attempts: Array<{ attempt_id: string; scope: string; model: string | null; input_tokens: number | null; output_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; cost_usd: number | null; completeness: string }>;
     totals: { input_tokens: number | null; output_tokens: number | null; cost_usd: number | null; unknown_present: boolean; fields: { input_tokens: FieldTotal; output_tokens: FieldTotal; cost_usd: FieldTotal } };
   } {
@@ -182,6 +191,7 @@ export class UsageCollector {
       cost_usd: fieldTotalOf(fieldRows.map((r) => r.cost_usd)),
     };
     return {
+      sdk_estimates: this.sdkCostEstimates('turn', turnId),
       attempts,
       totals: {
         input_tokens: empty || noCountable || inUnknown ? null : inSum,
@@ -204,15 +214,15 @@ export class UsageCollector {
     legacy_row_count: number;
   } {
     const rows = this.db
-      .prepare('SELECT purpose, cost_usd, input_tokens, source, legacy_observed_at FROM usage_observations WHERE budget_day = ?')
-      .all(day) as Array<{ purpose: string | null; cost_usd: number | null; input_tokens: number | null; source: string; legacy_observed_at: number }>;
+      .prepare("SELECT purpose, cost_usd, input_tokens, cache_read_input_tokens, cache_creation_input_tokens, source, legacy_observed_at FROM usage_observations WHERE budget_day = ? AND scope != 'cumulative'")
+      .all(day) as Array<{ purpose: string | null; cost_usd: number | null; input_tokens: number | null; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; source: string; legacy_observed_at: number }>;
     const byPurpose = new Map<string, { purpose: string; row_count: number; known_cost_usd: number; unknown_cost_count: number; inputs: Array<number | null>; legacy_row_count: number }>();
     for (const r of rows) {
       const key = r.purpose ?? 'unknown';
       const cur = byPurpose.get(key) ?? { purpose: key, row_count: 0, known_cost_usd: 0, unknown_cost_count: 0, inputs: [], legacy_row_count: 0 };
       cur.row_count++;
       if (r.cost_usd === null) cur.unknown_cost_count++; else cur.known_cost_usd += r.cost_usd;
-      cur.inputs.push(providerInputTotal({ source: r.source, input_tokens: r.input_tokens, cache_read_input_tokens: null, cache_creation_input_tokens: null }));
+      cur.inputs.push(providerInputTotal(r));
       if (r.legacy_observed_at === 1) cur.legacy_row_count++;
       byPurpose.set(key, cur);
     }

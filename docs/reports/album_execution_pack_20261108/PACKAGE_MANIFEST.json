@@ -1,0 +1,78 @@
+{
+  "package": "GLM_ALBUM_REFACTOR_EXECUTION",
+  "version": "1.1",
+  "replaces_package_version": "1.0",
+  "date": "2026-11-08",
+  "language": "zh-CN",
+  "purpose": "滚窗语义修正版实施指令包；不含源码改动或生产执行结果",
+  "start_here": "00_GLM_START_HERE.md",
+  "context_model": {
+    "frontend": "single_continuous_chat",
+    "rollover": "existing_sequential_model_context_rollover",
+    "carry": "selected_original_messages_and_existing_opening_package",
+    "no_new_concurrent_window_flow": true
+  },
+  "opening_image_limit": 10,
+  "limit_scope": "each_context_rollover_carry_total",
+  "requirements_count": 40,
+  "acceptance_scenarios_count": 66,
+  "test_results": "NOT_RUN：由GLM实施后填报；本包已验证文件完整性与需求映射",
+  "hash_scope": "all listed files; manifest itself excluded",
+  "files": [
+    {
+      "path": "README.txt",
+      "bytes": 2752,
+      "sha256": "974b8a3b53df08682c85cb2791c8876211260f07fa7b5579223b13666630c607"
+    },
+    {
+      "path": "00_GLM_START_HERE.md",
+      "bytes": 8951,
+      "sha256": "f4cc7f25214ed3b0076a8df4f2d3c627d726aaa158f5092e95a796f3165cac29"
+    },
+    {
+      "path": "01_LOCKED_REQUIREMENTS.md",
+      "bytes": 8941,
+      "sha256": "e18ccb1590090dd6b1ab620fbd3e4e140d63e5841d35b008f3c0b0f4b2abd109"
+    },
+    {
+      "path": "02_BOUNDARIES_STORAGE_MIGRATION.md",
+      "bytes": 21927,
+      "sha256": "974c8ba2431e65ea59d59cf43dd3ac14f2f1001fd2d5aabc81864ebbaca01f8c"
+    },
+    {
+      "path": "03_ARCHIVES_CONTEXT_AND_OPENING.md",
+      "bytes": 31413,
+      "sha256": "aef5914f40947a9422924857c19262f21b00b02069b798dbbceb958c058c07a6"
+    },
+    {
+      "path": "04_CREATIONS_ALBUMS_AND_RETRIEVAL.md",
+      "bytes": 21276,
+      "sha256": "82d677b0767788c56ce6b9dc3f402e05263151ab7d7762ac5a1361cd6f32f4c8"
+    },
+    {
+      "path": "05_EXECUTION_PHASES_AND_RELEASE.md",
+      "bytes": 15833,
+      "sha256": "a2a35fa94fae028a6a50c8df5d01a54ef40059048197708dd2fe39f178ad335b"
+    },
+    {
+      "path": "06_ACCEPTANCE_MATRIX.csv",
+      "bytes": 15726,
+      "sha256": "d2a10b2c4ac599e9cc1111e71147ceb73372c61616229a499e3f1950e6dd3f29"
+    },
+    {
+      "path": "07_HANDOFF_REPORT_TEMPLATE.md",
+      "bytes": 6272,
+      "sha256": "d70fe78f5b71ab0cf1d548929e7bc837b78bec003c167b04d675dd7af022ff4b"
+    },
+    {
+      "path": "08_EVIDENCE_AND_REFERENCES.md",
+      "bytes": 4492,
+      "sha256": "457f1ea3bddc903051e06742fed335971f931b64d7eeba7f4af6f30d618a6636"
+    },
+    {
+      "path": "reference/GLM_BRIEFING_20261107_AS_RECEIVED.md",
+      "bytes": 10222,
+      "sha256": "ea3d9c878bfd4ffb433eb47f0a4a5941ab58cf149d889c15380229207e221071"
+    }
+  ]
+}

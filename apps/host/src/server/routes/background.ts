@@ -4,7 +4,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
 import { keepwarmSleepState } from '../../runtime/keepwarm-sleep.ts';
+import { MORNING_WAKE_OCCURRENCE_PREFIX } from '../../runtime/wake-activity.ts';
 import { storedToolset } from '../../runtime/tool-discovery.ts';
+import { MODEL_BACKGROUND_CONTROLS } from '../../runtime/background-policy.ts';
 import { genId } from '../../util/id.ts';
 import type { RequestDeps } from '../http.ts';
 
@@ -16,43 +18,114 @@ export async function handleBackgroundRoutes(req: IncomingMessage, res: ServerRe
 if (route === 'GET /api/v1/background/settings') {
   if (!d.bgSettings) return json(res, 503, { error: { code: 'background_unavailable', message: '后台服务未装配' } });
   const es = d.bgSettings.effective();
-  // 08 精简返回：两个开关、revision、就绪、预算摘要 + 保温权威派生状态
-  const sleep = keepwarmSleepState(es.keepwarm.sleep_window, Date.now());
+  // 08 + Heartbeat v2.1：页面与调度器共读同一权威资格评估器（evaluateHeartbeatSchedule）。
+  const nowMs = d.scheduler?.currentNowMs() ?? Date.now();
   const activityRow = d.activity?.get('primary') ?? null;
   const activeWindow = d.windows.activeWindow('primary');
   const frozenTools = activeWindow ? storedToolset(d.db, activeWindow.id) : null;
   const wakeToolAvailable = frozenTools ? frozenTools.catalog.some((tool) => tool.function.name === 'wake_manage') : null;
-  let keepwarmStatus: Record<string, unknown> = { scheduled: false };
-  if (d.activity && d.scheduler) {
-    const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
-    if (win) {
-      const target = d.activity.nextKeepwarmTarget({ conversationId: 'primary', windowId: win.id });
-      const ev = (d.db.prepare(
-        `SELECT u.cache_read_input_tokens AS rt, u.cache_creation_input_tokens AS wt, pr.dispatch_started_at AS started
-         FROM usage_observations u JOIN provider_requests pr ON pr.id = u.request_id
-         WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
-           AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0) OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
-         ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC LIMIT 1`,
-      ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined);
-      const cacheStatus = !ev ? 'unknown' : (ev.started && Date.now() - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
-      keepwarmStatus = {
-        scheduled: target.scheduled && es.keepwarm.enabled && !sleep.blocked,
-        ...(target.scheduled && !sleep.blocked ? { next_keepwarm_at: new Date(target.dueAtMs).toISOString(), next_keepwarm_basis: target.basis } : {}),
-        last_real_activity_at: activityRow?.last_real_activity_at ?? null,
-        cache_status: cacheStatus,
-      };
-    }
+  const win = d.db.prepare("SELECT id FROM windows WHERE conversation_id = 'primary' AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get() as { id: string } | undefined;
+  const ev = win ? (d.db.prepare(
+    `SELECT u.cache_read_input_tokens AS rt, u.cache_creation_input_tokens AS wt, pr.dispatch_started_at AS started
+     FROM usage_observations u JOIN provider_requests pr ON pr.id = u.request_id
+     WHERE pr.window_id = ? AND u.completeness = 'complete' AND pr.outcome = 'completed'
+       AND ((u.cache_read_input_tokens IS NOT NULL AND u.cache_read_input_tokens > 0) OR (u.cache_creation_input_tokens IS NOT NULL AND u.cache_creation_input_tokens > 0))
+     ORDER BY COALESCE(pr.dispatch_started_at, pr.sent_at, u.observed_at) DESC LIMIT 1`,
+  ).get(win.id) as { rt: number | null; wt: number | null; started: string | null } | undefined) : undefined;
+  const cacheStatus = !ev ? 'unknown' : (ev.started && nowMs - Date.parse(ev.started) >= 3_600_000) ? 'estimated_cold' : (ev.rt ?? 0) > 0 ? 'observed_hit' : 'observed_write';
+
+  let keepwarmStatus: Record<string, unknown>;
+  if (d.activity) {
+    const schedule = d.activity.evaluateHeartbeatSchedule({
+      conversationId: 'primary',
+      windowId: win?.id ?? null,
+      sleepWindow: es.keepwarm.sleep_window,
+      keepwarmEnabled: es.keepwarm.enabled,
+      nowMs,
+      currentControlRevision: d.bgSettings.keepwarmControlRevision(),
+    });
+    const nextAtIso = schedule.scheduled && schedule.blockedReason === null && schedule.dueAtMs !== null
+      ? new Date(schedule.dueAtMs).toISOString()
+      : undefined;
+    const morningPreview = schedule.nextMorningPreview
+      ? {
+          scheduled: true,
+          target_at: new Date(schedule.nextMorningPreview.targetAtMs).toISOString(),
+          basis: 'morning_baseline' as const,
+          postponed_by_at: null,
+        }
+      : {
+          scheduled: false,
+          reason: schedule.blockedReason === 'KEEPWARM_RESTING_WAIT_USER'
+            ? 'WAIT_NEXT_USER_MESSAGE'
+            : schedule.blockedReason === 'KEEPWARM_DISABLED'
+              ? 'KEEPWARM_DISABLED'
+              : schedule.blockedReason === 'MORNING_WAKE_MISSED_GRACE'
+                ? 'MISSED_GRACE'
+                : 'NOT_SCHEDULED',
+          postponed_by_at: null,
+        };
+    keepwarmStatus = {
+      enabled: es.keepwarm.enabled,
+      scheduled: schedule.scheduled && schedule.blockedReason === null,
+      ...(nextAtIso ? { next_keepwarm_at: nextAtIso, next_keepwarm_basis: schedule.basis } : {}),
+      morning_wake: morningPreview,
+      last_real_activity_at: activityRow?.last_real_activity_at ?? null,
+      last_effective_heartbeat_at: activityRow?.last_effective_heartbeat_at ?? null,
+      cache_status: cacheStatus,
+      sleep_window_active: schedule.sleepWindowActive,
+      blocked_reason: schedule.blockedReason,
+      local_time: schedule.localTime,
+      resting: schedule.resting,
+      rest_decided_at: activityRow?.rest_decided_at ?? null,
+      rest_source: activityRow?.rest_source ?? null,
+      rest_recovery_mode: schedule.restRecoveryMode,
+      rest_morning_date: schedule.restMorningDate,
+      early_resumed_date: schedule.earlyResumedDate,
+      consecutive_unanswered_count: schedule.consecutiveUnansweredCount,
+      pending_rest_judgment: schedule.pendingRestJudgment,
+    };
+  } else {
+    const sleep = keepwarmSleepState(es.keepwarm.sleep_window, nowMs);
+    const blockedReason = sleep.blocked ? sleep.code : !es.keepwarm.enabled ? 'KEEPWARM_DISABLED' : null;
+    keepwarmStatus = {
+      enabled: es.keepwarm.enabled,
+      scheduled: false,
+      sleep_window_active: sleep.blocked,
+      blocked_reason: blockedReason,
+      local_time: sleep.local_time,
+      resting: false,
+      rest_decided_at: null,
+      rest_source: null,
+      rest_recovery_mode: null,
+      rest_morning_date: null,
+      early_resumed_date: null,
+      consecutive_unanswered_count: 0,
+      pending_rest_judgment: false,
+      cache_status: cacheStatus,
+    };
   }
   return json(res, 200, {
     revision: es.revision,
+    free_activity:{enabled:es.free_activity.enabled,daily_cost_cap_usd:es.free_activity.daily_cost_cap_usd},
     autonomous: { enabled: es.autonomous.enabled, daily_cost_cap_usd: es.autonomous.daily_cost_cap_usd },
-    keepwarm: { enabled: es.keepwarm.enabled, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
+    keepwarm: { enabled: es.keepwarm.enabled, include_living_room: es.keepwarm.include_living_room, daily_cost_cap_usd: es.keepwarm.daily_cost_cap_usd, sleep_window: es.keepwarm.sleep_window },
     reminders: { enabled: es.reminders.enabled },
-    executor_ready: d.bgExecutorReady ?? { autonomous: false, keepwarm: false },
+    executor_ready:{...(d.bgExecutorReady ?? {autonomous:false,keepwarm:false}),free_activity:d.bgExecutorReady?.autonomous ?? false},
     current_window: { id: activeWindow?.id ?? null, wake_manage_available: wakeToolAvailable, requires_normal_rotation: activeWindow !== null && wakeToolAvailable === false },
-    keepwarm_status: { ...keepwarmStatus, sleep_window_active: sleep.blocked, blocked_reason: sleep.code, local_time: sleep.local_time },
-    notice: '关闭后不再开始自主预约唤醒/心跳保温，正在进行的后续步骤会停止；已产生的费用和已完成的动作保留。两项开关独立。',
+    keepwarm_status: keepwarmStatus,
+    notice: '预约唤醒、心跳保温、额外自由活动分别控制。关闭只停止对应来源的新执行及后续步骤，已完成动作与费用保留。',
   });
+}
+// An explicit resume from the management page. It clears the owner's standing rest
+// decision only: no chat message is created, the 50-minute anchor and the heartbeat
+// switch stay as they are, and the same operation key replays its first result.
+if (route === 'POST /api/v1/background/heartbeat/resume') {
+  if (!d.activity) return json(res, 503, { error: { code: 'background_unavailable', message: '心跳服务未装配' } });
+  const opKey = String(req.headers['idempotency-key'] ?? '');
+  if (!opKey || opKey.length > 200) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少或过长的 Idempotency-Key' } });
+  const result = d.activity.resumeRest('primary', { actorId: 'qiaosheng', operationId: opKey });
+  return json(res, 200, { resting: result.resting, changed: result.changed, duplicate: result.duplicate });
 }
 if (route === 'PUT /api/v1/background/settings') {
   if (!d.bgSettings) return json(res, 503, { error: { code: 'background_unavailable', message: '后台服务未装配' } });
@@ -62,18 +135,21 @@ if (route === 'PUT /api/v1/background/settings') {
   if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
   const body = (await readJson(req, d)) as Record<string, unknown>;
   const patch: Record<string, unknown> = {};
-  for (const section of ['autonomous', 'keepwarm', 'reminders'] as const) {
+  for (const section of [...MODEL_BACKGROUND_CONTROLS,'reminders'] as const) {
     if (body[section] === undefined) continue;
     const sv = body[section];
     if (!sv || typeof sv !== 'object' || Array.isArray(sv)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section} 必须是对象` } });
     const values = sv as Record<string, unknown>;
+    if (section === 'keepwarm' && 'include_living_room' in values) {
+      if (typeof values.include_living_room !== 'boolean') return json(res, 422, { error: { code: 'invalid_background_settings', message: 'keepwarm.include_living_room 必须为布尔值' } });
+      patch.keepwarm_include_living_room = values.include_living_room;
+    }
     if ('enabled' in values) {
       if (typeof values.enabled !== 'boolean') return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section}.enabled 必须为布尔值` } });
       patch[`${section}_enabled`] = values.enabled;
     }
     if (section !== 'reminders' && 'daily_cost_cap_usd' in values) {
       const cap = values.daily_cost_cap_usd;
-      if (cap !== null && (typeof cap !== 'number' || !Number.isFinite(cap) || cap <= 0)) return json(res, 422, { error: { code: 'invalid_background_settings', message: `${section}.daily_cost_cap_usd 必须为正数或 null` } });
       patch[`${section}_daily_cost_cap_usd`] = cap;
     }
   }
@@ -86,8 +162,8 @@ if (route === 'PUT /api/v1/background/settings') {
     if (msg.startsWith('REVISION_CONFLICT')) return json(res, 409, { error: { code: 'revision_conflict', message: `设置版本已变化（当前 ${msg.split(':')[1] ?? '?'}），请刷新重试` } });
     if (msg.startsWith('IDEMPOTENCY_CONFLICT')) return json(res, 409, { error: { code: 'idempotency_conflict', message: '该操作键已用于不同的设置，请核对原操作' } });
     if (msg.startsWith('BACKGROUND_BUDGET_INVALID') || msg.startsWith('SETTINGS_OPERATION_ID_INVALID')) return json(res, 422, { error: { code: 'invalid_background_settings', message: '设置操作或费用上限无效' } });
-    if (msg.startsWith('BACKGROUND_BUDGET_NOT_CONFIGURED')) return json(res, 422, { error: { code: 'background_budget_not_configured', message: '该用途日费用上限未配置（null 不是无限）——先填有效上限再开启' } });
-    if (msg.startsWith('BACKGROUND_EXECUTOR_NOT_READY')) return json(res, 422, { error: { code: 'background_executor_not_ready', message: '自主/保温的模型执行器尚未接线（后续批次）——开关意图已保存语义见 422，不开启付费路径' } });
+    if (msg.startsWith('BACKGROUND_BUDGET_NOT_CONFIGURED')) return json(res, 422, { error: { code: 'background_budget_not_configured', message: '该用途日预算未配置；请填写正数上限或明确选择无日上限后开启（null 不是无限）' } });
+    if (msg.startsWith('BACKGROUND_EXECUTOR_NOT_READY')) return json(res, 422, { error: { code: 'background_executor_not_ready', message: '该用途的模型执行器未就绪，本次设置未保存；执行器就绪后可重试' } });
     throw err;
   }
 }
@@ -106,6 +182,34 @@ if (bgTaskDetail) {
   if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null } });
   return json(res, 200, { task: r.task });
 }
+// —— P6（四仓审计 20261106，T17 后半）：自由活动显式入口——
+//    用现有 background task/run 机制开**一次**明确有界活动窗口：kind=autonomous、
+//    origin=free_activity、once、立即到期；执行/预算/让位沿既有调度器与
+//    backgroundControl('free_activity') 门；合理多步后 background_complete/noop/
+//    取消/超时均收口。不新增随机自醒或固定催促；下次活动必须再次显式安排。
+if (route === 'POST /api/v1/background/free-activity') {
+  if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
+  const opKey = String(req.headers['idempotency-key'] ?? '');
+  if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
+  const body = (await readJson(req, d)) as Record<string, unknown>;
+  const note = typeof body.note === 'string' && body.note.trim().length > 0 ? body.note.trim().slice(0, 2000) : '自由活动窗口';
+  const conversationId = typeof body.conversation_id === 'string' && body.conversation_id ? body.conversation_id : 'primary';
+  const prior = d.db.prepare('SELECT id, payload_json FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(conversationId, opKey) as { id: string; payload_json: string } | undefined;
+  if (prior) {
+    let same = false;
+    try { same = JSON.stringify(JSON.parse(prior.payload_json)) === JSON.stringify({ note, source: 'free_activity' }); } catch { same = false; }
+    if (!same) return json(res, 409, { error: { code: 'idempotency_conflict', message: '同幂等键对应不同请求' } });
+    return json(res, 200, { task_id: prior.id, duplicate: true });
+  }
+  const id = genId('bgt');
+  const nowIso = new Date().toISOString();
+  // RB05（复审 20261106）：接通正式分派后暴露并修正 INSERT 占位/参数错位（旧 404 不可达未被执行）
+  d.db.prepare(
+    `INSERT INTO background_tasks(id, conversation_id, actor_id, kind, enabled, revision, schedule_kind, scheduled_at, next_due_at, timezone, local_time, interval_ms, payload_json, created_by_actor_id, origin, client_operation_key, created_at, updated_at)
+     VALUES (?,?,'jiaming','autonomous',1,1,'once',?,?,?,?,NULL,?,'qiaosheng','free_activity',?,?,?)`,
+  ).run(id, conversationId, nowIso, nowIso, 'Asia/Shanghai', null, JSON.stringify({ note, source: 'free_activity' }), opKey, nowIso, nowIso);
+  return json(res, 201, { task_id: id, origin: 'free_activity', next_due_at: nowIso, note: `已安排一次有界自由活动：${note}` });
+}
 if (route === 'POST /api/v1/background/tasks') {
   const opKey = String(req.headers['idempotency-key'] ?? '');
   if (!opKey) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
@@ -114,9 +218,18 @@ if (route === 'POST /api/v1/background/tasks') {
     // 普通提醒（无模型投递）保留直建；ID 由服务端生成（不再拼 Date.now，B14）
     const scheduleKind = body.schedule_kind ?? 'once';
     if (scheduleKind !== 'once' && scheduleKind !== 'daily') return json(res, 400, { error: { code: 'bad_schedule', message: 'reminder 的 schedule_kind 必须是 once|daily' } });
-    if (typeof body.scheduled_at !== 'string' || !body.scheduled_at) return json(res, 400, { error: { code: 'bad_scheduled_at', message: 'scheduled_at 必填（完整时间，不暗补当前时间）' } });
-    const prior = d.db.prepare('SELECT id FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(String(body.conversation_id ?? 'primary'), opKey) as { id: string } | undefined;
-    if (prior) return json(res, 200, { task_id: prior.id, duplicate: true });
+    if (typeof body.scheduled_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/.test(body.scheduled_at) || Number.isNaN(Date.parse(body.scheduled_at))) {
+      return json(res, 400, { error: { code: 'bad_scheduled_at', message: 'scheduled_at 必填且为带 Z/offset 的 RFC3339 时间（不暗补当前时间）' } });
+    }
+    const prior = d.db.prepare('SELECT id, scheduled_at, payload_json FROM background_tasks WHERE conversation_id = ? AND client_operation_key = ?').get(String(body.conversation_id ?? 'primary'), opKey) as { id: string; scheduled_at: string; payload_json: string } | undefined;
+    if (prior) {
+      // P5（四仓审计 20261106）：同 key 异参=冲突，不把另一请求的结果误当本请求完成
+      const wantedPayload = JSON.stringify(body.payload && typeof body.payload === 'object' ? body.payload : { text: String(body.text ?? '') });
+      let samePayload = false;
+      try { samePayload = JSON.stringify(JSON.parse(prior.payload_json)) === JSON.stringify(JSON.parse(wantedPayload)); } catch { samePayload = prior.payload_json === wantedPayload; }
+      if (prior.scheduled_at !== body.scheduled_at || !samePayload) return json(res, 409, { error: { code: 'idempotency_conflict', message: '同幂等键对应不同请求' } });
+      return json(res, 200, { task_id: prior.id, duplicate: true });
+    }
     const id = genId('bgt');
     const nowIso = new Date().toISOString();
     d.db.prepare(
@@ -125,15 +238,9 @@ if (route === 'POST /api/v1/background/tasks') {
     ).run(id, String(body.conversation_id ?? 'primary'), scheduleKind, body.scheduled_at as string, body.scheduled_at as string, JSON.stringify(body.payload && typeof body.payload === 'object' ? body.payload : { text: String(body.text ?? '') }), opKey, nowIso, nowIso);
     return json(res, 201, { task_id: id, next_due_at: body.scheduled_at });
   }
-  // 自主预约（WAKE_KEEPWARM_V1）：统一经 taskService——服务端幂等/CAS/时间校验；
-  // creator=用户（qiaosheng），审计保留操作者（04：用户可代设，操作者可查）。
-  if (!d.taskService) return json(res, 503, { error: { code: 'background_unavailable', message: '预约服务未装配' } });
-  const r = d.taskService.schedule({
-    actorId: 'jiaming', conversationId: String(body.conversation_id ?? 'primary'), operationId: opKey,
-    note: String(body.note ?? ''), at: body.at ?? undefined, delaySeconds: body.delay_seconds ?? undefined, createdBy: 'qiaosheng',
-  });
-  if (!r.ok) return json(res, r.httpStatus ?? 400, { error: { code: r.code.toLowerCase(), message: r.detail ?? null, ...(r.serverNowIso ? { server_now: r.serverNowIso } : {}), ...(r.currentRevision !== undefined ? { current_revision: r.currentRevision } : {}) } });
-  return json(res, r.duplicate ? 200 : 201, { task_id: r.task.task_id, scheduled_at: r.task.scheduled_at, revision: r.task.revision, duplicate: r.duplicate });
+  // 自主预约只能由char通过 wake_manage 建立。用户的话在心跳页预留，
+  // 不转换成他自己的预约；保留上述普通提醒和独立自由活动入口。
+  return json(res, 403, { error: { code: 'self_wake_owner_only', message: '自主预约只能由char自己安排。要留话请前往心跳页面。' } });
 }
 const bgTaskPut = /^PUT \/api\/v1\/background\/tasks\/([^/]+)$/.exec(route);
 if (bgTaskPut) {
@@ -143,7 +250,7 @@ if (bgTaskPut) {
   if (!String(req.headers['idempotency-key'] ?? '')) return json(res, 400, { error: { code: 'missing_idempotency', message: '缺少 Idempotency-Key' } });
   const body = (await readJson(req, d)) as Record<string, unknown>;
   const r = d.taskService.update({
-    actorId: 'jiaming', conversationId: String(body.conversation_id ?? 'primary'), operationId: String(req.headers['idempotency-key']),
+    actorId: 'jiaming', updatedBy: 'qiaosheng', conversationId: String(body.conversation_id ?? 'primary'), operationId: String(req.headers['idempotency-key']),
     taskId: decodeURIComponent(bgTaskPut[1]!), expectedRevision: Number(ifMatch),
     note: body.note ?? undefined, at: body.at ?? undefined, delaySeconds: body.delay_seconds ?? undefined,
   });
@@ -170,15 +277,16 @@ if (route === 'GET /api/v1/background/runs') {
   const cursor = url.searchParams.get('cursor');
   const cursorParts = cursor?.split('|');
   if (cursor && (cursorParts?.length !== 2 || !Number.isFinite(Date.parse(cursorParts[0]!)) || !cursorParts[1])) return json(res, 400, { error: { code: 'invalid_cursor', message: '运行分页位置无效' } });
-  const params: Array<string | number> = [conversationId];
+  const params: Array<string | number> = [`${MORNING_WAKE_OCCURRENCE_PREFIX}%`, conversationId];
   const after = cursorParts ? ' AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))' : '';
   if (cursorParts) params.push(cursorParts[0]!, cursorParts[0]!, cursorParts[1]!);
   params.push(limit + 1);
   // 08 瘦返回：来源（trigger_origin 从 task origin 派生）/状态/实际派发时间/动作与
   // 发布计数/成本/阻断原因——不含原 payload、工具 JSON、reasoning 或聊天正文。
   const rows = d.db.prepare(
-    `SELECT r.id, r.task_id, r.kind, r.state, r.result_code, r.cancel_reason,
-            CASE WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' ELSE 'legacy' END AS trigger_origin,
+    `SELECT r.id, r.task_id, r.kind, r.state, r.result_code, r.cancel_reason, t.created_by_actor_id AS created_by,
+            CASE WHEN r.kind='heartbeat_memory' THEN 'heartbeat_memory' WHEN t.origin = 'self_schedule' THEN 'self_wake' WHEN r.kind = 'keepwarm' THEN 'keepwarm' WHEN r.kind='autonomous' THEN 'free_activity' ELSE 'reminder' END AS trigger_origin,
+            CASE WHEN r.kind = 'keepwarm' THEN CASE WHEN r.occurrence_key LIKE ? THEN 'morning_wake' ELSE 'cache_idle' END END AS keepwarm_source,
             r.model_requests_started, r.tool_calls_started, r.tool_calls_observed, r.published_message_count,
             r.reserved_cost_micro_usd, r.known_cost_micro_usd, r.unknown_cost_count, r.retention,
             r.first_dispatch_started_at, r.claimed_at, r.finished_at, r.created_at

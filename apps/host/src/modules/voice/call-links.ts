@@ -8,8 +8,16 @@
 // 本地状态下一跳重试；已结束通话 404=如实 unavailable，不猜音频。不复制 Siren 决策，
 // 不为挂附件伪造"他已说过"的消息——只绑定 turns 表里真实存在的助手消息。
 import type { Db } from '../../db/connection.ts';
+import { tx } from '../../db/connection.ts';
 import type { SirenAdapter } from '../../integrations/siren/adapter.ts';
 import type { VoiceObservationService } from '../oido/observations.ts';
+
+/** B2（2026-11-04）：媒体更新事件所需的最小合同——复用 EventService 既有持久/分发路径，
+ *  不新建第二套事件系统。getMessage 供 payload 携带最新消息 DTO（客户端 absorb 直接消费）。 */
+export type MediaEventPort = {
+  persistInTx(kind: string, opts: { conversationId: string | null; turnId?: string | null; attemptId?: string | null; entityRef?: string | null; entityRevision?: number | null; scope?: string; payload: unknown }): { sequence: number };
+  dispatchRow(row: unknown): void;
+};
 
 type MediaDeps = {
   saveBuffer(b: { bytes: Uint8Array; purpose: 'chat_voice'; operationId: string; createdBy: string; origin: 'import' | 'upload' | 'generated' | 'service'; originService?: string | null; originRef?: string | null }): Promise<{ id: string; content_sha256: string }>;
@@ -27,6 +35,9 @@ export type CallReplyLinkDeps = {
   attachmentsClient: AttachmentsSyncClient | null;
   streamId: string;
   logger?: { warn(code: string, fields?: Record<string, unknown>): void; info(code: string, fields?: Record<string, unknown>): void };
+  /** B2：附件绑定成功后发布 message.media.updated（缺省 null=如实降级为无通知，行为同旧版） */
+  events?: MediaEventPort | null;
+  getMessage?: (id: string) => Record<string, unknown> | null;
 };
 
 export class CallReplyLinkService {
@@ -56,7 +67,9 @@ export class CallReplyLinkService {
       do {
         this.requested = false;
         if (!signal.aborted) await this.pullPending(signal);
-        if (!signal.aborted) await this.registerAssistantObservations();
+        // P2（四仓审计 20261106，V01/U03）：助手回复音频的自动深听已移除——其分析永远无法
+        // 与该轮首次模型输入同轮交付（回复晚于派发），按"深听只允许同轮交付"裁定不再登记；
+        // 原声归档与 Source 媒体同步照旧（下方 syncPendingToSource）。
         if (!signal.aborted) await this.syncPendingToSource(signal);
       } while (this.requested && !signal.aborted);
     })().catch((error: unknown) => {
@@ -177,10 +190,27 @@ export class CallReplyLinkService {
       }
     }
     let linked = false;
+    let attachInserted = false;
     if (estAssetId && msg && mediaDeps) {
       try {
         mediaDeps.validateForSend([{ asset_id: estAssetId, presentation: 'voice' }]);
-        // 附件行幂等：同资产不重复；已有其他 voice 附件则追加在后（位置键=PK）
+        // 附件行幂等：同资产不重复；已有其他 voice 附件则追加在后（位置键=PK）。
+        // 插入挪入下方统一事务（B2：附件+链接+事件原子）；此处只做冲突预检。
+        const existingAtt = db.prepare("SELECT asset_id, position FROM message_attachments WHERE message_id=? AND revision=? AND presentation='voice' ORDER BY position")
+          .all(msg.id, msg.current_revision) as Array<{ asset_id: string; position: number }>;
+        if (!existingAtt.some((a) => a.asset_id === estAssetId)) attachInserted = true;
+        linked = true;
+      } catch (error) {
+        // 保留已导入资产，下次只补附件；未绑定不能推进为 linked。
+        this.deps.logger?.warn('call_reply_attachment_failed', { call_id: callId, turn_key: admission.turn_key, code: error instanceof Error ? error.name : 'UNKNOWN_ERROR' });
+      }
+    }
+    // B2（2026-11-04）：附件行插入、链接行 upsert、message.media.updated 事件同一事务；
+    // 提交后 dispatchRow。仅**新增**附件时发事件（basis 演进重收敛不动附件，不重复通知）；
+    // 无 events/getMessage 依赖=如实降级为旧行为（无通知）。
+    const notify = attachInserted && this.deps.events && this.deps.getMessage;
+    const eventRow = tx(db, () => {
+      if (attachInserted && msg && estAssetId) {
         const existingAtt = db.prepare("SELECT asset_id, position FROM message_attachments WHERE message_id=? AND revision=? AND presentation='voice' ORDER BY position")
           .all(msg.id, msg.current_revision) as Array<{ asset_id: string; position: number }>;
         if (!existingAtt.some((a) => a.asset_id === estAssetId)) {
@@ -188,29 +218,34 @@ export class CallReplyLinkService {
           db.prepare("INSERT INTO message_attachments(message_id,revision,position,asset_id,presentation,created_at) VALUES (?,?,?,?,'voice',?)")
             .run(msg.id, msg.current_revision, position, estAssetId, now);
         }
-        linked = true;
-      } catch (error) {
-        // 保留已导入资产，下次只补附件；未绑定不能推进为 linked。
-        this.deps.logger?.warn('call_reply_attachment_failed', { call_id: callId, turn_key: admission.turn_key, code: error instanceof Error ? error.name : 'UNKNOWN_ERROR' });
       }
-    }
-    db.prepare(
-      `INSERT INTO voice_reply_links(call_id,turn_key,conversation_id,est_turn_id,message_id,revision,siren_turn_id,siren_asset_id,est_asset_id,completeness,sent_audio_ms,playback_json,link_state,observation_registered,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
-       ON CONFLICT(call_id,turn_key) DO UPDATE SET
-         message_id=COALESCE(excluded.message_id,voice_reply_links.message_id),
-         revision=COALESCE(excluded.revision,voice_reply_links.revision),
-         siren_turn_id=COALESCE(excluded.siren_turn_id,voice_reply_links.siren_turn_id),
-         siren_asset_id=COALESCE(excluded.siren_asset_id,voice_reply_links.siren_asset_id),
-         est_asset_id=COALESCE(excluded.est_asset_id,voice_reply_links.est_asset_id),
-         completeness=COALESCE(excluded.completeness,voice_reply_links.completeness),
-         sent_audio_ms=COALESCE(excluded.sent_audio_ms,voice_reply_links.sent_audio_ms),
-         playback_json=excluded.playback_json,
-         link_state=excluded.link_state, updated_at=excluded.updated_at`,
-    ).run(callId, admission.turn_key, conv.conversation_id, admission.est_turn_id, msg?.id ?? null, msg?.current_revision ?? null,
-      sirenTurnId, reply.asset_id, estAssetId, reply.completeness, sentAudioMs,
-      JSON.stringify({ ...playback, ...(fillerAudioMs !== null ? { filler_audio_ms: fillerAudioMs } : {}), outcome }), linked ? 'linked' : 'pending', now, now);
-    this.deps.logger?.info(linked ? 'call_reply_linked' : 'call_reply_link_pending', { call_id: callId, turn_key: admission.turn_key, message_id: msg?.id ?? null, est_asset_id: estAssetId, completeness: reply.completeness });
+      db.prepare(
+        `INSERT INTO voice_reply_links(call_id,turn_key,conversation_id,est_turn_id,message_id,revision,siren_turn_id,siren_asset_id,est_asset_id,completeness,sent_audio_ms,playback_json,link_state,observation_registered,created_at,updated_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?)
+         ON CONFLICT(call_id,turn_key) DO UPDATE SET
+           message_id=COALESCE(excluded.message_id,voice_reply_links.message_id),
+           revision=COALESCE(excluded.revision,voice_reply_links.revision),
+           siren_turn_id=COALESCE(excluded.siren_turn_id,voice_reply_links.siren_turn_id),
+           siren_asset_id=COALESCE(excluded.siren_asset_id,voice_reply_links.siren_asset_id),
+           est_asset_id=COALESCE(excluded.est_asset_id,voice_reply_links.est_asset_id),
+           completeness=COALESCE(excluded.completeness,voice_reply_links.completeness),
+           sent_audio_ms=COALESCE(excluded.sent_audio_ms,voice_reply_links.sent_audio_ms),
+           playback_json=excluded.playback_json,
+           link_state=excluded.link_state, updated_at=excluded.updated_at`,
+      ).run(callId, admission.turn_key, conv.conversation_id, admission.est_turn_id, msg?.id ?? null, msg?.current_revision ?? null,
+        sirenTurnId, reply.asset_id, estAssetId, reply.completeness, sentAudioMs,
+        JSON.stringify({ ...playback, ...(fillerAudioMs !== null ? { filler_audio_ms: fillerAudioMs } : {}), outcome }), linked ? 'linked' : 'pending', now, now);
+      if (!notify || !msg) return null;
+      return this.deps.events!.persistInTx('message.media.updated', {
+        conversationId: conv.conversation_id,
+        turnId: admission.est_turn_id,
+        entityRef: msg.id,
+        entityRevision: msg.current_revision,
+        payload: { message: this.deps.getMessage!(msg.id) ?? { id: msg.id, revision: msg.current_revision } },
+      });
+    });
+    if (eventRow) this.deps.events?.dispatchRow(eventRow);
+    this.deps.logger?.info(linked ? 'call_reply_linked' : 'call_reply_link_pending', { call_id: callId, turn_key: admission.turn_key, message_id: msg?.id ?? null, est_asset_id: estAssetId, completeness: reply.completeness, media_event: notify ? 'published' : 'skipped' });
   }
 
   private markUnavailable(callId: string, turnKey: string, estTurnId: string | null, reason: string): void {
@@ -222,23 +257,6 @@ export class CallReplyLinkService {
     ).run(callId, turnKey, (this.deps.db.prepare('SELECT conversation_id FROM voice_stream_turns WHERE call_id=? AND turn_key=?').get(callId, turnKey) as { conversation_id: string } | undefined)?.conversation_id ?? '', estTurnId, JSON.stringify({ basis: 'unavailable', reason }), now, now);
   }
 
-  /** B3-B.7：deep_listen 的正式助手回复音频登记 assistant 方向观察（普通电话 0 自动分析）。 */
-  private async registerAssistantObservations(): Promise<void> {
-    const { db, voiceObservations } = this.deps;
-    if (!voiceObservations?.configured) return;
-    const rows = db.prepare(
-      `SELECT l.call_id, l.turn_key, l.message_id, l.revision, l.est_asset_id, vc.analysis_mode
-       FROM voice_reply_links l JOIN voice_calls vc ON vc.call_id=l.call_id
-       WHERE l.link_state='linked' AND l.observation_registered=0 AND l.est_asset_id IS NOT NULL
-         AND l.message_id IS NOT NULL AND vc.analysis_mode='deep_listen' LIMIT 5`,
-    ).all() as Array<{ call_id: string; turn_key: string; message_id: string; revision: number; est_asset_id: string }>;
-    for (const row of rows) {
-      voiceObservations.registerAssistantObservation(row.message_id, row.revision, row.est_asset_id);
-      db.prepare('UPDATE voice_reply_links SET observation_registered=1, updated_at=? WHERE call_id=? AND turn_key=?')
-        .run(new Date().toISOString(), row.call_id, row.turn_key);
-    }
-    if (rows.length > 0) voiceObservations.wake();
-  }
 
   /** B3-B.9：已归档（有正式收据）且已绑定的回复链接补同步到 Source——media 一次（资产
    *  引用稳定），call 按播放事实 basis 演进各一次（unknown→drained/reported 是新事实）。

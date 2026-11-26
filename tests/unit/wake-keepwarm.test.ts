@@ -251,9 +251,9 @@ test('K-11 心跳发言：目标按正式发言的发布时间（不是心跳开
 test('S-01/S-03：enqueueBackground 同 conversation 任意时刻最多一个执行；不嵌套自锁', async () => {
   const t = setup();
   const db = t.db;
-  // 最小 supervisor（真实类；deps 只给 db+logger 形状——runSerialized 不触及其他依赖）
+  // 串行链在执行位固定接入策略；这里只测试队列，不启动模型。
   const logger = { info(): void {}, warn(): void {}, error(): void {} } as unknown as import('../../apps/host/src/observability/logging.ts').Logger;
-  const sup = new TurnSupervisor({ db, config: t.config, logger } as unknown as import('../../apps/host/src/runtime/supervisor.ts').SupervisorDeps);
+  const sup = new TurnSupervisor({ db, config: t.config, logger, runnerSelection: { status: 'blocked', reasons: ['queue-only fixture'] } } as unknown as import('../../apps/host/src/runtime/supervisor.ts').SupervisorDeps);
   let active = 0;
   let maxActive = 0;
   const job = async (ms: number): Promise<string> => {
@@ -327,15 +327,16 @@ test('B-02：多 run 已结算+unknown 占用后，新派发超 cap 在记账入
   const t = setup(Date.parse('2026-10-22T12:00:00+08:00')); // 独立测试预算门，避开睡眠时段
   t.settings.applyUpdate({ expectedRevision: t.settings.revision(), patch: { keepwarm_enabled: true, keepwarm_daily_cost_cap_usd: 1 } });
   const nowIso = new Date(t.now).toISOString();
+  const taskId = t.db.prepare("SELECT id FROM background_tasks WHERE kind='keepwarm'").get()!.id;
   const day = new Date(t.now + 8 * 3_600_000).toISOString().slice(0, 10);
   // run A（前一个 keepwarm run）：dispatch 已结算 actual=0.9 美元
-  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-a','t-a','primary','jiaming','keepwarm',1,'kw:a','completed',?,?)").run(nowIso, nowIso);
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-a',?,'primary','jiaming','keepwarm',1,'kw:a','completed',?,?)").run(taskId, nowIso, nowIso);
   t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, actual_cost_micro_usd, created_at) VALUES ('d-a','r-a','model:1',1,'model','settled',?,900000,900000,?)").run(day, nowIso);
   // run B：结果未知（dispatch state=unknown，预占 0.08 美元保留）
-  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-b','t-b','primary','jiaming','keepwarm',1,'kw:b','unknown',?,?)").run(nowIso, nowIso);
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-b',?,'primary','jiaming','keepwarm',1,'kw:b','unknown',?,?)").run(taskId, nowIso, nowIso);
   t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, created_at) VALUES ('d-b','r-b','model:1',1,'model','unknown',?,80000,?)").run(day, nowIso);
   // 取消未发的不计
-  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-c','t-c','primary','jiaming','keepwarm',1,'kw:c','cancelled',?,?)").run(nowIso, nowIso);
+  t.db.prepare("INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, state, created_at, updated_at) VALUES ('r-c',?,'primary','jiaming','keepwarm',1,'kw:c','cancelled',?,?)").run(taskId, nowIso, nowIso);
   t.db.prepare("INSERT INTO background_dispatches(id, run_id, logical_action_key, attempt_no, dispatch_kind, state, budget_day, reserved_cost_micro_usd, created_at) VALUES ('d-c','r-c','model:1',1,'model','cancelled_before_send',?,50000,?)").run(day, nowIso);
   // 新 run C：记账入口逐笔过日占用门
   t.db.prepare("INSERT INTO background_tasks(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,timezone,payload_json,created_by_actor_id,origin,created_at,updated_at) VALUES ('t-d','primary','jiaming','keepwarm',1,1,'cache_idle','Asia/Shanghai','{}','system','system_keepwarm',?,?)").run(nowIso, nowIso);

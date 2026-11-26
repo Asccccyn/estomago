@@ -21,29 +21,44 @@ before(async () => {
   base = `http://127.0.0.1:${host.port}`;
   const token = fs.readFileSync(path.join(root, 'config/auth.token'), 'utf8').trim();
   const response = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: base }, body: JSON.stringify({ token }) });
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 200, '/api/v1/auth/login');
   cookie = response.headers.get('set-cookie')!.split(';')[0]!;
 });
 after(async () => { await host?.stop(); cookie = ''; fs.rmSync(root, { recursive: true, force: true }); });
 
-test('首页、聊天与主页内嵌页都经过既有登录门', async () => {
-  for (const route of ['/', '/chat', '/home/scene.html']) {
+test('首页、聊天与保留的主页内嵌页都经过既有登录门', async () => {
+  for (const route of [
+    '/', '/chat', '/home/feature.html?feature=calendar', '/home/album', '/home/feature.html?feature=album',
+    '/home/moments', '/home/heartbeat', '/home/feature.html?feature=moments',
+  ]) {
     const response = await fetch(base + route, { redirect: 'manual' });
-    assert.equal(response.status, 302);
-    assert.equal(response.headers.get('location'), '/login');
+    assert.equal(response.status, 302, route);
+    assert.equal(response.headers.get('location'), '/login', route);
   }
 });
-test('登录后主页与原React聊天页分别可达，主画板仍固定500×861', async () => {
+test('登录后四季主页直接加载全屏画布，聊天与许愿星页面分别可达', async () => {
   const home = await fetch(base + '/', { headers: { Cookie: cookie } });
-  assert.equal(home.status, 200);
+  assert.equal(home.status, 200, '/');
   const html = await home.text();
-  assert.match(html, /width="500" height="861"/);
-  assert.match(html, /src="\/home\/scene.html/);
+  assert.match(html, /viewport-fit=cover/);
+  assert.match(html, /\/home\/seasons\.css/);
+  assert.match(html, /\/home\/seasons\.js/);
+  assert.match(html, /\/home\/home-navigation\.js/);
+  assert.doesNotMatch(html, /<iframe\b/);
+  assert.match(html, /href="\/home\/heartbeat"/);
   const chat = await fetch(base + '/chat', { headers: { Cookie: cookie } });
-  assert.equal(chat.status, 200);
+  assert.equal(chat.status, 200, '/chat');
   assert.match(await chat.text(), /chat-app\.js/);
-  const scene = await fetch(base + '/home/scene.html', { headers: { Cookie: cookie } });
-  assert.match(await scene.text(), /home-navigation\.js/);
+  for (const route of [
+    '/home/album', '/home/feature.html?feature=album', '/home/moments', '/home/heartbeat', '/home/feature.html?feature=moments',
+  ]) {
+    const management = await fetch(base + route, { headers: { Cookie: cookie } });
+    assert.equal(management.status, 200, route);
+    assert.match(await management.text(), /chat-app\.js/, route);
+  }
+  const wishes = await fetch(base + '/wishstar', { headers: { Cookie: cookie } });
+  assert.equal(wishes.status, 200, '/wishstar');
+  assert.match(await wishes.text(), /许愿星/);
 });
 test('所有主页白名单资源可取，未知文件及目录逃逸被拒绝', async () => {
   for (const [route, asset] of HOME_STATIC_FILES) {
@@ -54,18 +69,52 @@ test('所有主页白名单资源可取，未知文件及目录逃逸被拒绝',
   }
   for (const route of ['/home/README.md', '/home/config/auth.token', '/home/%2e%2e%2fconfig/auth.token']) {
     const response = await fetch(base + route, { headers: { Cookie: cookie } });
-    assert.equal(response.status, 404);
+    assert.equal(response.status, 404, route);
   }
 });
-test('只有头像聊天动作跳转原聊天路由，避免演示toast及其他入口误跳', async () => {
+test('所有主页入口通过真实导航脚本跳转，宿主仍可提前接管事件', async () => {
   const source = await (await fetch(base + '/home/home-navigation.js', { headers: { Cookie: cookie } })).text();
-  let listener: ((event: any) => void) | undefined;
+  const document = new EventTarget();
   const routes: string[] = [];
-  vm.runInNewContext(source, { document: { addEventListener(name: string, fn: (event: any) => void) { assert.equal(name, 'home:action'); listener = fn; } }, window: { top: { location: { assign(route: string) { routes.push(route); } } } } });
-  let cancelled = false;
-  listener!({ detail: { action: 'chat' }, preventDefault() { cancelled = true; } });
-  assert.equal(cancelled, true);
-  assert.deepEqual(routes, ['/chat']);
-  for (const action of ['call', 'calendar', 'album:open']) listener!({ detail: { action }, preventDefault() { throw new Error('other action intercepted'); } });
-  assert.deepEqual(routes, ['/chat']);
+  vm.runInNewContext(source, { document, window: { top: { location: { assign(route: string) { routes.push(route); } } } } });
+  for (const action of ['chat', 'wishes']) {
+    const event = new CustomEvent('home:action', { detail: { action }, cancelable: true });
+    assert.equal(document.dispatchEvent(event), false);
+  }
+  assert.deepEqual(routes, ['/chat', '/wishstar']);
+  const pending = [
+    { action: 'calendar', season: 'spring' },
+    { action: 'calendar', season: 'summer' },
+    { action: 'reading', season: 'winter', target: 'bookshelf' },
+    { action: 'anniversaries', season: 'summer' },
+    { action: 'moments', season: 'autumn' },
+    { action: 'album', season: 'summer', target: 'fireflies' },
+    { action: 'voice', season: 'winter', target: 'snow-window' },
+    { action: 'upstairs', season: 'winter' },
+  ];
+  const received: unknown[] = [];
+  document.addEventListener('home:action', event => received.push((event as CustomEvent).detail));
+  for (const detail of pending) {
+    assert.equal(document.dispatchEvent(new CustomEvent('home:action', { detail, cancelable: true })), false);
+  }
+  assert.deepEqual(received, pending);
+  const expectedRoutes = [
+    '/chat', '/wishstar',
+    '/home/feature.html?feature=calendar',
+    '/home/feature.html?feature=calendar&season=summer',
+    '/home/feature.html?feature=reading',
+    '/home/feature.html?feature=anniversaries',
+    '/home/moments',
+    '/home/album',
+    '/home/feature.html?feature=voice',
+    '/home/feature.html?feature=upstairs',
+  ];
+  assert.deepEqual(routes, expectedRoutes);
+
+  const intercepted = new CustomEvent('home:action', { detail: { action: 'wishes' }, cancelable: true });
+  intercepted.preventDefault();
+  document.dispatchEvent(intercepted);
+  const unknown = new CustomEvent('home:action', { detail: { action: 'unknown-feature' }, cancelable: true });
+  assert.equal(document.dispatchEvent(unknown), true);
+  assert.deepEqual(routes, expectedRoutes);
 });

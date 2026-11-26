@@ -8,3 +8,7 @@ reports/
 
 # 私人参考材料保留在磁盘（docs/architecture/v0.2.1/references/user/）但不进版本库
 docs/architecture/v0.2.1/references/user/
+
+# SDK generates local editor types for the explicitly loaded prompt hook.
+apps/host/src/runtime/sdk-prompt-context/tsconfig.json
+apps/host/src/runtime/sdk-prompt-context/.claude-plugin/types

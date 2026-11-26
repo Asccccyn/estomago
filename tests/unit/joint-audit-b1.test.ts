@@ -2,7 +2,7 @@
 //  - F-J-02：监督器级三步序列——turn1 成功 → turn2 hold 已提交但回合失败 → 后续换窗不再死锁
 //    （旧行为：selectReviewRange 抛 BOOKMARK_OUTSIDE_MANIFEST → ROTATION_RANGE_INVALID 阻断，
 //     容量触发变体每个 turn 都被拦=永久死锁；修复后=合法空范围 skipped_empty）
-//  - F-J-54：带选集而回执绑定数不符 → unknown 收口（恢复走原 op），不换 op 重写桶
+//  - 写记忆独立于原文绑定；传输结果未知仍核查原操作，不重复写桶
 //  - F-J-01 形状断言见 hold-quote.test.ts（source_msg: 前缀）；真实两端正例见 probes（R01/R02）。
 // 假 OR transport + 假 Mariposa（单测层）；零网络零真实模型。
 import { test } from 'node:test';
@@ -69,7 +69,7 @@ const mariposaOk: MariposaTransport = async (capability, payload) => {
 test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 失败 → 容量触发换窗不再被 ROTATION_RANGE_INVALID 阻断', async () => {
   const root = tempRoot('jab1-lock-');
   writeApprovedIdentity(root);
-  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 21_500 /* 裁定②1024 统一口径实测校准 */ } });
+  const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' }, windows: { soft_limit_tokens: 30_000 } });
   const paths = buildPaths(root);
   const db = openDatabase(path.join(root, 'data'));
   migrate(db, sha256Hex);
@@ -78,7 +78,7 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposaOk }), reviews: reviews, checkpoint: checkpoint });
@@ -110,15 +110,18 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   // 第二步：turn2 hold 成功（书签=2）但回合 500 失败（m2 不入轨迹 manifest）
   const t2 = await say('第二条：想记一件事', 'j2', new Date(Date.parse(T0) + 1 * H).toISOString());
   assert.equal((db.prepare('SELECT state FROM attempts WHERE id = ?').get(t2.attemptId) as { state: string }).state, 'failed', '回合确实失败（复现前提，不是只改期望值）');
+  assert.equal(gen, 3, '失败发生在已提交 hold 后的第三次上游请求');
   const cp = db.prepare('SELECT epoch_id, seen_sequence FROM hold_checkpoints WHERE room_id = ?').get('c1') as { epoch_id: string; seen_sequence: number };
   assert.equal(cp.epoch_id, win1.id, '书签在本窗');
   assert.equal(cp.seen_sequence, 3, 'hold 成功把书签推进到发起请求视野 seq=3（m1+助手回复后的第二条输入）');
   const trajRow = db.prepare('SELECT manifest_json FROM window_trajectories WHERE window_id = ?').get(win1.id) as { manifest_json: string | null };
   const manifest = JSON.parse(trajRow.manifest_json ?? '[]') as Array<{ seq: number }>;
   const manifestMax = manifest.reduce((mx, x) => Math.max(mx, x.seq), 0);
-  assert.equal(manifestMax, 2, '失败回合输入不入清单——书签(3)高于清单高水位(2)，旧代码在此抛 BOOKMARK_OUTSIDE_MANIFEST');
+  // C03（四仓审计 20261106）：执行过工具的失败轮保留已发协议——输入与工具往来均入
+  // 清单（书签=清单高水位=3，不再出现 BOOKMARK_OUTSIDE_MANIFEST 空窗）
+  assert.equal(manifestMax, 3, '工具失败轮的已发输入入清单——书签与清单高水位一致');
   // 第三步：长消息越软线触发容量换窗（2026-10-08 晚间裁定：静默不再触发；时间仍隔 8h 以证明静默无关）——不再死锁
-  const t3 = await say(`第三条：${'很长的容量触发内容。'.repeat(230) /* 2026-10-19 时间块瘦身——微调越线填充 */}`, 'j3', new Date(Date.parse(T0) + 8 * H).toISOString());
+  const t3 = await say(`第三条：${'很长的容量触发内容。'.repeat(2500)}`, 'j3', new Date(Date.parse(T0) + 8 * H).toISOString());
   const att3 = db.prepare('SELECT state, window_id FROM attempts WHERE id = ?').get(t3.attemptId) as { state: string; window_id: string };
   assert.equal(att3.state, 'completed', '换窗触发后本回合正常收口（旧代码：整 turn 被 ROTATION_RANGE_INVALID 阻断）');
   const win2 = windows.activeWindow('c1')!;
@@ -130,7 +133,7 @@ test('F-J-02 监督器级：turn1 成功 → turn2 hold 已提交但回合 500 �
   db.close();
 });
 
-// —— F-J-54：回执绑定数与选集数不符 → unknown（不重写桶） ——
+// 保存成功与原文绑定数量无关；传输未知仍由原有账本核查。
 function seedReceipt(db: ReturnType<typeof openDatabase>, messageId: string, revision: number, content: string, srcMsg: string): void {
   db.prepare(
     `INSERT INTO source_sync_receipts(id, operation_id, origin_message_id, revision, source_conversation_id, source_message_id, content_hash, committed_at, created_at)
@@ -138,25 +141,23 @@ function seedReceipt(db: ReturnType<typeof openDatabase>, messageId: string, rev
   ).run(`ssr-${messageId}-${revision}`, messageId, revision, srcMsg, sha256Hex(content), new Date().toISOString(), new Date().toISOString());
 }
 
-async function execHoldWithBindingCount(db: ReturnType<typeof openDatabase>, bindingCount: number, messageId: string, content: string) {
+async function execIndependentHold(db: ReturnType<typeof openDatabase>, transportFails: boolean, messageId: string, content: string) {
   const reviews = new RotationReviewService(db);
   const transport: MariposaTransport = async (capability, payload) => {
     if (capability === 'memory.hold') {
-      return { ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-j54', version: 1, binding_ids: Array.from({ length: bindingCount }, (_, i) => `msb-x-${i}`), committed_at: new Date().toISOString() } };
+      if (transportFails) return {ok:false,code:'TRANSPORT_TIMEOUT',httpStatus:0};
+      return { ok: true, result: { operation_id: payload.operation_id, memory_id: 'mem-j54', version: 1, binding_ids: [], committed_at: new Date().toISOString() } };
     }
     return { ok: false, code: 'CAPABILITY_NOT_FOUND', httpStatus: 404 };
   };
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport }), reviews: reviews, checkpoint: new HoldCheckpointService(db) });
   const out = await tools.execute('memory_hold', {
     original_title: '回执完整性', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x',
-    // R1′（2026-10-23）：60c6998 起 F-J-54 绑定核对按事件选集（source_ranges）算；
-    // quotes 走我们的话勾选链路（1018 批），不再计入本核对。驱动改为 source_ranges。
-    source_ranges: [{ start_seq: 1, end_seq: 1 }],
   }, { roomId: 'c1', windowId: 'w1', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [{ id: messageId, revision: 1 }], requestId: 'req-j54', toolCallId: 'call-j54' });
   return { out, reviews };
 }
 
-test('F-J-54：带 1 条选集而回执 0 个绑定 → HOLD_RECEIPT_BINDING_MISMATCH + 账本 unknown（恢复走原 op）', async () => {
+test('保存记忆不要求原文绑定，零绑定回执正常 committed', async () => {
   const root = tempRoot('jab1-b54-');
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
@@ -172,18 +173,15 @@ test('F-J-54：带 1 条选集而回执 0 个绑定 → HOLD_RECEIPT_BINDING_MIS
     "INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES ('msg-j54',1,'text',?,?,'2026-10-03T08:00:00+08:00','2026-10-03T08:00:01+08:00','user')",
   ).run(content, sha256Hex(content));
   seedReceipt(db, msg.id, 1, content, 'sm-j54-real');
-  const { out, reviews } = await execHoldWithBindingCount(db, 0, msg.id, content);
-  assert.equal(out.ok, false);
-  assert.equal(out.output.error_code, 'HOLD_RECEIPT_BINDING_MISMATCH');
-  // R1′（2026-10-23）：expected/got 诊断数字按模型输出合同（bd677ed+docs/contracts/
-  // model-result-whitelist.md）不进普通投影——错误码即失败信号，恢复由宿主按原 op
-  // 核实。业务反例（可疑回执=unknown 账本、不换 op 重写桶）保留在下方账本断言。
+  const { out, reviews } = await execIndependentHold(db, false, msg.id, content);
+  assert.equal(out.ok, true);
+  assert.equal(out.output.source_status, 'unbound');
   const effects = db.prepare('SELECT state FROM tool_side_effects').all() as Array<{ state: string }>;
-  assert.ok(effects.some((e) => e.state === 'unknown'), '可疑回执=结果不明（换窗前 recoverUnknownEffects 按原 op 核实，不重写桶）');
+  assert.ok(effects.some((e) => e.state === 'committed'), '未绑定记忆也有正常保存回执');
   db.close();
 });
 
-test('F-J-54 对照：绑定数与选集数一致（1:1）→ 正常 committed', async () => {
+test('写入传输结果未知仍按原操作核查，不因解耦而冒充成功', async () => {
   const root = tempRoot('jab1-b54ok-');
   writeApprovedIdentity(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'deepseek' }, deepseek: { model: 'deepseek-chat' } });
@@ -195,7 +193,9 @@ test('F-J-54 对照：绑定数与选集数一致（1:1）→ 正常 committed',
   db.prepare("INSERT INTO messages(id, conversation_id, sequence, speaker, kind, current_revision, created_at) VALUES ('msg-j54b','c1',1,'owner','text',1,?)").run(new Date().toISOString());
   db.prepare("INSERT INTO message_revisions(message_id, revision, kind, content, content_hash, occurred_at, received_at, source) VALUES ('msg-j54b',1,'text',?,?,'2026-10-03T08:00:00+08:00','2026-10-03T08:00:01+08:00','user')").run(content, sha256Hex(content));
   seedReceipt(db, 'msg-j54b', 1, content, 'sm-j54b-real');
-  const { out } = await execHoldWithBindingCount(db, 1, 'msg-j54b', content);
-  assert.equal(out.ok, true, `1 选集 1 绑定应通过（得到 ${JSON.stringify(out.output).slice(0, 200)}）`);
+  const { out } = await execIndependentHold(db, true, 'msg-j54b', content);
+  assert.equal(out.ok, false);
+  assert.equal(out.output.error_code, 'HOLD_OUTCOME_UNKNOWN');
+  assert.equal((db.prepare('SELECT state FROM tool_side_effects').get() as any).state, 'unknown');
   db.close();
 });

@@ -76,7 +76,7 @@ function compose(root: string, transport: OrTransport, mariposa: MariposaTranspo
   const selections = new ManualSelectionService(db);
   const trajectory = new WindowTrajectoryService(db);
   // WP-07：WindowManager 接线 trajectory（初始轨迹写切换事务）
-  const windows = new WindowManager(db, events, identity, config, selections, trajectory);
+  const windows = new WindowManager(db, identity, config, selections, trajectory);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mc = mariposa ? new MariposaClient({ transport: mariposa }) : null;
@@ -152,7 +152,7 @@ test('R05/R06: capacity intent survives reconstruction and confirmation still di
     return { status: 200, headers: new Map(), body: frameStream(body) };
   };
   const root = tempRoot('root-capacity-');
-  const options = { reminders: { enabled: true }, windows: { soft_limit_tokens: 21_500 /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } };
+  const options = { reminders: { enabled: true }, windows: { soft_limit_tokens: 29_800 /* 2026-11-20 同步业务工具字段后，首轮可发且长输入越线。 */ /* 包4 2026-11-18：legacy 线上目录净变化（-memory_source_bind、conversation_read/episode/words 锚点合同扩展）——实测首轮≈28.4k，软线平移至首轮之上 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } };
   let ctx = compose(root, transport, null, options);
   await say(ctx, 'first synthetic', 'a', T0);
   const pending = await say(ctx, 'capacity payload '.repeat(400), 'b', T1);
@@ -173,7 +173,7 @@ test('R05/R06: capacity intent survives reconstruction and confirmation still di
 
 test('R14/R15: failed atomic switch does not consume selection or resume pending input; retry resumes exactly once', async () => {
   const seen: Array<Record<string, unknown>> = [];
-  const ctx = compose(tempRoot('root-failure-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 21_500 /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
+  const ctx = compose(tempRoot('root-failure-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 29_800 /* 2026-11-20 同步业务工具字段后，首轮可发且长输入越线。 */ /* 包4 2026-11-18：legacy 线上目录净变化（-memory_source_bind、conversation_read/episode/words 锚点合同扩展）——实测首轮≈28.4k，软线平移至首轮之上 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
   await say(ctx, 'first', 'a', T0);
   const old = ctx.windows.activeWindow('c1')!;
   const pending = await say(ctx, 'capacity payload '.repeat(400), 'b', T1);
@@ -254,7 +254,7 @@ test('T09/T12: selected edit retains original date; repaired/unknown time not in
 test('M01-M04/C02: full memory text/date and minimal deep-read reference; no summary or internal metadata', () => {
   const item = { event_id:'e1',memory_id:'m1',memory_version:'1',memory_date:'2026-07-09',date_confidence:'exact',event_text:'完整正文\n第二行',body_hash:'hash',detail_ref:'sdr1' };
   const second = {...item,event_id:'e2',detail_ref:'sdr2',memory_date:null,event_text:'第二个事件'};
-  assert.deepEqual(JSON.parse(renderAugmentation([item,second])),{memories:[{memory_ref:memoryRefFor('sdr1'),date:'2026-07-09',text:item.event_text},{memory_ref:memoryRefFor('sdr2'),date:null,text:second.event_text}]});
+  assert.equal(renderAugmentation([item,second]), `你想起了几段往事。\n\n2026-07-09\n${item.event_text}\n〔${memoryRefFor('sdr1')}〕\n\n确切的日子记不清了。\n${second.event_text}\n〔${memoryRefFor('sdr2')}〕`);
   assert.equal(renderAugmentation([]),'');
 });
 
@@ -295,7 +295,7 @@ test('R12/R17: manual bypasses failed review limit but verifies unknown hold usi
 
 test('R15: crash after switch before requeue recovers from consumed selection without another rotation', async () => {
   const seen: Array<Record<string, unknown>> = [];
-  const ctx = compose(tempRoot('root-requeue-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 21_500 /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
+  const ctx = compose(tempRoot('root-requeue-'), dsTransport(seen), null, { windows: { soft_limit_tokens: 29_800 /* 2026-11-20 同步业务工具字段后，首轮可发且长输入越线。 */ /* 包4 2026-11-18：legacy 线上目录净变化（-memory_source_bind、conversation_read/episode/words 锚点合同扩展）——实测首轮≈28.4k，软线平移至首轮之上 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录 +2059B≈+572 token 平移 */ /* 2026-11-09 R5 重标定：+content_album_entry_write 目录底座 +1285B≈+356 token——首轮之上、长输入之下，相对位不变 */ /* 2026-11-08 相册整改三批重标定：目录再增（archives_search 等）——首轮之上、长输入之下，相对位不变 */ /* 裁定②1024：统一口径后实测首轮工作集≈20.7k（含冻结目录）——软线置于首轮之上、第二条(+≈4.8k)之下，原相对位不变 */ } });
   await say(ctx, 'first', 'a', T0);
   const pending = await say(ctx, 'capacity payload '.repeat(400), 'b', T1);
   ctx.db.exec("CREATE TRIGGER crash_requeue BEFORE UPDATE OF state ON attempts WHEN OLD.state='blocked' AND NEW.state='pending' BEGIN SELECT RAISE(ABORT, 'crash after switch'); END");
@@ -331,7 +331,7 @@ test('M02: valid stored occurrence time survives legacy confidence metadata; inv
   const refs = new Map([['e', memoryRefFor('detail')]]);
   assert.ok(renderAugmentation([item], refs).includes('2026-07-09 09:12'));
   assert.ok(renderAugmentation([{ ...item, date_confidence: 'unknown' }], refs).includes('2026-07-09 09:12'), 'current model-result-whitelist contract retains a valid stored occurrence date independently of legacy date_confidence');
-  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('"date":null'));
+  for (const changed of [{ ...item, memory_date: '2026-02-30' }, { ...item, memory_date: null }]) assert.ok(renderAugmentation([changed], refs).includes('确切的日子记不清了。'));
 });
 
 test('T04/C04: old JSON time bytes stay unchanged when appending new text, tampering still fails', async () => {

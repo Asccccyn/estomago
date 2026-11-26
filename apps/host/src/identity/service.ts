@@ -8,34 +8,20 @@
 // 没有批准身份材料 → 阻断，绝不提供默认人格。
 import fs from 'node:fs';
 import path from 'node:path';
-// 上下文指纹（§7 AUD：人格/运行边界变化检测）——任何影响人格或运行边界的字段都参与。
-// ESTOMAGO_OR_SELF_HOLD §4.1：驱动/模型/缓存配置变更同样改变上下文有效性 → 纳入指纹触发换窗。
-// 身份映射隔离：deepseek 段独立参与指纹——OR↔DS 切换（或 DS 型号/输出上限变化）→ CONTEXT_STALE 强制换窗。
+// Conversation identity and tool permissions stay fixed within a window.
+// Model, provider, SDK version and generation settings are execution choices.
 export function contextFingerprint(config: {
   runtime: { provider?: string; sdk_version: string | null; model?: string | null; setting_sources: string[]; builtin_tools: string[]; mcp_servers_allowlist: string[] };
   openrouter?: { model: string | null; max_output_tokens: number; provider_only: string[]; reasoning: Record<string, unknown> | null };
   deepseek?: { model: string | null; max_output_tokens: number };
 }, manifest: IdentityManifestFile | null): string {
-  const parts = [
-    // 2026-10-17 她裁定：正文槽（identity_version/approved_source_hash，即长期记忆里程碑）
-    // 与 I 槽（i_version/i_hash）均不参与指纹——两者都是char可自维护的演进材料，
-    // 演进同 §7.1 桶/I 中途修改口径：当前窗继续旧冻结副本、下一新窗自动带新版，
-    // 不触发 CONTEXT_STALE。运行边界变化防护仍由规则槽+驱动/模型/配置项承担
-    //（换模型/换规则/换驱动仍强制换窗）。
+  return sha256Hex([
     manifest?.runtime_rules_version ?? null,
     manifest?.rules_hash ?? null,
-    config.runtime.sdk_version,
-    config.runtime.model, // D09（审计 3655d60）：SDK 实际型号参与指纹——只换 runtime.model 也算运行边界变化（旧窗不 resume）
     JSON.stringify(config.runtime.setting_sources),
     JSON.stringify(config.runtime.builtin_tools),
     JSON.stringify([...config.runtime.mcp_servers_allowlist].sort()),
-    config.runtime.provider ?? 'claude-agent-sdk',
-    // 2026-10-08 她裁定：reasoning 不参与指纹——推理等级是逐请求生成参数，
-    // 切换不构成运行边界变化（上下文/窗口全复用；型号仍参与）
-    config.openrouter ? JSON.stringify([config.openrouter.model, config.openrouter.max_output_tokens, [...config.openrouter.provider_only].sort()]) : null,
-    config.deepseek ? JSON.stringify([config.deepseek.model, config.deepseek.max_output_tokens]) : null,
-  ];
-  return sha256Hex(parts.join('\u0001'));
+  ].join('\u0001'));
 }
 
 /** 指纹输入的配置形状（windows/manager 与 supervisor 共用；完整 Config 结构满足此类型） */
@@ -62,6 +48,17 @@ export function defaultObservedSdkVersion(): string | null {
   }
 }
 
+export type MilestoneRevision = { file: string; version: string; hash: string; byteSize: number; entries?: number };
+export type MilestoneWriteReceipt = {
+  operationId: string;
+  fingerprint: string;
+  operation: 'write' | 'add' | 'revise' | 'remove';
+  reason: string;
+  written: MilestoneRevision;
+  heartbeat?: { runId: string; callId: string };
+};
+type MilestoneCommit = (written: MilestoneRevision) => MilestoneWriteReceipt;
+
 export type IdentityManifestFile = {
   display_name: string;
   spec_version: string;
@@ -69,6 +66,10 @@ export type IdentityManifestFile = {
   identity_version: string | null;
   approved_source_ref: string | null;
   approved_source_hash: string | null;
+  memory_anchors_ref?: string | null;
+  memory_anchors_hash?: string | null;
+  /** Last committed model mutation. Updated atomically with the anchor slot. */
+  milestone_write_receipt?: MilestoneWriteReceipt;
   i_version: string | null;
   i_hash: string | null;
   i_snapshot_ref: string | null; // F04：I 快照文件引用（与 i_hash 成对，缺一即阻断）
@@ -98,7 +99,7 @@ export type GateResult = {
   observed: {
     installed_sdk_version: string | null;
     cwd_realpath: string | null;
-    probes: Record<string, { state: string; sdk_version: string } | null>;
+    probes: Record<string, { state: string; sdk_version: string; evidence_ref?: string } | null>;
   };
 };
 
@@ -154,7 +155,7 @@ export class IdentityService {
   // 审计 F01：驱动判别——SDK 专属前提（sdk_version 锁定/实装匹配、订阅认证确认、SDK 版本绑定探针、
   // runtime.model）只约束 SDK 驱动；OR/DS 用各自的型号与 key 状态门（selectRunner），共有身份校验
   // （manifest/版本三键/hash 到文件/证据非空）对全部驱动同样强制（§2.1：共有的身份/主体权限校验必需）。
-  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' | 'deepseek' }): GateResult {
+  evaluateGate(db?: Db, opts?: { driver?: 'openrouter' | 'claude-agent-sdk' | 'deepseek' | 'mock' }): GateResult {
     const driver = opts?.driver ?? 'claude-agent-sdk';
     const reasons: string[] = [];
     const installed = this.observedSdkVersion();
@@ -189,9 +190,20 @@ export class IdentityService {
         reasons.push(`${label} 内容 hash 不符：期望 ${expectedHash.slice(0, 8)}… / 实际 ${actual.slice(0, 8)}…`);
       }
     };
-    // F04：I 快照和运行规则必须提供引用并验证实际内容 hash
-    verifyFile(manifest.i_snapshot_ref, manifest.i_hash, 'I 快照');
+    // F04：运行规则必须提供引用并验证实际内容 hash。
+    // DBG-05（包2 2026-11-16）：I 唯一注入点=B 段 bootstrap（M 的 I 版本体系，03_SYSTEM）——
+    // 旧占位文件 i-snapshot-pending.md 与空引用退役，gate 不再校验该槽（历史缺陷：占位
+    // "i_documents 为空"与真实 I 同时注入）。非占位的真实快照引用仍照常校验（兼容期）。
+    const iRefRetired = manifest.i_snapshot_ref == null || manifest.i_snapshot_ref === 'i-snapshot-pending.md';
+    if (!iRefRetired) verifyFile(manifest.i_snapshot_ref, manifest.i_hash, 'I 快照');
     verifyFile(manifest.runtime_rules_ref, manifest.rules_hash, '运行规则');
+    if (manifest.memory_anchors_ref != null || manifest.memory_anchors_hash != null) {
+      if (!/^memory-anchors-v[1-9]\d*\.md$/.test(manifest.memory_anchors_ref ?? '')) {
+        reasons.push('记忆锚点引用须指向版本化文件');
+      } else {
+        verifyFile(manifest.memory_anchors_ref, manifest.memory_anchors_hash, '记忆锚点');
+      }
+    }
     // F04：verification_evidence 至少一条，且每条必须是非空白字符串（空串不算证据）
     if (
       !Array.isArray(manifest.verification_evidence) ||
@@ -295,7 +307,7 @@ export class IdentityService {
 
   // F04：已验证材料的单一装载入口——校验（hash）与装配读同一份字节，绝不"校验后再读另一份内容"。
   // 返回 null 表示装载失败（gate 未 READY 或文件读失败），调用方必须阻断，不得回退硬编码正文
-  loadVerifiedMaterials(manifest: IdentityManifestFile): { identityText: string; rulesText: string; iText: string | null; iStatus: string } | null {
+  loadVerifiedMaterials(manifest: IdentityManifestFile): { identityText: string; rulesText: string; iText: string | null; iStatus: string; memoryAnchorsText?: string } | null {
     const read = (ref: string | null | undefined): string | null => {
       if (!ref) return null;
       try {
@@ -307,57 +319,89 @@ export class IdentityService {
     const identityText = read(manifest.approved_source_ref);
     const rulesText = read(manifest.runtime_rules_ref);
     if (identityText === null || rulesText === null) return null;
-    // I 属于开窗包（current_i）通道；ContextPolicy 未批准 → 不装载，如实标记（不填默认、不升级为 system 命令）
-    const iText = read(manifest.i_snapshot_ref);
-    return { identityText, rulesText, iText, iStatus: iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved' };
+    // I 属于开窗包（current_i）通道；ContextPolicy 未批准 → 不装载，如实标记（不填默认、不升级为 system 命令）。
+    // DBG-05：占位/空槽退役——iText 不再装载（真实 I 由 B 段 bootstrap 唯一注入）。
+    const iRefRetired = manifest.i_snapshot_ref == null || manifest.i_snapshot_ref === 'i-snapshot-pending.md';
+    const iText = iRefRetired ? null : read(manifest.i_snapshot_ref);
+    const memoryAnchorsText = read(manifest.memory_anchors_ref);
+    if (manifest.memory_anchors_ref != null || manifest.memory_anchors_hash != null) {
+      if (memoryAnchorsText === null || sha256Hex(memoryAnchorsText) !== manifest.memory_anchors_hash) return null;
+    }
+    return {
+      identityText, rulesText, iText,
+      iStatus: iRefRetired ? 'retired_bootstrap_only' : (iText === null ? 'not_loaded_policy_unapproved' : 'verified_not_projected_policy_unapproved'),
+      ...(memoryAnchorsText !== null ? { memoryAnchorsText } : {}),
+    };
   }
 
   /** 她授权 2026-10-17（落位裁定：里程碑=身份正文槽）：char自维护长期记忆里程碑。
    *  新版写新文件（v(n+1) 追加，旧版留档不删=可回滚），manifest 正文槽原子更新；
    *  正文槽不参与 contextFingerprint——当前窗继续旧冻结副本，下一新窗自动带新版（她裁定，
    *  同 §7.1 桶/I 中途修改口径）。只允许 longterm-milestones-v<N>.md 文件名；失败即抛错不落半状态。 */
-  updateMilestone(newText: string): { file: string; version: string; hash: string; byteSize: number } {
+  updateMilestone(newText: string, commit?: MilestoneCommit): MilestoneRevision {
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING: 里程碑更新需要已批准的 manifest');
-    const currentRef = manifest.approved_source_ref;
-    const m = /^longterm-milestones-v(\d+)\.md$/.exec(currentRef ?? '');
-    if (!m) throw new Error(`IDENTITY_SLOT_NOT_MILESTONE: 身份正文槽当前引用不是里程碑文件（${currentRef ?? 'null'}）`);
-    const nextN = Number(m[1]) + 1;
-    const file = `longterm-milestones-v${nextN}.md`;
-    const filePath = path.join(this.paths.identityDir, file);
-    fs.writeFileSync(filePath, newText, { mode: 0o600 });
-    const bytes = fs.readFileSync(filePath);
-    const hash = sha256Hex(bytes);
-    const manifestPath = this.manifestPath();
-    const updated = { ...manifest, approved_source_ref: file, identity_version: `longterm-milestones-v${nextN}`, approved_source_hash: hash };
-    fs.writeFileSync(manifestPath, JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
-    return { file, version: `longterm-milestones-v${nextN}`, hash, byteSize: bytes.byteLength };
+    const current = this.milestoneRef(manifest);
+    let next = Number(current.match[2]) + 1;
+    let version = `${current.match[1]}-v${next}`;
+    while (fs.existsSync(path.join(this.paths.identityDir, `${version}.md`))) {
+      version = `${current.match[1]}-v${++next}`;
+    }
+    const file = `${version}.md`;
+    fs.writeFileSync(path.join(this.paths.identityDir, file), newText, { flag: 'wx', mode: 0o600 });
+    const written = { file, version, hash: sha256Hex(newText), byteSize: Buffer.byteLength(newText, 'utf8') };
+    const receipt = commit?.(written);
+    this.saveMilestoneRef(receipt ? { ...manifest, milestone_write_receipt: receipt } : manifest,
+      current.split, file, written.hash, version);
+    return written;
   }
 
-  /** 里程碑回滚（她手工操作面）：把身份正文槽指回某个留档旧版。只校验文件与 hash 自洽。 */
+  /** 线上已有组合文件的版本链仍可按原槽回滚。拆出的锚点只允许回滚锚点版本。 */
   rollbackMilestone(version: string): { file: string; hash: string } {
-    if (!/^longterm-milestones-v\d+$/.test(version)) throw new Error('VERSION_INVALID');
-    const file = `${version}.md`;
-    const filePath = path.join(this.paths.identityDir, file);
-    if (!fs.existsSync(filePath)) throw new Error(`ROLLBACK_TARGET_MISSING: ${file}`);
-    const hash = sha256Hex(fs.readFileSync(filePath));
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING');
-    const updated = { ...manifest, approved_source_ref: file, identity_version: version, approved_source_hash: hash };
-    fs.writeFileSync(this.manifestPath(), JSON.stringify(updated, null, 2) + '\n', { mode: 0o600 });
+    const current = this.milestoneRef(manifest);
+    const file = `${version}.md`;
+    const target = /^(longterm-milestones|memory-anchors)-v([1-9]\d*)\.md$/.exec(file);
+    if (!target || target[1] !== current.match[1]) throw new Error('VERSION_INVALID');
+    const filePath = path.join(this.paths.identityDir, file);
+    if (!fs.existsSync(filePath)) throw new Error('ROLLBACK_TARGET_MISSING: ' + file);
+    const hash = sha256Hex(fs.readFileSync(filePath));
+    this.saveMilestoneRef(manifest, current.split, file, hash, version);
     return { file, hash };
   }
 
-  /** 2026-10-22 她要求：里程碑条目化——char可编辑/增加/删除。条目=空行分隔的块
-   *  （不依赖特定 markdown 结构）；item 序号 1-based 按出现顺序；至少保留一条。 */
+  private milestoneRef(manifest: IdentityManifestFile): { file: string; split: boolean; match: RegExpExecArray } {
+    const split = manifest.memory_anchors_ref != null || manifest.memory_anchors_hash != null;
+    const file = split ? manifest.memory_anchors_ref : manifest.approved_source_ref;
+    const match = /^(longterm-milestones|memory-anchors)-v([1-9]\d*)\.md$/.exec(file ?? '');
+    if (!file || !match || (match[1] === 'memory-anchors') !== split) throw new Error('IDENTITY_SLOT_NOT_MILESTONE');
+    return { file, split, match };
+  }
+
+  private saveMilestoneRef(manifest: IdentityManifestFile, split: boolean, file: string, hash: string, version: string): void {
+    const updated = split
+      ? { ...manifest, memory_anchors_ref: file, memory_anchors_hash: hash }
+      : { ...manifest, approved_source_ref: file, approved_source_hash: hash, identity_version: version };
+    const manifestPath = this.manifestPath();
+    const tempPath = `${manifestPath}.${genId('anchors')}.tmp`;
+    try {
+      fs.writeFileSync(tempPath, JSON.stringify(updated, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      fs.renameSync(tempPath, manifestPath);
+    } finally {
+      fs.rmSync(tempPath, { force: true });
+    }
+  }
+
   readMilestone(): { text: string; version: string } {
     const { manifest } = this.loadManifest();
     if (!manifest) throw new Error('MANIFEST_MISSING');
-    const currentRef = manifest.approved_source_ref;
-    if (!/^longterm-milestones-v\d+\.md$/.test(currentRef ?? '')) throw new Error('IDENTITY_SLOT_NOT_MILESTONE');
-    const filePath = path.join(this.paths.identityDir, currentRef!);
+    const current = this.milestoneRef(manifest);
+    const filePath = path.join(this.paths.identityDir, current.file);
     if (!fs.existsSync(filePath)) throw new Error('MILESTONE_FILE_MISSING');
-    return { text: fs.readFileSync(filePath, 'utf8'), version: manifest.identity_version ?? 'unknown' };
+    const bytes = fs.readFileSync(filePath);
+    if (current.split && sha256Hex(bytes) !== manifest.memory_anchors_hash) throw new Error('MEMORY_ANCHORS_HASH_MISMATCH');
+    return { text: bytes.toString('utf8'), version: current.split ? current.file.slice(0, -3) : manifest.identity_version ?? 'unknown' };
   }
 
   /** 条目=一行一条（她 2026-10-22 裁定：1.2.3.4. 编号、一个换行一条；空行不编号）。
@@ -369,7 +413,8 @@ export class IdentityService {
 
   /** 行级操作（极简）：add=末尾加一条（一行）；revise=改第 item 条；remove=删第 item 条。
    *  其他行原样（行数组最小编辑）；沿用 updateMilestone 版本链/留档/manifest 原子更新。 */
-  applyMilestoneEntryOp(op: 'add' | 'revise' | 'remove', item: number | null, entryText: string | null): { file: string; version: string; hash: string; byteSize: number; entries: number } {
+  applyMilestoneEntryOp(op: 'add' | 'revise' | 'remove', item: number | null, entryText: string | null,
+    commit?: MilestoneCommit): MilestoneRevision & { entries: number } {
     const current = this.readMilestone();
     const lines = current.text.replace(/\r\n/g, '\n').split('\n');
     const entries = IdentityService.entryLines(current.text);
@@ -390,8 +435,9 @@ export class IdentityService {
       }
     }
     const next = lines.join('\n');
-    const written = this.updateMilestone(next);
-    return { file: written.file, version: written.version, hash: written.hash, byteSize: written.byteSize, entries: IdentityService.entryLines(next).length };
+    const count = IdentityService.entryLines(next).length;
+    const written = this.updateMilestone(next, commit ? result => commit({ ...result, entries: count }) : undefined);
+    return { ...written, entries: count };
   }
 
 

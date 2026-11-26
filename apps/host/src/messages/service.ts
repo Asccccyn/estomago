@@ -13,10 +13,17 @@ import { assertMessageMutable } from './mutation.ts';
 import { effectiveRevisionText } from './effective-text.ts';
 import type { EventService, StreamEventRow } from '../events/service.ts';
 
+export const HEARTBEAT_CHAT_REVEAL_SOURCE = 'heartbeat_chat_reveal';
+
 export type SubmitResult = { message: MessageDto; duplicate: boolean };
 export type SubmitWithTurnResult = SubmitResult & { turnId: string; attemptId: string; repaired: boolean };
 
 export class BlankMessageError extends Error {}
+
+const MESSAGE_COLUMNS = `m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind,
+  m.current_revision, m.published_at, m.created_at, m.client_message_id, t.trigger AS turn_trigger,
+  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at,
+  r.supersedes_revision, r.token_estimate_json`;
 
 // P05.2：通用生命周期合同在 ./lifecycle.ts（事实+inTx/afterCommit）。本类型保留为
 // 浮现域既有结构面（application/message-lifecycle 与兼容适配消费）；P09 复核命名。
@@ -172,7 +179,7 @@ export class MessageService {
       const msgDto = this.getMessage(messageId)!;
       this.lifecycle?.inTransaction({ kind: 'accepted', conversationId: opts.conversationId, messageId, revision: 1,
         sequence: seqRow.next, content: effectiveRevisionText(this.db, messageId, 1, content), contentHash: msgDto.revision.content_hash,
-        occurredAt, firstAcceptance: true, dispatchable: cancelled === null });
+        occurredAt, receivedAt: nowIso, firstAcceptance: true, dispatchable: cancelled === null });
       // WAKE_KEEPWARM_V1 §05：真实发布（非幂等重放路径）同事务更新 L 锚点
       this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
       return { message: msgDto, duplicate: false, turnId, attemptId, repaired: false };
@@ -282,36 +289,20 @@ export class MessageService {
         return existing;
       }
     }
-    const messageId = genId('msg');
     const publishedEvents: StreamEventRow[] = [];
+    let result: MessageDto;
     tx(this.db, () => {
-      const seqRow = this.db
-        .prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM messages WHERE conversation_id = ?')
-        .get(opts.conversationId) as { next: number };
-      this.db
-        .prepare(
-          `INSERT INTO messages(id, conversation_id, sequence, speaker, turn_id, kind, client_message_id, current_revision, published_at, created_at)
-           VALUES (?,?,?,?,?,?,?,1,?,?)`,
-        )
-        .run(messageId, opts.conversationId, seqRow.next, 'assistant', opts.turnId, opts.kind ?? 'text', opts.clientMessageId ?? null, nowIso, nowIso);
-      this.insertRevision({ messageId, revision: 1, kind: opts.kind ?? 'text', content: opts.content, occurredAt: nowIso, receivedAt: nowIso, source: 'assistant_publish', fingerprint: messageFingerprint(opts.content, opts.attachments ?? []) });
-      const atts = opts.attachments ?? [];
-      for (let i = 0; i < atts.length; i++) {
-        this.db.prepare(
-          `INSERT INTO message_attachments(message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at)
-           VALUES (?,?,?,?,?,?,NULL,NULL,?)`,
-        ).run(messageId, 1, i, atts[i]!.asset_id, atts[i]!.presentation, atts[i]!.caption ?? null, nowIso);
-      }
-      this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
+      const message = this.insertPublicationInTx({ ...opts, now: nowIso, speaker: 'assistant', source: 'assistant_publish' });
+      result = message;
       // WAKE_KEEPWARM_V1 §05：assistant 正式发布（含后台正式发言）同事务更新 L
-      this.activity?.noteRealPublication(opts.conversationId, messageId, 1, nowIso);
+      this.activity?.noteRealPublication(opts.conversationId, message.id, 1, nowIso);
       if (opts.events) publishedEvents.push(opts.events.persistInTx('message.published', {
-        conversationId:opts.conversationId, turnId:opts.turnId, entityRef:messageId, entityRevision:1,
-        payload:{message:this.getMessage(messageId)!},
+        conversationId:opts.conversationId, turnId:opts.turnId, entityRef:message.id, entityRevision:1,
+        payload:{message},
       }));
     });
     for (const event of publishedEvents) opts.events!.dispatchRow(event);
-    return this.getMessage(messageId)!;
+    return result!;
   }
 
   /** 2026-10-17 她裁定（Claude 官端说话方式）：一轮回复合成一条消息——
@@ -331,7 +322,7 @@ export class MessageService {
       // WAKE_KEEPWARM_V1 §05（K-05/B18）：同一 assistant 消息真正追加的新段落=新真实活动
       this.activity?.noteRealPublication(row.conversation_id, messageId, row.current_revision + 1, nowIso);
     });
-    return this.getMessage(messageId);
+    return this.getMessage(messageId, true);
   }
 
   /** EXEC_V1 §04.13：预写提醒投递（speaker=system，宿主消息；幂等键防重复投递；归档 outbox 同链）。 */
@@ -339,17 +330,9 @@ export class MessageService {
     const nowIso = new Date().toISOString();
     const dup = this.db.prepare('SELECT id FROM messages WHERE conversation_id = ? AND client_message_id = ?').get(opts.conversationId, opts.clientMessageId) as { id: string } | undefined;
     if (dup) return this.getMessage(dup.id)!;
-    const messageId = genId('msg');
-    tx(this.db, () => {
-      const seqRow = this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS next FROM messages WHERE conversation_id = ?').get(opts.conversationId) as { next: number };
-      this.db.prepare(
-        `INSERT INTO messages(id, conversation_id, sequence, speaker, turn_id, kind, client_message_id, current_revision, published_at, created_at)
-         VALUES (?,?,?, 'system', NULL, 'system', ?, 1, ?, ?)`,
-      ).run(messageId, opts.conversationId, seqRow.next, opts.clientMessageId, nowIso, nowIso);
-      this.insertRevision({ messageId, revision: 1, kind: 'system', content: opts.content, occurredAt: nowIso, receivedAt: nowIso, source: 'reminder_delivery', fingerprint: messageFingerprint(opts.content, []) });
-      this.insertOutbox(`archive:${messageId}:1`, { message_id: messageId }, nowIso);
-    });
-    return this.getMessage(messageId)!;
+    return tx(this.db, () => this.insertPublicationInTx({
+      ...opts, now: nowIso, turnId: null, speaker: 'system', kind: 'system', source: 'reminder_delivery',
+    }));
   }
 
   private insertOutbox(operationKey: string, payload: Record<string, unknown>, nowIso: string): void {
@@ -382,16 +365,72 @@ export class MessageService {
       .run(genId('rev'), opts.messageId, opts.revision, opts.kind, opts.content, sha256Hex(opts.content), opts.supersedes ?? null, opts.occurredAt, opts.receivedAt, opts.source, opts.tokenEstimateJson ?? null, opts.fingerprint ?? null);
   }
 
-  getMessage(messageId: string): MessageDto | null {
+  getMessage(messageId: string, includePublicationBreaks = false): MessageDto | null {
     const row = this.db
       .prepare(
-        `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+        `SELECT ${MESSAGE_COLUMNS}
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+         LEFT JOIN turns t ON t.id = m.turn_id
          WHERE m.id = ?`,
       )
       .get(messageId) as MessageRow | undefined;
-    return row ? rowToDto(row, attachmentsFor(this.db, row.id, row.revision)) : null;
+    return row ? rowToDto(this.db, row, includePublicationBreaks) : null;
+  }
+
+  getMessageAtRevision(conversationId: string, messageId: string, revision: number): MessageDto | null {
+    const row = this.db.prepare(`
+      SELECT ${MESSAGE_COLUMNS}
+      FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=?
+      LEFT JOIN turns t ON t.id = m.turn_id
+      WHERE m.id=? AND m.conversation_id=? AND m.published_at IS NOT NULL
+    `).get(revision, messageId, conversationId) as MessageRow | undefined;
+    return row ? rowToDto(this.db, row) : null;
+  }
+
+  /** Heartbeat display and trajectory association commit in the caller's existing writer transaction. */
+  publishHeartbeatInTx(opts: { conversationId: string; turnId: string; runId: string; part: 'invite' | 'card' | 'decline' | 'ack' | `reply:${number}`; content: string; chatRevealBoundary?: true }): MessageDto {
+    const clientId = `heartbeat:${opts.runId}:${opts.part}`;
+    const duplicate = this.db.prepare('SELECT id FROM messages WHERE conversation_id=? AND client_message_id=?')
+      .get(opts.conversationId, clientId) as { id: string } | undefined;
+    if (duplicate) return this.getMessage(duplicate.id)!;
+    const isReply = opts.part.startsWith('reply:');
+    const assistant = isReply || opts.part === 'ack';
+    const now = new Date().toISOString();
+    const message = this.insertPublicationInTx({
+      ...opts, now, clientMessageId: clientId,
+      speaker: assistant ? 'assistant' : 'system', kind: assistant ? 'text' : 'system',
+      source: isReply ? 'assistant_publish' : assistant ? 'heartbeat_ack'
+        : opts.part === 'card' && opts.chatRevealBoundary ? HEARTBEAT_CHAT_REVEAL_SOURCE : 'heartbeat_host',
+    });
+    if (isReply) this.activity?.noteRealPublication(opts.conversationId, message.id, 1, now);
+    return message;
+  }
+
+  private insertPublicationInTx(opts: {
+    conversationId: string; turnId: string | null; content: string; speaker: 'assistant' | 'system';
+    kind?: MessageKind; clientMessageId?: string; source: string; now: string; attachments?: MessageAttachmentInput[];
+  }): MessageDto {
+    const id = genId('msg');
+    const kind = opts.kind ?? 'text';
+    const { sequence } = this.db.prepare('SELECT COALESCE(MAX(sequence),0)+1 AS sequence FROM messages WHERE conversation_id=?')
+      .get(opts.conversationId) as { sequence: number };
+    this.db.prepare(`
+      INSERT INTO messages(id,conversation_id,sequence,speaker,turn_id,kind,client_message_id,current_revision,published_at,created_at)
+      VALUES(?,?,?,?,?,?,?,1,?,?)
+    `).run(id, opts.conversationId, sequence, opts.speaker, opts.turnId, kind, opts.clientMessageId ?? null, opts.now, opts.now);
+    const attachments = opts.attachments ?? [];
+    this.insertRevision({ messageId: id, revision: 1, kind, content: opts.content,
+      occurredAt: opts.now, receivedAt: opts.now, source: opts.source, fingerprint: messageFingerprint(opts.content, attachments) });
+    const insertAttachment = this.db.prepare(`
+      INSERT INTO message_attachments(message_id,revision,position,asset_id,presentation,caption,derived_text,derived_source,created_at)
+      VALUES(?,?,?,?,?,?,NULL,NULL,?)
+    `);
+    attachments.forEach((attachment, index) =>
+      insertAttachment.run(id, 1, index, attachment.asset_id, attachment.presentation, attachment.caption ?? null, opts.now));
+    if (opts.source !== 'heartbeat_host' && opts.source !== HEARTBEAT_CHAT_REVEAL_SOURCE) {
+      this.insertOutbox(`archive:${id}:1`, { message_id: id }, opts.now);
+    }
+    return this.getMessage(id)!;
   }
 
   listMessages(opts: { conversationId: string; afterSequence?: number; beforeSequence?: number; limit?: number; latest?: boolean }): MessageDto[] {
@@ -402,39 +441,39 @@ export class MessageService {
     if (opts.latest) {
       const rows = this.db
         .prepare(
-          `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+          `SELECT ${MESSAGE_COLUMNS}
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           LEFT JOIN turns t ON t.id = m.turn_id
            WHERE m.conversation_id = ?
            ORDER BY m.sequence DESC LIMIT ?`,
         )
         .all(opts.conversationId, limit) as MessageRow[];
-      return rows.reverse().map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+      return rows.reverse().map((row) => rowToDto(this.db, row));
     }
     // F-J-48（联合审计 2026-10-06）：beforeSequence=反向翻页（历史"加载更早"）——
     // 取 sequence < before 的最新 limit 条后翻回升序，与 after 语义对偶
     if (opts.beforeSequence !== undefined) {
       const older = this.db
         .prepare(
-          `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                  r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+          `SELECT ${MESSAGE_COLUMNS}
            FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+           LEFT JOIN turns t ON t.id = m.turn_id
            WHERE m.conversation_id = ? AND m.sequence < ?
            ORDER BY m.sequence DESC LIMIT ?`,
         )
         .all(opts.conversationId, opts.beforeSequence, limit) as MessageRow[];
-      return older.reverse().map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+      return older.reverse().map((row) => rowToDto(this.db, row));
     }
     const rows = this.db
       .prepare(
-        `SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-                r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+        `SELECT ${MESSAGE_COLUMNS}
          FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
+         LEFT JOIN turns t ON t.id = m.turn_id
          WHERE m.conversation_id = ? AND m.sequence > ?
          ORDER BY m.sequence LIMIT ?`,
       )
       .all(opts.conversationId, opts.afterSequence ?? 0, limit) as MessageRow[];
-    return rows.map((row) => rowToDto(row, attachmentsFor(this.db, row.id, row.revision)));
+    return rows.map((row) => rowToDto(this.db, row));
   }
 
   /** Bounded UI history with global sequence cursors. Date lookup anchors at
@@ -469,9 +508,9 @@ export class MessageService {
       conditions.push('m.sequence > ?'); parameters.push(opts.afterSequence ?? 0);
     }
     const rows = this.db.prepare(`
-      SELECT m.id, m.conversation_id, m.sequence, m.speaker, m.turn_id, m.kind, m.current_revision, m.published_at, m.created_at,
-        r.revision, r.content, r.content_hash, r.kind AS rkind, r.occurred_at, r.received_at, r.supersedes_revision, r.token_estimate_json
+      SELECT ${MESSAGE_COLUMNS}
       FROM messages m JOIN message_revisions r ON r.message_id=m.id AND r.revision=m.current_revision
+      LEFT JOIN turns t ON t.id = m.turn_id
       WHERE ${conditions.join(' AND ')} ORDER BY m.sequence ${descending ? 'DESC' : 'ASC'} LIMIT ?
     `).all(...parameters, limit) as MessageRow[];
     if (!rows.length) return empty;
@@ -482,7 +521,7 @@ export class MessageService {
         EXISTS(SELECT 1 FROM messages WHERE conversation_id=? AND sequence>?) AS later
     `).get(opts.conversationId, first, opts.conversationId, last) as { earlier: number; later: number };
     return {
-      messages: rows.map(row => rowToDto(row, attachmentsFor(this.db, row.id, row.revision))),
+      messages: rows.map(row => rowToDto(this.db, row, true)),
       has_earlier: Boolean(bounds.earlier), has_later: Boolean(bounds.later),
       before_sequence: first, after_sequence: last,
       has_more: Boolean(descending ? bounds.earlier : bounds.later), timezone: 'Asia/Shanghai',
@@ -502,6 +541,8 @@ type MessageRow = {
   sequence: number;
   speaker: 'owner' | 'assistant' | 'system';
   turn_id: string | null;
+  turn_trigger: string | null;
+  client_message_id: string | null;
   kind: string;
   current_revision: number;
   published_at: string | null;
@@ -517,8 +558,31 @@ type MessageRow = {
 };
 
 type AttachmentRow = { asset_id: string; presentation: string; caption: string | null; derived_text: string | null; derived_source: string | null };
-function rowToDto(r: MessageRow, attachments: AttachmentRow[] = []): MessageDto {
+function rowToDto(db: Db, r: MessageRow, includePublicationBreaks = false): MessageDto {
+  // A later text revision can straddle another assistant publication (e.g. a voice
+  // message). Expose only the original prefix lengths needed to place that sibling.
+  const breaks = includePublicationBreaks && r.speaker === 'assistant' && r.kind === 'text' && r.revision > 1 && r.turn_id
+    ? db.prepare(`SELECT sibling.id AS before_message_id,
+          (SELECT length(rtrim(prior.content, char(10))) FROM message_revisions prior
+           WHERE prior.message_id = ? AND prior.rowid < first.rowid ORDER BY prior.revision DESC LIMIT 1) AS end_char
+        FROM message_revisions first JOIN messages sibling ON sibling.id = first.message_id
+        WHERE first.rowid > (SELECT rowid FROM message_revisions WHERE message_id = ? AND revision = 1)
+          AND first.rowid < (SELECT rowid FROM message_revisions WHERE message_id = ? AND revision = ?)
+          AND first.revision = 1 AND sibling.turn_id = ? AND sibling.speaker = 'assistant'
+        ORDER BY first.rowid`).all(r.id, r.id, r.id, r.revision, r.turn_id) as NonNullable<MessageDto['publication_breaks']>
+    : [];
+  const attachments = attachmentsFor(db, r.id, r.revision);
+  const heartbeatNotice = r.speaker === 'system' && r.turn_id
+    ? /^heartbeat:([\w-]+):(invite|card|decline)$/.exec(r.client_message_id ?? '') : null;
+  const heartbeat: MessageDto['heartbeat'] = heartbeatNotice
+    ? heartbeatNotice[2] === 'invite' ? 'invite' : 'progress'
+    : r.speaker === 'assistant' && r.turn_trigger === 'cache_keepalive' ? 'assistant' : undefined;
   return {
+    ...(breaks.length ? { publication_breaks: breaks } : {}),
+    ...(heartbeat ? { heartbeat } : {}),
+    // A card revealed while chatting belongs to an ordinary turn, not to a heartbeat turn.
+    ...(heartbeatNotice?.[2] === 'card' ? { heartbeat_card: { run_id: heartbeatNotice[1]!,
+      ...(r.turn_trigger === 'cache_keepalive' ? {} : { origin: 'chat' as const }) } } : {}),
     id: r.id,
     conversation_id: r.conversation_id,
     sequence: r.sequence,

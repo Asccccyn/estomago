@@ -2,6 +2,7 @@
 // 自 server/http.ts 逐字搬迁：路径/方法/认证顺序/响应与错误码逐字保持（Siren 内部凭据不进前端）。
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json, readJson } from '../http-leaf.ts';
+import { ensureInviteHandoff } from '../../modules/voice/call-service.ts';
 import type { RequestDeps } from '../http.ts';
 import { SirenTranscriptionError, type SirenCallAudioTurn } from '../../integrations/siren/adapter.ts';
 import { serveAudioContent } from './assets.ts';
@@ -45,6 +46,8 @@ if (route === 'POST /api/v1/calls/dial') {
   const id = `dial_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const nowIso = new Date().toISOString();
   d.db.prepare("INSERT INTO dial_requests(id,conversation_id,state,ttl_ms,analysis_mode,created_at,updated_at) VALUES (?,'primary','pending',?,?,?,?)").run(id, DIAL_DEFAULT_TTL_MS, dialMode, nowIso, nowIso);
+  // RB01（复审 20261106）：响铃即通话活动开始——统一触发 Sol 浮现作业失效（含在途 preparing 中止）
+  d.surfacing?.cancelForActiveCall?.('primary');
   // 告诉char（程序事实轮，同串行链；他闲着就立刻收到）
   try {
     // B5（联合审计 2026-10-27，A08）：提示去掉无依据的强制说明——拒绝后说与否由他自主决定
@@ -158,6 +161,10 @@ if (route === 'POST /api/v1/calls') {
   const mode = rawBody.analysis_mode === 'deep_listen' ? 'deep_listen' : 'ordinary';
   d.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,?,'active',?,?,?)")
     .run(created.callId, rawBody.conversation_id, new Date().toISOString(), created.expiresAt ?? null, mode);
+  // P3（U05）：通话进入活动范围（建立/准备期起）——取消该会话在途 Sol 浮现作业
+  d.surfacing?.cancelForActiveCall?.(rawBody.conversation_id);
+  // RB2-01：建呼即通话活动事实——该会话的邀请投影收口（活动由 voice_calls 承载）
+  d.db.prepare("UPDATE voice_invites SET state='ended', ended_at=? WHERE conversation_id=? AND state='pending'").run(new Date().toISOString(), rawBody.conversation_id);
   return json(res, 200, { call_id: created.callId, ws_url: created.wsUrl, token: created.token, ...(created.expiresAt ? { expires_at: created.expiresAt } : {}), memory_only: true });
 }
 const estCallEnd = /^DELETE \/api\/v1\/calls\/([^/]+)$/.exec(route);
@@ -182,6 +189,9 @@ if (estCallEnd) {
       mediaClose = 'siren_unavailable';
     }
     d.db.prepare("UPDATE voice_calls SET state='ended', ended_at=? WHERE call_id=?").run(new Date().toISOString(), callId);
+    // F01（四仓审计 20261104）：本端点=挂断命令 + est 投影收口，**不再登记"通话已结束"事实**——
+    // requestHangup 只是可取消的 linger 意图（S drain 期间仍可接受新输入），不能凭意图写真事实。
+    // 确认终态的事实登记统一由 Siren lifecycle 回调与宿主对账走 endCallConfirmed（call-service.ts）。
     d.callReplyLinks?.wake(); // 通话收口：最终媒体关联拉取（恢复兜底仍走 worker 周期）
   }
   return json(res, 200, { call_id: callId, state: 'ended', media_close: mediaClose,
@@ -204,6 +214,13 @@ if (inviteAction) {
   if (!d.sirenCall) return json(res, 503, { error: { code: 'siren_unconfigured', message: 'Siren 通话服务未配置' } });
   try {
     const out = await d.sirenCall.transitionInvite(decodeURIComponent(inviteAction[1]!), inviteAction[2] === 'accept' ? 'accept' : 'decline');
+    // 邀请镜像只表示响铃；接听后的准备活动由实际 handoff 执行位承担。
+    const inviteState = out?.['state'] as string | undefined;
+    const inviteId = decodeURIComponent(inviteAction[1]!);
+    if (inviteState && inviteState !== 'pending') {
+      d.db.prepare("UPDATE voice_invites SET state='ended', ended_at=? WHERE invite_id=? AND state='pending'")
+        .run(new Date().toISOString(), inviteId);
+    }
     // F-02（2026-10-25）+R-03（复审 2026-10-26/二）：接听交接在这里收口——
     // 邀请落定 accepted 后由宿主建 Siren 通话（内部凭据不进前端），连接信息随本次
     // 响应交付；前端不再另起"她→他"反向 dial。归属合同（invite_call_handoffs）：
@@ -214,10 +231,9 @@ if (inviteAction) {
     //   Siren register 通知）的通话如实告知"连接信息无法重新交付"且不动 voice_calls；
     //   从未连接且 token 过期=该 call 永不可连，才收口（有事实依据的清孤儿）。
     if (inviteAction[2] === 'accept' && (out?.['state'] as string | undefined) === 'accepted') {
-      const inviteId = decodeURIComponent(inviteAction[1]!);
       let createdNow = false;
       try {
-        createdNow = await ensureInviteHandoff(inviteId, d);
+        createdNow = await ensureInviteHandoff(inviteId, 'primary', { db: d.db, sirenCall: d.sirenCall, surfacing: d.surfacing });
       } catch { /* 首次建呼失败：无归属，走下方如实分支 */ }
       const prior = d.db.prepare('SELECT call_id, ws_url, call_token, expires_at FROM invite_call_handoffs WHERE invite_id=?').get(inviteId) as { call_id: string; ws_url: string; call_token: string; expires_at: string | null } | undefined;
       if (!prior) {
@@ -249,30 +265,4 @@ if (inviteAction) {
     return json(res, 502, { error: { code: 'siren_invite_transition_failed', message: String((err as Error).message ?? err).slice(0, 120) } });
   }
 }
-}
-
-/** R-03（复审二问题A）：同一邀请的首次建呼唯一执行——宿主单进程内并发接听
- *  （双页面/双设备同刻各发首次 accept）由该 gate 串行化：第一个请求执行建呼并写
- *  归属，其余请求等待其完成后按既有归属消费。归属行主键唯一（INSERT 非 REPLACE，
- *  不覆盖），跨进程竞态下输家的 INSERT 抛错、如实走建呼失败分支，不产生第二归属。 */
-const inviteHandoffGates = new Map<string, Promise<boolean>>();
-async function ensureInviteHandoff(inviteId: string, d: RequestDeps): Promise<boolean> {
-  const existing = d.db.prepare('SELECT 1 FROM invite_call_handoffs WHERE invite_id=?').get(inviteId);
-  if (existing) return false;
-  let gate = inviteHandoffGates.get(inviteId);
-  if (!gate) {
-    gate = (async () => {
-      // 双检：进入 gate 前可能已被并发赢家写归属
-      const again = d.db.prepare('SELECT 1 FROM invite_call_handoffs WHERE invite_id=?').get(inviteId);
-      if (again) return false;
-      const created = await d.sirenCall!.createCall('primary');
-      if (!created.ok) throw new Error(created.code);
-      d.db.prepare('INSERT INTO invite_call_handoffs(invite_id,call_id,ws_url,call_token,expires_at,created_at) VALUES (?,?,?,?,?,?)')
-        .run(inviteId, created.callId, created.wsUrl, created.token, created.expiresAt ?? null, new Date().toISOString());
-      d.db.prepare("INSERT OR REPLACE INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,?,'active',?,?,?)").run(created.callId, 'primary', new Date().toISOString(), created.expiresAt ?? null, 'ordinary');
-      return true;
-    })().finally(() => { if (inviteHandoffGates.get(inviteId) === gate) inviteHandoffGates.delete(inviteId); }) as Promise<boolean>;
-    inviteHandoffGates.set(inviteId, gate);
-  }
-  return await gate;
 }

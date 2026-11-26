@@ -50,7 +50,7 @@ export function canonicalize(payload: unknown): string {
   payload = structuredClone(payload);
   // 她 1021 P2：time_context 纯文本段体（分钟级时钟=挥发）在 stringify 前
   // 归一化（单层正则；旧 JSON 形态由下方七键规则处理）
-  const NEW_TC = /\[time_context\]（[^）]*）\n(?:user_gap: PT(?:\d+H)?(?:\d+M)?\n)?\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) UTC(?:[+-]\d+(?::\d+)?)?/g;
+  const NEW_TC = /\[time_context\](?:（[^）]*）)?\n(?:user_gap: PT(?:\d+H)?(?:\d+M)?\n)?\d{4}-\d{2}-\d{2} \d{2}:\d{2} (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) UTC(?:[+-]\d+(?::\d+)?)?/g;
   const msgs = (payload as { messages?: Array<{ content?: unknown }> }).messages;
   if (Array.isArray(msgs)) {
     for (const m of msgs) {
@@ -98,7 +98,7 @@ function compose(root: string, transport: OrTransport, log: Array<Record<string,
   const messages = new MessageService(db, null); // surfacing 关=生产现状
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint, events: events });

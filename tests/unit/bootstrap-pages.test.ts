@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bootstrapCall, completeBootstrapPages, BootstrapPagingError } from '../../apps/host/src/integrations/mariposa/bootstrap-pages.ts';
 import { MariposaClient, type MariposaCallResult, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { WindowBootstrapMachine } from '../../apps/host/src/runtime/window-bootstrap.ts';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -24,7 +24,8 @@ function noMood(item: Record<string, unknown>) {
   for(const key of ['mood_text','mood_text_next','mood_text_truncated','mood_text_total_chars']) assert.equal(Object.hasOwn(item,key),false,`Remove incomplete ${key}`);
 }
 
-const callBootstrap = (TurnSupervisor.prototype as unknown as { windowBootstrap: (id: string, signal?: AbortSignal) => Promise<string | null> }).windowBootstrap;
+// R3（2026-11-07）：分页机已迁 window-bootstrap.ts——直接对机器原型取方法（假宿主形状同步更新）
+const callBootstrap = (host: WindowBootstrapMachine, id: string, signal?: AbortSignal) => (host as unknown as { windowBootstrap: (id: string, signal?: AbortSignal) => Promise<string | null> }).windowBootstrap.call(host, id, signal);
 // R1′ 夹具修复（2026-10-23）：e423220 起 windowBootstrap 经 renderInitialVisibleText(d.db)
 // 读取 runtime_settings——假宿主提供真实迁移 db（只读共享单例，无跨测试写）
 import {makeDb, tempRoot } from '../helpers.ts';
@@ -33,7 +34,9 @@ function hostFor(transport: MariposaTransport) {
   const warnings: unknown[] = [], observed: Record<string,unknown>[] = [], resolved: unknown[][] = [];
   const client = new MariposaClient({ transport });
   const alerts = { observe: (input:Record<string,unknown>) => { observed.push(input); return 'synthetic_alert'; }, resolve: (...args:unknown[]) => { resolved.push(args); return true; } };
-  return {host:{d:{db:initialToolsDb,bootstrap:client,events:{publish:(_kind:string,event:unknown)=>warnings.push(event)},alerts},bootstrapByWindow:new Map<string,string>(),toolCatalogSource:()=>({currentCatalog:()=>[]})},warnings,observed,resolved};
+  // R4b/episode 批：机器新增编排方法，假宿主改用真机器实例（原型 .call 不再适用）
+  const host = new WindowBootstrapMachine({ bootstrap: client, events: { publish: (_kind: string, event: unknown) => warnings.push(event) } as never, alerts } as never);
+  return { host, warnings, observed, resolved };
 }
 function unavailable(text: string | null) {
   assert.equal(typeof text,'string');
@@ -218,9 +221,9 @@ test('supervisor caches only complete success and does not change ordinary succe
     if(capability==='bootstrap.get'){if(args.loaded_snapshot_id)return validSnapshot(String(args.loaded_snapshot_id));gets++;return success(moodPacket());}
     pages++;return success(moodPage());
   });
-  const first=await callBootstrap.call(host,'complete');assert.ok(first?.includes('甲😀乙\n'));assert.ok(first?.includes('PRIVATE_I_KEEP'));assert.ok(first?.includes('PRIVATE_PLAN_KEEP'));
-  assert.equal(await callBootstrap.call(host,'complete'),first);assert.equal(gets,1);assert.equal(pages,1);
-  await callBootstrap.call(host,'another');assert.equal(gets,2);assert.equal(pages,2);assert.deepEqual(warnings,[]);
+  const first=await callBootstrap(host,'complete');assert.ok(first?.includes('甲😀乙\n'));assert.ok(first?.includes('PRIVATE_I_KEEP'));assert.ok(first?.includes('PRIVATE_PLAN_KEEP'));
+  assert.equal(await callBootstrap(host,'complete'),first);assert.equal(gets,1);assert.equal(pages,1);
+  await callBootstrap(host,'another');assert.equal(gets,2);assert.equal(pages,2);assert.deepEqual(warnings,[]);
 });
 
 test('supervisor validates a partial snapshot, keeps I/plans, omits failed mood, and retries next call without caching',async()=>{
@@ -232,10 +235,10 @@ test('supervisor validates a partial snapshot, keeps I/plans, omits failed mood,
     }
     pages++;return failPage?failure('HTTP_503',503):success(moodPage());
   });
-  const first=await callBootstrap.call(host,'partial');assert.ok(first?.includes('PRIVATE_I_KEEP'));assert.ok(first?.includes('PRIVATE_PLAN_KEEP'));assert.match(first!,/心情.*未完整取得|心情.*未全载|未全载.*心情/);
-  assert.equal(first!.includes('甲😀'),false);assert.equal(host.bootstrapByWindow.has('partial'),false);assert.equal(validations,1);assert.equal(pages,2);
+  const first=await callBootstrap(host,'partial');assert.ok(first?.includes('PRIVATE_I_KEEP'));assert.ok(first?.includes('PRIVATE_PLAN_KEEP'));assert.match(first!,/心情.*未完整取得|心情.*未全载|未全载.*心情/);
+  assert.equal(first!.includes('甲😀'),false);assert.equal((host as any).take('partial'),undefined,'6895224 后部分交付入缓存（complete:false 供 coverage 计账），take 不得放行');assert.equal(validations,1);assert.equal(pages,2);
   assert.ok(observed.length>0);assert.equal(observed.at(-1)?.severity??'warning','warning');privateDiagnostics(warnings,observed);
-  failPage=false;const recovered=await callBootstrap.call(host,'partial');assert.ok(recovered?.includes('甲😀乙\n'));assert.equal(gets,2);assert.equal(host.bootstrapByWindow.has('partial'),true);assert.ok(resolved.length>0);
+  failPage=false;const recovered=await callBootstrap(host,'partial');assert.ok(recovered?.includes('甲😀乙\n'));assert.equal(gets,2);assert.equal((host as any).byWindow.get('partial')?.complete,true);assert.ok(resolved.length>0);
 });
 
 test('invalid/failed snapshot validation cannot preserve other private sections',async t=>{
@@ -247,7 +250,7 @@ test('invalid/failed snapshot validation cannot preserve other private sections'
   ];
   for(const [name,response] of cases)await t.test(name,async()=>{
     const {host,warnings,observed}=hostFor(async(capability,args)=>capability==='bootstrap.get'?(args.loaded_snapshot_id?response:success(moodPacket())):failure('HTTP_503',503));
-    unavailable(await callBootstrap.call(host,'validation-failed'));assert.equal(host.bootstrapByWindow.has('validation-failed'),false);assert.equal(observed.at(-1)?.severity,'critical');privateDiagnostics(warnings,observed);
+    unavailable(await callBootstrap(host,'validation-failed'));assert.equal((host as any).byWindow.has('validation-failed'),false);assert.equal(observed.at(-1)?.severity,'critical');privateDiagnostics(warnings,observed);
   });
 });
 
@@ -258,7 +261,7 @@ test('explicit next authorization denial never becomes a local gap even if get v
       if(capability==='bootstrap.get'){if(args.loaded_snapshot_id){validations++;return validSnapshot();}return success(moodPacket());}
       pages++;return failure('DENIED',status);
     });
-    unavailable(await callBootstrap.call(host,'denied'));assert.equal(pages,1);assert.equal(validations,0);assert.equal(observed.at(-1)?.severity,'critical');privateDiagnostics(warnings,observed);
+    unavailable(await callBootstrap(host,'denied'));assert.equal(pages,1);assert.equal(validations,0);assert.equal(observed.at(-1)?.severity,'critical');privateDiagnostics(warnings,observed);
   });
 });
 
@@ -271,7 +274,7 @@ test('a stale snapshot rebuilds the entire package once and never mixes old priv
     }
     pages++;return args.snapshot_id==='snap_1'?failure('SNAPSHOT_STALE',409):success(moodPage({snapshot_id:'snap_2'}));
   });
-  const text=await callBootstrap.call(host,'stale-then-good');assert.equal(gets,2);assert.equal(pages,2);assert.ok(text?.includes('NEW_I'));assert.ok(text?.includes('NEW_PLAN'));assert.equal(text?.includes('OLD_I_MUST_NOT_SURVIVE'),false);assert.equal(text?.includes('OLD_PLAN_MUST_NOT_SURVIVE'),false);assert.equal(host.bootstrapByWindow.has('stale-then-good'),true);privateDiagnostics(warnings,observed);
+  const text=await callBootstrap(host,'stale-then-good');assert.equal(gets,2);assert.equal(pages,2);assert.ok(text?.includes('NEW_I'));assert.ok(text?.includes('NEW_PLAN'));assert.equal(text?.includes('OLD_I_MUST_NOT_SURVIVE'),false);assert.equal(text?.includes('OLD_PLAN_MUST_NOT_SURVIVE'),false);assert.equal((host as any).byWindow.has('stale-then-good'),true);privateDiagnostics(warnings,observed);
 });
 
 test('stale final validation rebuilds instead of retaining I/plans from the rejected snapshot',async()=>{
@@ -283,13 +286,13 @@ test('stale final validation rebuilds instead of retaining I/plans from the reje
     }
     return failure('HTTP_503',503);
   });
-  const text=await callBootstrap.call(host,'validation-stale');assert.equal(gets,2);assert.equal(validations,2);assert.ok(text?.includes('NEW_VERIFY_I'));assert.ok(text?.includes('NEW_VERIFY_PLAN'));assert.equal(text?.includes('OLD_VERIFY_I'),false);assert.equal(text?.includes('OLD_VERIFY_PLAN'),false);assert.equal(host.bootstrapByWindow.has('validation-stale'),false);
+  const text=await callBootstrap(host,'validation-stale');assert.equal(gets,2);assert.equal(validations,2);assert.ok(text?.includes('NEW_VERIFY_I'));assert.ok(text?.includes('NEW_VERIFY_PLAN'));assert.equal(text?.includes('OLD_VERIFY_I'),false);assert.equal(text?.includes('OLD_VERIFY_PLAN'),false);assert.equal((host as any).take('validation-stale'),undefined,'终验陈旧重建后仍以 complete:false 入缓存（mood 仍失败），不得作为完整包复用');
 });
 
 test('persistent stale performs at most two get attempts then returns a critical unavailable marker',async()=>{
   let gets=0,pages=0;
   const {host,warnings,observed}=hostFor(async capability=>{if(capability==='bootstrap.get'){gets++;return success(moodPacket());}pages++;return failure('SNAPSHOT_STALE',409);});
-  unavailable(await callBootstrap.call(host,'stale'));assert.equal(gets,2);assert.equal(pages,2);assert.equal(host.bootstrapByWindow.has('stale'),false);assert.equal(observed.at(-1)?.severity,'critical');privateDiagnostics(warnings,observed);
+  unavailable(await callBootstrap(host,'stale'));assert.equal(gets,2);assert.equal(pages,2);assert.equal((host as any).byWindow.has('stale'),false);assert.equal(observed.at(-1)?.severity,'critical');privateDiagnostics(warnings,observed);
 });
 
 test('stale during I continuation also rebuilds the whole snapshot, not just the I suffix',async()=>{
@@ -302,7 +305,7 @@ test('stale during I continuation also rebuilds the whole snapshot, not just the
     assert.equal(args.section,'i');
     return args.snapshot_id==='i_snap_1'?failure('SNAPSHOT_STALE',409):success({...metadata,snapshot_id:'i_snap_2',section:'i',content:'尾段',offset:12,total_chars:14,next_cursor:null});
   });
-  const text=await callBootstrap.call(host,'i-stale');assert.equal(gets,2);assert.ok(text?.includes('NEW_I_PREFIX尾段'));assert.ok(text?.includes('NEW_I_PLAN'));assert.equal(text?.includes('OLD_I_PREFIX'),false);assert.equal(text?.includes('OLD_I_PLAN'),false);
+  const text=await callBootstrap(host,'i-stale');assert.equal(gets,2);assert.ok(text?.includes('NEW_I_PREFIX尾段'));assert.ok(text?.includes('NEW_I_PLAN'));assert.equal(text?.includes('OLD_I_PREFIX'),false);assert.equal(text?.includes('OLD_I_PLAN'),false);
 });
 
 test('Stop during snapshot validation returns null without alert/cache, even when a response arrives late',async()=>{
@@ -315,15 +318,15 @@ test('Stop during snapshot validation returns null without alert/cache, even whe
     }
     return failure('HTTP_503',503);
   });
-  const pending=callBootstrap.call(host,'stop-validation',controller.signal);await started;controller.abort();assert.equal(await pending,null);
-  complete(validSnapshot());await nextTick();assert.equal(host.bootstrapByWindow.has('stop-validation'),false);assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);
+  const pending=callBootstrap(host,'stop-validation',controller.signal);await started;controller.abort();assert.equal(await pending,null);
+  complete(validSnapshot());await nextTick();assert.equal((host as any).byWindow.has('stop-validation'),false);assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);
 });
 
 test('uncooperative initial get obeys parent Stop and a deadline produces an unavailable marker',async()=>{
   const controller=new AbortController();let finish!:(value:MariposaCallResult)=>void;
   const {host,warnings,observed}=hostFor(()=>new Promise(resolve=>{finish=resolve;}));
-  const pending=callBootstrap.call(host,'stop-initial',controller.signal);await nextTick();controller.abort();assert.equal(await pending,null);finish(success(moodPacket()));await nextTick();assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal(host.bootstrapByWindow.size,0);
-  const timed=hostFor(()=>new Promise(()=>{}));unavailable(await callBootstrap.call(timed.host,'deadline',AbortSignal.timeout(5)));assert.equal(timed.observed.at(-1)?.severity,'critical');
+  const pending=callBootstrap(host,'stop-initial',controller.signal);await nextTick();controller.abort();assert.equal(await pending,null);finish(success(moodPacket()));await nextTick();assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal((host as any).byWindow.size,0);
+  const timed=hostFor(()=>new Promise(()=>{}));unavailable(await callBootstrap(timed.host,'deadline',AbortSignal.timeout(5)));assert.equal(timed.observed.at(-1)?.severity,'critical');
 });
 
 test('retired anniversary fields are ignored while the independent anniversary memory category remains',async()=>{
@@ -334,10 +337,10 @@ test('retired anniversary fields are ignored while the independent anniversary m
     assert.equal(args.section,'memory_item');return success(moodPage());
   };
   const out=await completeBootstrapPages(new MariposaClient({transport}),packet);assert.equal(Object.hasOwn(out.data,'anniversaries'),false);assert.deepEqual(itemsOf(out.data)[0]!.categories,['anniversary']);
-  const {host,warnings}=hostFor(transport);const text=await callBootstrap.call(host,'retired');assert.ok(text?.includes('纪念分类事件保留'));assert.equal(text?.includes('LEGACY_ANNIV_CANARY'),false);assert.deepEqual(warnings,[]);
+  const {host,warnings}=hostFor(transport);const text=await callBootstrap(host,'retired');assert.ok(text?.includes('纪念分类事件保留'));assert.equal(text?.includes('LEGACY_ANNIV_CANARY'),false);assert.deepEqual(warnings,[]);
 });
 
-test('I, event and words continuations finish before optional moods while presentation order stays unchanged',async()=>{
+test('I, event and words continuations finish before optional moods and I leads the opening',async()=>{
   const packet=moodPacket();
   Object.assign(packet.memory_days.items[0],{
     event_text:'事😀',event_text_truncated:true,event_text_total_chars:4,
@@ -355,12 +358,100 @@ test('I, event and words continuations finish before optional moods while presen
     if(field==='i')return success({...metadata,section:'i',content:'当前',offset:2,total_chars:4,next_cursor:null});
     assert.equal(field,'mood_text');return success(moodPage());
   });
-  const text=await callBootstrap.call(host,'ordered');
+  const text=await callBootstrap(host,'ordered');
   assert.equal(calls.at(-1),'mood_text');assert.deepEqual(new Set(calls.slice(0,-1)),new Set(['i','event_text','our_words']));
   assert.ok(text?.includes('事😀经过'));assert.ok(text?.includes('我😀当前'));assert.ok(text?.includes('后续原话'));
-  const moodAt=text!.indexOf('心情文字：甲😀乙\n'), eventAt=text!.indexOf('事件：事😀经过'), planAt=text!.indexOf('PRIVATE_PLAN_KEEP'), iAt=text!.indexOf('I（当前的话）：我😀当前');
-  assert.ok(moodAt>=0&&moodAt<eventAt&&eventAt<planAt&&planAt<iAt,'Only acquisition order changes; normal output keeps its established order');
-  assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal(host.bootstrapByWindow.has('ordered'),true);
+  const moodAt=text!.indexOf('心情　甲😀乙\n'), eventAt=text!.indexOf('事😀经过'), planAt=text!.indexOf('PRIVATE_PLAN_KEEP'), iAt=text!.indexOf('我😀当前');
+  assert.ok(iAt>=0&&iAt<moodAt&&moodAt<eventAt&&eventAt<planAt, 'I comes before memories and plans follow them');
+  assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal((host as any).byWindow.has('ordered'),true);
+});
+
+test('opening orders event dates without disturbing same-day order or word coverage', async () => {
+  const word = { resource_ref: 'word:synthetic', content_version: '1', start_char: 0, end_char: 4 };
+  const recent = { memory_id: 'recent', memory_date: '2026-11-19', original_title: '最新记忆' };
+  const first = { memory_id: 'first', memory_date: '2026-11-17', original_title: '同一天第一条', version: 3, event_text: '事😀经过', our_words: [{ speaker: 'jiaming', texts: ['合成原话'] }], our_words_coverage: [word] };
+  const second = { memory_id: 'second', memory_date: '2026-11-17', original_title: '同一天第二条' };
+  const packet = { ...metadata, i: { content: '合成 I' }, plans: { items: [{ title: '合成计划' }] }, memory_days: { items: [recent, first, second], dates: ['2026-11-19','2026-11-17','2026-11-18'], total_in_window: 3, next_cursor: null } };
+  const { host } = hostFor(async () => success(packet));
+
+  const text = await host.windowBootstrap('sorted', undefined, undefined, '合成锚点');
+  assert.ok(text);
+  const ordered = ['合成 I', '我们的记忆锚点', '合成锚点', '近三天的记忆', '2026-11-17', '同一天第一条', '记忆 ID first · 版本 3', 'char：合成原话', '同一天第二条', '2026-11-18', '这天暂时没有存下的记忆。', '2026-11-19', '最新记忆', '合成计划'];
+  let previous = -1;
+  for (const part of ordered) {
+    const index = text.indexOf(part);
+    assert.ok(index > previous, `Expected ${part} after the previous block`);
+    previous = index;
+  }
+  assert.deepEqual(host.coverageFor('sorted', [{ role: 'system', content: [{ type: 'text', text }] }])?.window_coverage, [
+    { resource_ref: 'memory:first', content_version: '3', start_char: 0, end_char: 4 }, word,
+  ]);
+  assert.match(text, /memory_words_write/);
+});
+
+test('opening follows empty first page and later bucket cursors on the same snapshot', async () => {
+  const firstCursor = { memory_before_date: '2026-11-19', memory_last_id: '' };
+  const secondCursor = { memory_before_date: '2026-11-19', memory_last_id: 'newest' };
+  const lastCursor = { memory_before_date: '2026-11-17', memory_last_id: 'oldest' };
+  const word = { resource_ref: 'word:paged', content_version: '2', start_char: 0, end_char: 4 };
+  const bucket = (items: Record<string, unknown>[], next_cursor: Record<string, unknown>) =>
+    success({ ...metadata, section: 'memory_days', items, count: items.length, total_in_window: 2, next_cursor });
+  const { host, warnings } = hostFor(async (cap, args) => {
+    if (cap === 'bootstrap.get') {
+      assert.equal(args.loaded_snapshot_id, undefined, 'complete pages use the original snapshot without an extra validation call');
+      return success({ ...metadata, memory_days: { items: [], dates: ['2026-11-19', '2026-11-18', '2026-11-17'], next_cursor: firstCursor, total_in_window: 2 } });
+    }
+    assert.equal(cap, 'bootstrap.next');
+    assert.equal(args.snapshot_id, metadata.snapshot_id);
+    assert.equal(args.section, 'memory_days');
+    cursors.push(args.cursor);
+    if (cursors.length === 1) {
+      assert.deepEqual(args.cursor, firstCursor);
+      return bucket([{ memory_id: 'newest', memory_date: '2026-11-19', original_title: '后来发生' }], secondCursor);
+    }
+    assert.equal(cursors.length, 2, 'total_in_window prevents fetching the server cursor on a full last page');
+    assert.deepEqual(args.cursor, secondCursor);
+    return bucket([{ memory_id: 'oldest', memory_date: '2026-11-17', original_title: '先前发生', version: 2, event_text: '事件',
+      our_words: [{ speaker: 'jiaming', texts: ['分页原话'] }], our_words_coverage: [word],
+    }], lastCursor);
+  });
+  const cursors: unknown[] = [];
+  const text = await callBootstrap(host, 'memory-days-paged');
+  assert.ok(text);
+  assert.match(text, /先前发生[\s\S]*char：分页原话[\s\S]*这天暂时没有存下的记忆。[\s\S]*后来发生/);
+  assert.doesNotMatch(text, /近三天的记忆未全载/);
+  assert.deepEqual(cursors, [firstCursor, secondCursor]);
+  assert.deepEqual(warnings, []);
+  assert.equal(host.take('memory-days-paged'), text);
+  assert.deepEqual(host.coverageFor('memory-days-paged', [{ role: 'system', content: text }])?.window_coverage, [
+    { resource_ref: 'memory:oldest', content_version: '2', start_char: 0, end_char: 2 }, word,
+  ]);
+});
+
+test('opening discloses a missing bucket page without claiming either day or words are empty', async () => {
+  const packet = { ...metadata, memory_days: {
+    items: [{ memory_id: 'first-page', memory_date: '2026-11-19', original_title: '首桶' }],
+    dates: ['2026-11-17','2026-11-18','2026-11-19'], total_in_window: 2,
+    next_cursor: { memory_before_date: '2026-11-19', memory_last_id: 'first-page' },
+  } };
+  let validations = 0, continuations = 0;
+  const { host } = hostFor(async (cap, args) => {
+    if (cap === 'bootstrap.get') {
+      if (!args.loaded_snapshot_id) return success(packet);
+      validations++;
+      return validSnapshot();
+    }
+    continuations++;
+    assert.equal(args.section, 'memory_days');
+    return failure('BOOTSTRAP_UNAVAILABLE', 503);
+  });
+  const text = await callBootstrap(host, 'missing-day');
+  assert.ok(text);
+  assert.match(text, /首桶[\s\S]*近三天的记忆未全载/);
+  assert.doesNotMatch(text, /没有存下的记忆|没有另存的原话摘录/);
+  assert.equal(continuations, 1);
+  assert.equal(validations, 1, 'partial pages are checked against the same snapshot');
+  assert.equal(host.take('missing-day'), undefined, 'partial content is never cached as complete');
 });
 
 test('moods surrender the remaining preparation time so completed I and snapshot validation survive',async t=>{
@@ -378,9 +469,9 @@ test('moods surrender the remaining preparation time so completed I and snapshot
     }
     moodCalls++;return success(moodPage());
   });
-  const text=await callBootstrap.call(host,'remaining-budget');
+  const text=await callBootstrap(host,'remaining-budget');
   assert.equal(moodCalls,0);assert.equal(validations,1);assert.ok(text?.includes('我😀当前'));assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));
-  assert.equal(text?.includes('甲😀'),false);assert.equal(observed.at(-1)?.severity,'warning');assert.equal(host.bootstrapByWindow.has('remaining-budget'),false);
+  assert.equal(text?.includes('甲😀'),false);assert.equal(observed.at(-1)?.severity,'warning');assert.equal((host as any).take('remaining-budget'),undefined,'部分交付 complete:false，take 不放行');
 });
 
 test('empty first I fragment follows offset zero and reconstructs Unicode content',async()=>{
@@ -391,7 +482,7 @@ test('empty first I fragment follows offset zero and reconstructs Unicode conten
     assert.equal(args.section,'i');assert.deepEqual(args.cursor,{i_offset:0});pages++;
     return success({...metadata,section:'i',content:'我😀当前',offset:0,total_chars:4,next_cursor:null});
   });
-  const text=await callBootstrap.call(host,'empty-i');assert.equal(pages,1);assert.ok(text?.includes('I（当前的话）：我😀当前'));assert.equal(host.bootstrapByWindow.has('empty-i'),true);assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);
+  const text=await callBootstrap(host,'empty-i');assert.equal(pages,1);assert.ok(text?.includes('\n我\n'));assert.ok(text?.includes('我😀当前'));assert.equal((host as any).byWindow.has('empty-i'),true);assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);
 });
 
 test('explicit malformed I values become critical local gaps after validating the other sections',async t=>{
@@ -403,8 +494,8 @@ test('explicit malformed I values become critical local gaps after validating th
       if(capability==='bootstrap.get'){if(args.loaded_snapshot_id){validations++;return validSnapshot();}return success(packet);}
       pages++;throw new Error('Malformed initial I must not start a continuation');
     });
-    const text=await callBootstrap.call(host,'bad-i');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.equal(text?.includes('BAD_I_PRIVATE'),false);assert.equal(text?.includes('Mariposa开窗资料未取得'),false);
-    assert.equal(validations,1);assert.equal(pages,0);assert.equal(observed.at(-1)?.severity,'critical');assert.equal(host.bootstrapByWindow.has('bad-i'),false);privateDiagnostics(warnings,observed);
+    const text=await callBootstrap(host,'bad-i');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.equal(text?.includes('BAD_I_PRIVATE'),false);assert.equal(text?.includes('Mariposa开窗资料未取得'),false);
+    assert.equal(validations,1);assert.equal(pages,0);assert.equal(observed.at(-1)?.severity,'critical');assert.equal((host as any).take('bad-i'),undefined,'I 段坏的 partial 包 complete:false，take 不放行');privateDiagnostics(warnings,observed);
   });
 });
 
@@ -412,7 +503,7 @@ test('empty I with a missing required continuation is not cached as a complete e
   let validations=0;
   const packet={...metadata,memory_days:{items:[]},plans:{items:[{title:'PRIVATE_PLAN_KEEP'}]},i:{content:'',truncated:true,total_chars:4}};
   const {host,observed}=hostFor(async(capability,args)=>{assert.equal(capability,'bootstrap.get');if(args.loaded_snapshot_id){validations++;return validSnapshot();}return success(packet);});
-  const text=await callBootstrap.call(host,'i-missing-cursor');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.match(text!,/I.*未全载/);assert.equal(validations,1);assert.equal(observed.at(-1)?.severity,'critical');assert.equal(host.bootstrapByWindow.has('i-missing-cursor'),false);
+  const text=await callBootstrap(host,'i-missing-cursor');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.match(text!,/I.*未全载/);assert.equal(validations,1);assert.equal(observed.at(-1)?.severity,'critical');assert.equal((host as any).take('i-missing-cursor'),undefined,'空 I 缺续页的 partial 包不得作为完整空 I 复用');
 });
 
 test('I and event reject wrong offsets, totals and cursor progression before appending any bad suffix',async t=>{
@@ -442,8 +533,8 @@ test('I and event reject wrong offsets, totals and cursor progression before app
       if(capability==='bootstrap.get'){if(args.loaded_snapshot_id){validations++;return validSnapshot();}return success(packet);}
       assert.equal(args.section,section==='i'?'i':'memory_item');assert.deepEqual(args.cursor,cursor);pages++;return success(page);
     });
-    const text=await callBootstrap.call(host,'bad-text-page');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.equal(text?.includes('乙🦋'),false);assert.equal(text?.includes('BAD_SUFFIX'),false);assert.equal(text?.includes('甲😀乙'),false);
-    assert.equal(pages,1);assert.equal(validations,1);assert.equal(host.bootstrapByWindow.has('bad-text-page'),false);assert.equal(observed.at(-1)?.severity,section==='i'?'critical':'warning');privateDiagnostics(warnings,observed);
+    const text=await callBootstrap(host,'bad-text-page');assert.ok(text?.includes('PRIVATE_PLAN_KEEP'));assert.equal(text?.includes('乙🦋'),false);assert.equal(text?.includes('BAD_SUFFIX'),false);assert.equal(text?.includes('甲😀乙'),false);
+    assert.equal(pages,1);assert.equal(validations,1);assert.equal((host as any).take('bad-text-page'),undefined,'坏页后的 partial 包 complete:false，take 不放行');assert.equal(observed.at(-1)?.severity,section==='i'?'critical':'warning');privateDiagnostics(warnings,observed);
     if(section==='event_text')assert.ok(text?.includes('PRIVATE_I_KEEP'));
   });
 });
@@ -463,10 +554,10 @@ test('explicit malformed plan sections fail globally rather than becoming no pla
       }
       pages++;throw new Error('Malformed plans must fail before continuations');
     });
-    const text=await callBootstrap.call(host,'malformed-plans');unavailable(text);
+    const text=await callBootstrap(host,'malformed-plans');unavailable(text);
     assert.equal(text?.includes('PRIVATE_PLAN_BAD'),false);assert.equal(gets,1);assert.equal(pages,0);assert.equal(validations,0);
     assert.equal(observed.at(-1)?.severity,'critical');assert.match(JSON.stringify(warnings),/BOOTSTRAP_SHAPE_INVALID/);
-    assert.equal(host.bootstrapByWindow.has('malformed-plans'),false);privateDiagnostics(warnings,observed);assert.equal(JSON.stringify({warnings,observed}).includes('PRIVATE_PLAN_BAD'),false);
+    assert.equal((host as any).byWindow.has('malformed-plans'),false);privateDiagnostics(warnings,observed);assert.equal(JSON.stringify({warnings,observed}).includes('PRIVATE_PLAN_BAD'),false);
   });
 });
 
@@ -476,8 +567,8 @@ test('absent, null and legacy empty plans remain compatible and cache ordinary c
       assert.equal(capability,'bootstrap.get');assert.equal(args.loaded_snapshot_id,undefined);
       return success({...metadata,memory_days:{items:[]},i:{content:'PRIVATE_I_KEEP'},...extra});
     });
-    const text=await callBootstrap.call(host,'legacy-plans');assert.ok(text?.includes('PRIVATE_I_KEEP'));assert.equal(text?.includes('Mariposa开窗资料未取得'),false);
-    assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal(host.bootstrapByWindow.has('legacy-plans'),true);
+    const text=await callBootstrap(host,'legacy-plans');assert.ok(text?.includes('PRIVATE_I_KEEP'));assert.equal(text?.includes('Mariposa开窗资料未取得'),false);
+    assert.deepEqual(warnings,[]);assert.deepEqual(observed,[]);assert.equal((host as any).byWindow.has('legacy-plans'),true);
   }
 });
 
@@ -494,4 +585,27 @@ test('npm test file selectors reject unknown, outside-group and missing paths wi
     assert.match(result.stderr, /--file/);
     assert.doesNotMatch(result.stdout, /串行执行/);
   }
+});
+
+// Codex P1-6（2026-11-16）：M 真实计划续页包形——首页 items/next_cursor 在 plans 节内；
+// 续页 bootstrapNext 返回**顶层** items/next_cursor；末页 cursor={plans_offset:null}。
+// 旧实现只读 page.plans 且把任意非空对象当有效 cursor：51 条计划丢第 51 条且无提示。
+test('plans continuation reads both real packet shapes and recognizes the all-null end cursor', async () => {
+  const plan = (i: number) => ({ plan_id: `plan_${i}`, title: `计划${i}`, version: 1 });
+  const home50 = Array.from({ length: 50 }, (_, i) => plan(i + 1));
+  const { host } = hostFor(async (capability: string, payload: Record<string, unknown>) => {
+    if (capability === 'bootstrap.get') return success({ ...metadata, snapshot_id: 'snap_p16', memory_days: { items: [] }, plans: { items: home50, total: 51, next_cursor: { plans_offset: 50 } }, i: { content: 'I_P16' } });
+    if (capability === 'bootstrap.next') {
+      assert.equal(payload.section, 'plans');
+      return success({ items: [plan(51)], total: 51, next_cursor: { plans_offset: null } }); // M 真实续页：顶层 items + 全 null 末页 cursor
+    }
+    if (capability === 'bootstrap.validate') return success({ unchanged: true, snapshot_id: 'snap_p16', profile: 'estomago' });
+    return failure('CAPABILITY_NOT_FOUND', 404);
+  });
+  const text = await callBootstrap(host as never, 'room_p16');
+  assert.equal(typeof text, 'string');
+  assert.match(text!, /计划51/, '第 51 条（续页顶层包形）已载入——旧实现静默丢失');
+  assert.match(text!, /计划1/);
+  assert.doesNotMatch(text!, /还有更多未载入/, '末页全 null cursor=取尽，不打未载提示');
+  assert.doesNotMatch(text!, /总数对不上/, 'total=51 与实收一致');
 });

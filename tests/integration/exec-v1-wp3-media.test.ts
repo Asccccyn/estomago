@@ -9,6 +9,8 @@ import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import { MediaService, MediaError, sniffMime, isPublicIp } from '../../apps/host/src/media/assets.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
+import type { MariposaMediaStore } from '../../apps/host/src/integrations/mariposa/media-store.ts';
+import { MariposaMediaStoreError } from '../../apps/host/src/integrations/mariposa/media-store.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import {writeApprovedIdentity, readyRuntimePatch } from '../helpers.ts';
 import { Host } from '../../apps/host/src/app-context.ts';
@@ -118,7 +120,7 @@ test('CHAT-04：编辑正文→新修订沿用同一套附件；旧修订附件�
   db.close();
 });
 
-test('MEDIA-10：引用守卫——消息修订引用+protected/committed 引用都挡物理删除；released 不挡；If-Match 校验', async () => {
+test('MEDIA-10：引用守卫——消息修订引用+操作 pin/committed 关系都挡物理删除；released 不挡', async () => {
   const { db, media, messages } = svc();
   messages.ensureConversation('c1');
   const img = await media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-r1', createdBy: 'qiaosheng', origin: 'upload' });
@@ -127,18 +129,19 @@ test('MEDIA-10：引用守卫——消息修订引用+protected/committed 引用
   // 消息绑定引用
   messages.submitUserMessageWithTurn({ conversationId: 'c1', content: 'x', clientMessageId: 'r1', attachments: [{ asset_id: img.id, presentation: 'image' }] });
   assert.equal(media.isAssetReferenced(img.id).by_message_revisions, 1);
-  // 外部引用：protected → committed → released
-  const ref = media.registerReference({ assetId: img.id, ownerService: 'content', ownerType: 'album_entry', ownerId: 'entry-1', operationId: 'op-ref-1' });
-  assert.equal(ref.state, 'protected');
+  // 内容操作引用（P1·F06/F07 20261106）：HTTP 前 protected pin → 按权威快照 committed → 非成员 released
+  media.pinAssetForOperation({ assetId: img.id, operationKey: 'op-ref-1' });
+  assert.equal(media.isAssetReferenced(img.id).by_external_refs, 1, 'protected pin 挡物理删除（提交丢响应窗口）');
+  media.pinAssetForOperation({ assetId: img.id, operationKey: 'op-ref-1' }); // 幂等：同操作不重复 pin
   assert.equal(media.isAssetReferenced(img.id).by_external_refs, 1);
-  assert.deepEqual(media.confirmReference(ref.referenceId), { referenceId: ref.referenceId, revision: 1, state: 'committed' });
-  // 幂等重放：同 operation 再登记=原引用
-  assert.deepEqual(media.registerReference({ assetId: img.id, ownerService: 'content', ownerType: 'album_entry', ownerId: 'entry-1', operationId: 'op-ref-1' }).referenceId, ref.referenceId);
-  // 解除：revision 不匹配 → 拒；匹配 → released；released 后不再保护
-  assert.throws(() => media.releaseReference({ referenceId: ref.referenceId, expectedRevision: 99, operationId: 'op-un-1' }), (e: MediaError) => e.code === 'REVISION_CONFLICT');
-  const rel = media.releaseReference({ referenceId: ref.referenceId, expectedRevision: 1, operationId: 'op-un-1' });
-  assert.equal(rel.state, 'released');
-  assert.equal(rel.revision, 2);
+  const confirmed = media.commitContentSnapshot({ type: 'album_entry', id: 'entry-1' }, { ownerRevision: 2, assetIds: [img.id] }, 'op-ref-1');
+  assert.equal(confirmed.committed, 1, '快照成员落正式 committed 关系');
+  assert.equal(confirmed.pinsReleased, 1, '本次操作 pin 收口');
+  assert.equal(media.isAssetReferenced(img.id).by_external_refs, 1, 'committed 仍挡');
+  // 零成员快照：同 owner 非成员关系释放 → 不再挡
+  const emptied = media.commitContentSnapshot({ type: 'album_entry', id: 'entry-1' }, { ownerRevision: 3, assetIds: [] }, 'op-x');
+  assert.equal(emptied.released, 1);
+  assert.equal(media.isAssetReferenced(img.id).by_external_refs, 0, 'released 不挡');
   assert.equal(media.isAssetReferenced(img.id).by_message_revisions, 1, '消息修订引用仍在——内容删除不解除聊天引用');
   db.close();
 });
@@ -227,4 +230,165 @@ test('HTTP：上传→元数据→content(Range)→附件发送→编辑 If-Matc
   assert.equal(tooBig.status, 400); // 无 Idempotency-Key
   const garbage = await fetch(`${base}/api/v1/assets?purpose=chat_image`, { method: 'POST', headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': 'up-g', Origin: base }), body: new Uint8Array(GARBAGE) });
   assert.equal(garbage.status, 422); // 魔数不明
+});
+
+test('MEDIA-M02（包1 2026-11-15）：work=SVG/HTML 作品引用可发送——不进图片白名单，位图不冒充 work，投影走文本引用', async () => {
+  const { db, media, messages } = svc();
+  messages.ensureConversation('c1');
+  const svg = await media.saveBuffer({ bytes: Buffer.from('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><circle r="3"/></svg>'), purpose: 'creation_icon', operationId: 'op-work-1', createdBy: 'jiaming', origin: 'generated' });
+  const png = await media.saveBuffer({ bytes: PNG, purpose: 'chat_image', operationId: 'op-work-2', createdBy: 'qiaosheng', origin: 'upload' });
+  // 旧缺陷：SVG 走 presentation=image 被拒（保存成功却发不出去的根因）
+  assert.throws(() => media.validateForSend([{ asset_id: svg.id, presentation: 'image' }]), (e: MediaError) => e.code === 'ASSET_TYPE_UNSUPPORTED');
+  // work：svg 放行；png 冒充 work 拒（隔离方向不放宽）
+  media.validateForSend([{ asset_id: svg.id, presentation: 'work' }]);
+  assert.throws(() => media.validateForSend([{ asset_id: png.id, presentation: 'work' }]), (e: MediaError) => e.code === 'ASSET_TYPE_UNSUPPORTED');
+  // 真实发布链路（v71 CHECK 含 work）：附件消息可入库、投影给文本引用+沙箱预览入口而非位图块
+  const msg = messages.publishAssistantMessage({ conversationId: 'c1', turnId: 't1', content: '', clientMessageId: 'work-send-1', attachments: [{ asset_id: svg.id, presentation: 'work' }] });
+  assert.equal(msg.revision.attachments[0]!.presentation, 'work');
+  const { projectRevisionBlocks } = await import('../../apps/host/src/media/model-input.ts');
+  const proj = projectRevisionBlocks('', [{ asset_id: svg.id, presentation: 'work', caption: null, derived_text: null, derived_source: null }]);
+  assert.equal(proj.hasImage, false, '代码作品不投位图块');
+  assert.ok(proj.blocks.some((b) => b.type === 'text' && String((b as { text: string }).text).includes(`/api/v1/assets/${svg.id}/preview`)), '投影带沙箱预览入口');
+  db.close();
+});
+
+test('C3 HTTP：聊天附件放弃不进 M，部分落正保留原操作重试，共享正本保持有效', async () => {
+  const media = host.heartbeat.media;
+  const attempts: string[] = [];
+  const masterObjects = new Set<string>();
+  const pngHash = sha256Hex(PNG);
+  const jpegHash = sha256Hex(JPEG);
+  let unavailableHash: string | null = jpegHash;
+  const store = {
+    uploadBytes: async (bytes: Uint8Array) => {
+      const content_hash = sha256Hex(Buffer.from(bytes));
+      attempts.push(content_hash);
+      if (unavailableHash === content_hash) throw new MariposaMediaStoreError('UNAVAILABLE', 'M 合成不可达');
+      const deduplicated = masterObjects.has(content_hash);
+      masterObjects.add(content_hash);
+      return { content_hash, deduplicated };
+    },
+  } as unknown as MariposaMediaStore;
+  const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
+  storeSlot.mStore = store;
+  const pick = (key: string, bytes: Buffer) => fetch(`${base}/api/v1/assets?purpose=chat_image&staged=1`, { method: 'POST',
+    headers: auth({ 'Content-Type': 'application/octet-stream', 'Idempotency-Key': key, Origin: base }), body: new Uint8Array(bytes) });
+  const send = (clientMessageId: string, ...assetIds: string[]) => fetch(`${base}/api/v1/conversations/primary/messages`, { method: 'POST', headers: auth({ 'Content-Type': 'application/json', Origin: base }),
+    body: JSON.stringify({ content: '看这两张图', client_message_id: clientMessageId, attachments: assetIds.map(asset_id => ({ asset_id, presentation: 'image' })) }) });
+  const selected = async (key: string, bytes: Buffer) => {
+    const response = await pick(key, bytes);
+    assert.equal(response.status, 201);
+    const receipt = await response.json() as { asset_id: string; m_sync_state: string };
+    assert.equal(receipt.m_sync_state, 'staged');
+    return receipt.asset_id;
+  };
+  const messageCount = (key: string) => host.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_message_id = ?').get(key)?.n;
+  try {
+    const first = await selected('staged-pick-1', PNG);
+    assert.equal(await selected('staged-pick-1', PNG), first, '选中文件同键重试仍为原暂存资产');
+    const second = await selected('staged-pick-2', JPEG);
+    assert.deepEqual(attempts, []);
+    // 记录 #10 尚存的边界：第一张在 M 落正，第二张失败，E 没有正式消息。
+    const refused = await send('staged-send-1', first, second);
+    assert.equal(refused.status, 503);
+    assert.equal(((await refused.json()) as { error: { code: string } }).error.code, 'asset_master_commit_failed');
+    assert.equal(messageCount('staged-send-1'), 0);
+    assert.equal(media.getAsset(first).m_sync_state, 'synced');
+    assert.equal(media.getAsset(second).m_sync_state, 'staged');
+    assert.deepEqual([...masterObjects], [pngHash]);
+    assert.equal(media.isAssetReferenced(first).referenced, false);
+    const discardLanded = await fetch(`${base}/api/v1/assets/${first}?staged=1`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    assert.equal(discardLanded.status, 409, '编辑器的草稿清理保留已落正但可重试的资产身份');
+    assert.equal(media.getAsset(first).state, 'available');
+    unavailableHash = null;
+    const sent = await send('staged-send-1', first, second);
+    assert.ok(sent.status === 200 || sent.status === 201, `send=${sent.status}`);
+    const replay = await send('staged-send-1', first, second);
+    assert.equal(replay.status, 200);
+    assert.deepEqual(attempts, [pngHash, jpegHash, jpegHash], '只重新上传未落正项');
+    assert.equal(messageCount('staged-send-1'), 1);
+    assert.equal(media.getAsset(second).m_sync_state, 'synced');
+    for (const id of [first, second]) assert.equal(media.isAssetReferenced(id).by_message_revisions, 1);
+    const kept = await fetch(`${base}/api/v1/assets/${first}`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    assert.equal(kept.status, 409);
+
+    const shared = await selected('staged-pick-3', PNG);
+    assert.notEqual(shared, first, '同哈希为不同 E 资产');
+    const uniqueBytes = Buffer.concat([JPEG, Buffer.from('独有字节')]);
+    unavailableHash = sha256Hex(uniqueBytes);
+    const unique = await selected('staged-pick-4', uniqueBytes);
+    const secondBatch = await send('staged-send-2', shared, unique);
+    assert.equal(secondBatch.status, 503);
+    assert.equal(messageCount('staged-send-2'), 0);
+    assert.equal(media.isAssetReferenced(first).by_message_revisions, 1);
+    assert.equal(media.getAsset(unique).m_sync_state, 'staged');
+    const discarded = await fetch(`${base}/api/v1/assets/${unique}`, { method: 'DELETE', headers: auth({ Origin: base }) });
+    assert.equal(discarded.status, 200);
+    assert.equal(((await discarded.json()) as { state: string }).state, 'discarded');
+    assert.equal((await fetch(`${base}/api/v1/assets/${unique}`, { headers: auth() })).status, 404);
+    assert.deepEqual([...masterObjects], [pngHash, jpegHash], '相同字节复用原正式对象');
+
+    const abandoned = await selected('staged-abandoned', uniqueBytes);
+    const beforeDiscard = attempts.length;
+    assert.equal((await fetch(`${base}/api/v1/assets/${abandoned}?staged=1`, { method: 'DELETE', headers: auth({ Origin: base }) })).status, 200);
+    assert.equal(attempts.length, beforeDiscard, '未点击发送的草稿完全不进 M');
+  } finally { storeSlot.mStore = null; }
+});
+
+test('同一张暂存图的并发发送重试共享一次正本上传，上传中不能丢弃', async (t) => {
+  const media = host.heartbeat.media;
+  const started = Promise.withResolvers<void>();
+  const proceed = Promise.withResolvers<void>();
+  const retried = Promise.withResolvers<void>();
+  let uploads = 0;
+  const storeSlot = media as unknown as { mStore: MariposaMediaStore | null };
+  storeSlot.mStore = {
+    uploadBytes: async (bytes: Uint8Array) => {
+      uploads++;
+      started.resolve();
+      await proceed.promise;
+      return { content_hash: sha256Hex(Buffer.from(bytes)), deduplicated: false };
+    },
+  } as unknown as MariposaMediaStore;
+  try {
+    const upload = await fetch(`${base}/api/v1/assets?purpose=chat_image&staged=1`, {
+      method: 'POST', headers: auth({ 'Idempotency-Key': 'retry-same-photo-upload', Origin: base }),
+      body: new Uint8Array(PNG),
+    });
+    assert.equal(upload.status, 201);
+    const { asset_id } = await upload.json() as { asset_id: string };
+    assert.equal(uploads, 0, '选图阶段没有写入 M');
+    const key = 'retry-same-photo-send';
+    const send = () => fetch(`${base}/api/v1/conversations/primary/messages`, {
+      method: 'POST', headers: auth({ 'Content-Type': 'application/json', 'Idempotency-Key': key, Origin: base }),
+      body: JSON.stringify({ content: '', client_message_id: key, attachments: [{ asset_id, presentation: 'image' }] }),
+    });
+    const validate = media.validateBeforeCommit.bind(media);
+    let validations = 0;
+    t.mock.method(media, 'validateBeforeCommit', (attachments: Parameters<MediaService['validateBeforeCommit']>[0]) => {
+      validate(attachments);
+      if (++validations === 2) retried.resolve();
+    });
+    const original = send();
+    await started.promise;
+    const retry = send();
+    await retried.promise;
+    const discard = await fetch(`${base}/api/v1/assets/${asset_id}?staged=1`, {
+      method: 'DELETE', headers: auth({ Origin: base }),
+    });
+    assert.equal(discard.status, 409);
+    assert.equal(((await discard.json()) as { error: { code: string } }).error.code, 'asset_upload_in_progress');
+    assert.equal(uploads, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM messages WHERE client_message_id=?').get(key)?.n, 0);
+    proceed.resolve();
+    const responses = await Promise.all([original, retry]);
+    assert.deepEqual(responses.map(r => r.status).sort(), [200, 201]);
+    const [first, second] = await Promise.all(responses.map(async r => (await r.json() as { message: { id: string } }).message.id));
+    assert.equal(first, second);
+    assert.equal(media.isAssetReferenced(asset_id).by_message_revisions, 1);
+    assert.equal(host.db.prepare('SELECT COUNT(*) AS n FROM outbox WHERE operation_key=?').get(`archive:${first}:1`)?.n, 1);
+  } finally {
+    proceed.resolve();
+    storeSlot.mStore = null;
+  }
 });

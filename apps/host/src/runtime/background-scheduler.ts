@@ -17,14 +17,16 @@ import { genId } from '../util/id.ts';
 import type { Config } from '../config/schema.ts';
 import type { SystemAlertService } from '../observability/system-alerts.ts';
 import { BackgroundSettingsService } from './background-settings.ts';
-import { restartDisposition, clockRegressionAction, budgetGate, type RunState, type BackgroundKind } from './background-policy.ts';
-import { ConversationActivityService } from './wake-activity.ts';
-import { keepwarmSleepState } from './keepwarm-sleep.ts';
-import { settleBackgroundRun } from './background-ledger.ts';
+import { restartDisposition, clockRegressionAction, budgetGate, backgroundControl, type ModelBackgroundControl, type RunState, type BackgroundKind } from './background-policy.ts';
+import { ConversationActivityService, isMorningWakeOccurrence, MORNING_WAKE_GRACE_MS, morningWakeOccurrenceKey } from './wake-activity.ts';
+import { effectiveSleepState } from './keepwarm-sleep.ts';
+import { HEARTBEAT_BLOCKED_BEFORE_SEND, settleBackgroundRun } from './background-ledger.ts';
+import { DAILY_MEMORY_WINDOW_MS, HEARTBEAT_DAILY_MEMORY_TASK, nextDailyMemoryDue } from '../modules/heartbeat/daily-memory.ts';
+import { isCallActivityActive } from '../modules/voice/call-service.ts';
 
 export type BackgroundExecutor = {
   /** 执行一次已领取的 run（在会话串行链内被调用——executor 负责取得执行位）。scheduler 负责状态/记账框架。 */
-  executeRun(input: { runId: string; taskId: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string }>;
+  executeRun(input: { runId: string; taskId: string; kind: BackgroundKind; origin: string; conversationId: string; payload: Record<string, unknown>; isCancelRequested: () => boolean; registerAbort: (c: AbortController) => void }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown' | 'cancelled'; result_code?: string }>;
 };
 
 export type SchedulerDeps = {
@@ -38,13 +40,13 @@ export type SchedulerDeps = {
 };
 
 type TaskRow = {
-  id: string; conversation_id: string; actor_id: string; kind: 'autonomous' | 'keepwarm' | 'reminder';
+  id: string; conversation_id: string; actor_id: string; kind: BackgroundKind;
   enabled: number; revision: number; schedule_kind: 'once' | 'daily' | 'interval' | 'cache_idle';
   scheduled_at: string | null; next_due_at: string | null; timezone: string; local_time: string | null;
   interval_ms: number | null; payload_json: string; created_by_actor_id: string;
   origin: string; control_reason: string | null;
 };
-type RunRow = { id: string; task_id: string; kind: 'autonomous' | 'keepwarm' | 'reminder'; state: RunState; occurrence_key: string; first_dispatch_started_at: string | null; conversation_id: string; actor_id: string };
+type RunRow = { id: string; task_id: string; kind: BackgroundKind; state: RunState; occurrence_key: string; first_dispatch_started_at: string | null; conversation_id: string; actor_id: string };
 
 export class BackgroundScheduler {
   private d: SchedulerDeps;
@@ -57,6 +59,7 @@ export class BackgroundScheduler {
   private yieldRequested = new Set<string>();
   private lastTickMs = 0;
   private ticking = false; // S-02：tick 单飞
+  private tickWork: Promise<void> | null = null;
   private stopped = true;
   private activity: ConversationActivityService;
   readonly primaryConversation = 'primary';
@@ -67,6 +70,8 @@ export class BackgroundScheduler {
   }
 
   private now(): number { return this.d.now ? this.d.now() : Date.now(); }
+
+  currentNowMs(): number { return this.now(); }
 
   start(): void {
     if (!this.stopped) return;
@@ -85,12 +90,12 @@ export class BackgroundScheduler {
   }
 
   /** AUD-02 P1 修复：按 kind 终止运行中的后台执行（关闭开关时调用）。 */
-  disableKind(kind: 'autonomous' | 'keepwarm'): void {
+  disableKind(kind: ModelBackgroundControl): void {
     for (const [runId, c] of this.aborts) {
-      const row = this.d.db.prepare('SELECT kind FROM background_runs WHERE id = ?').get(runId) as { kind: string } | undefined;
-      if (row?.kind === kind) {
+      const row = this.d.db.prepare('SELECT r.kind,t.origin FROM background_runs r JOIN background_tasks t ON t.id=r.task_id WHERE r.id=?').get(runId) as {kind:BackgroundKind;origin:string}|undefined;
+      if (row && row.kind !== 'reminder' && backgroundControl(row.kind,row.origin) === kind) {
         this.cancelRequested.add(runId);
-        this.cancelReasons.set(runId, kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED');
+        this.cancelReasons.set(runId, kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : kind === 'free_activity' ? 'FREE_ACTIVITY_DISABLED' : 'AUTONOMOUS_DISABLED');
         c.abort();
       }
     }
@@ -103,8 +108,13 @@ export class BackgroundScheduler {
    */
   notePendingUserChat(): void {
     for (const [runId, c] of this.aborts) {
-      const row = this.d.db.prepare('SELECT kind FROM background_runs WHERE id = ?').get(runId) as { kind: string } | undefined;
-      if (row?.kind === 'keepwarm') this.yieldRequested.add(runId);
+      // RB2-03（复审 20261106 第二轮）：让位按既有控制类型（backgroundControl）判定，
+      // 与预算同一分类——keepwarm 与自由活动（autonomous+origin=free_activity）让位；
+      // 预约唤醒（self_schedule）按普通回合规则继续，不被一刀切取消。
+      const row = this.d.db.prepare(
+        'SELECT r.kind, t.origin FROM background_runs r JOIN background_tasks t ON t.id = r.task_id WHERE r.id = ?',
+      ).get(runId) as { kind: string; origin: string } | undefined;
+      if (row && (row.kind === 'keepwarm' || (row.kind === 'autonomous' && row.origin === 'free_activity'))) this.yieldRequested.add(runId);
       void c;
     }
   }
@@ -118,18 +128,68 @@ export class BackgroundScheduler {
    */
   recoverOnStart(): void {
     const nowIso = new Date(this.now()).toISOString();
-    const rows = this.d.db.prepare("SELECT id, state, kind, occurrence_key FROM background_runs WHERE state IN ('claimed','running','cancelling','unknown')").all() as Array<{ id: string; state: RunState; kind: string; occurrence_key: string }>;
+    // Any in-flight async Sol rest judgment was aborted on host stop; clear pending markers
+    // without fabricating asleep or awake state.
+    this.activity.clearAllPendingRest();
+    const rows = this.d.db.prepare("SELECT id, state, kind, conversation_id, occurrence_key, scheduled_for FROM background_runs WHERE state IN ('claimed','running','cancelling','unknown')").all() as Array<{ id: string; state: RunState; kind: string; conversation_id: string; occurrence_key: string; scheduled_for: string | null }>;
     for (const r of rows) {
       // Usage may have reached disk immediately before a crash. Recover its cost
       // without replaying the model or declaring an unknown external action done.
       settleBackgroundRun(this.d.db, r.id);
-      const dispatchCount = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id = ?').get(r.id) as { n: number }).n;
+      if (r.kind === 'keepwarm') {
+        // If a model request was confirmed sent (sent_at IS NOT NULL) before crash,
+        // ensure its single logical heartbeat count is recorded idempotently (unknown sends stay uncounted).
+        const confirmed = this.d.db.prepare(`
+          SELECT COALESCE(MIN(dispatch_started_at), MIN(sent_at)) AS started_at, MAX(window_id) AS window_id
+          FROM provider_requests WHERE background_run_id = ? AND sent_at IS NOT NULL
+        `).get(r.id) as { started_at: string | null; window_id: string | null } | undefined;
+        if (confirmed?.started_at && confirmed.window_id) {
+          const morning = isMorningWakeOccurrence(r.occurrence_key);
+          const morningDate = morning ? r.occurrence_key.split(':').at(-1) ?? null : null;
+          this.activity.noteEffectiveHeartbeat({
+            conversationId: r.conversation_id,
+            runId: r.id,
+            windowId: confirmed.window_id,
+            startedAtIso: confirmed.started_at,
+            isMorningWake: morning,
+            morningBusinessDate: morningDate,
+          });
+        }
+      }
+      if (r.state === 'running' && r.kind === 'keepwarm' && this.hasCommittedExhaustedReply(r.id)) {
+        this.finishRecoveredCompletion(r.id, { outcome: 'completed', result_code: 'ack_only' });
+        continue;
+      }
+      if (r.state === 'running' && r.kind === 'keepwarm' && this.hasCommittedTalkReply(r.id)) {
+        this.finishRecoveredCompletion(r.id, { outcome: 'completed', result_code: 'complete:done' });
+        continue;
+      }
+      if (r.state === 'running' && r.kind === 'heartbeat_memory'
+        && this.d.db.prepare('SELECT 1 FROM heartbeat_daily_memory_choices WHERE run_id=?').get(r.id)) {
+        this.finishRecoveredCompletion(r.id,{outcome:'completed',result_code:'DAILY_MEMORY_SELECTED'});
+        continue;
+      }
+      const morning = isMorningWakeOccurrence(r.occurrence_key);
+      const dispatchCount = (this.d.db.prepare(`SELECT COUNT(*) n FROM background_dispatches WHERE run_id = ?
+        AND (? = 0 OR (state <> 'cancelled_before_send' AND outcome_code IS NOT ?))`)
+        .get(r.id, Number(morning), HEARTBEAT_BLOCKED_BEFORE_SEND) as { n: number }).n;
       const dispo = restartDisposition({ state: r.state, dispatchCount, kind: r.kind as BackgroundKind });
       if (dispo.resultCode === 'UNCHANGED') continue;
       if (dispo.to === 'skipped' && dispatchCount === 0) {
-        // W-14：零派发=恢复同 occurrence——释放原 key（行留档），任务保持可领取
+        // W-14：零派发=恢复同 occasion——释放原 key（行留档），任务保持可领取
         this.d.db.prepare("UPDATE background_runs SET state = 'skipped', result_code = ?, occurrence_key = ?, finished_at = ?, updated_at = ? WHERE id = ?")
           .run(dispo.resultCode, `${r.occurrence_key}:recovered:${r.id}`, nowIso, nowIso, r.id);
+        // RB04（复审 20261106）：daily/interval 在领取时已推进 next_due_at——恢复必须把
+        // 本次已领取的 due 还原（任务修订未变时），下一 tick 重领本次机会；不凭下一日
+        // due 猜"本次已结束"（旧实现零派发中断即漏本次）。
+        if (r.scheduled_for !== null) {
+          this.d.db.prepare(
+            `UPDATE background_tasks SET next_due_at = ?, updated_at = ?
+             WHERE schedule_kind IN ('daily','interval') AND next_due_at IS NOT NULL AND next_due_at > ?
+               AND revision = (SELECT task_revision FROM background_runs WHERE id = ?)
+               AND id = (SELECT task_id FROM background_runs WHERE id = ?)`,
+          ).run(r.scheduled_for, nowIso, r.scheduled_for, r.id, r.id);
+        }
       } else {
         this.d.db.prepare('UPDATE background_runs SET state = ?, result_code = ?, finished_at = ?, updated_at = ? WHERE id = ?').run(dispo.to, dispo.resultCode, nowIso, nowIso, r.id);
         // unknown 的 once 任务标待核对（不自动重放，09 表）
@@ -138,17 +198,50 @@ export class BackgroundScheduler {
     }
   }
 
+  private hasCommittedExhaustedReply(runId: string): boolean {
+    return Boolean(this.d.db.prepare(`
+      SELECT 1 FROM background_runs run
+      JOIN heartbeat_runs heartbeat ON heartbeat.run_id=run.id AND heartbeat.mode='exhausted_keepwarm'
+      JOIN turns turn ON turn.id=run.turn_id AND turn.state='completed'
+      JOIN messages message ON message.turn_id=turn.id AND message.speaker='assistant'
+        AND message.client_message_id='heartbeat:'||run.id||':ack'
+      JOIN message_revisions revision ON revision.message_id=message.id
+        AND revision.revision=1 AND revision.source='heartbeat_ack'
+      WHERE run.id=? AND run.trajectory_committed_at IS NOT NULL
+        AND EXISTS (SELECT 1 FROM provider_requests request
+                    WHERE request.background_run_id=run.id AND request.sent_at IS NOT NULL)
+    `).get(runId));
+  }
+
+  private hasCommittedTalkReply(runId: string): boolean {
+    // The reply, projection, trajectory and commit stamp were written atomically.
+    return Boolean(this.d.db.prepare(`
+      SELECT 1 FROM background_runs run
+      JOIN outbox projection ON projection.target='content_heartbeat_projection'
+        AND projection.operation_key='heartbeat-moment:'||run.id
+      WHERE run.id=? AND run.trajectory_committed_at IS NOT NULL
+        AND json_extract(projection.payload_ref, '$.state')='talked'
+    `).get(runId));
+  }
+
   /** 一次调度心跳：时钟回拨检测 → 到期任务领取与执行。测试可直接调用并虚拟推进时钟。 */
   async tick(): Promise<void> {
     if (this.stopped) return;
     if (this.ticking) return; // S-02：单飞——上一 tick 的执行器还没收尾时不重领
     this.ticking = true;
+    const work = this.tickInner();
+    this.tickWork = work;
     try {
-      await this.tickInner();
+      await work;
     } finally {
       this.ticking = false;
+      this.tickWork = null;
     }
   }
+
+  /** Source prep is not a main-model conversation turn; Host shutdown waits
+   * its cancelled in-flight scheduler work before closing the DB. */
+  async waitIdle(): Promise<void> { await this.tickWork?.catch(() => undefined); }
 
   private async tickInner(): Promise<void> {
     const nowMs = this.now();
@@ -161,15 +254,17 @@ export class BackgroundScheduler {
     this.lastTickMs = Math.max(this.lastTickMs, nowMs);
     const settings = this.d.settings.effective();
     this.recalculateKeepwarmTargets(settings, nowMs);
-    // 按最早到期排序领取（09：非任意表序；同到期稳定排序）
-    const tasks = this.d.db.prepare("SELECT * FROM background_tasks WHERE enabled = 1 AND next_due_at IS NOT NULL ORDER BY next_due_at ASC, CASE WHEN kind = 'autonomous' THEN 0 WHEN kind = 'keepwarm' THEN 2 ELSE 1 END, id ASC").all() as TaskRow[];
-    for (const task of tasks) {
+    // The midnight source selection must be resolved before compiling the new
+    // day's deck, even if a normal heartbeat became due just before midnight.
+    // All other tasks keep the existing due-time/stable order.
+    const tasks = this.d.db.prepare("SELECT * FROM background_tasks WHERE enabled = 1 AND next_due_at IS NOT NULL ORDER BY CASE WHEN kind='heartbeat_memory' THEN 0 ELSE 1 END, next_due_at ASC, CASE WHEN kind = 'autonomous' THEN 0 WHEN kind = 'keepwarm' THEN 2 ELSE 1 END, id ASC").all() as TaskRow[];
+    for (let task of tasks) {
       if (this.stopped) return;
-      const due = task.next_due_at ? Date.parse(task.next_due_at) : null;
+      let due = task.next_due_at ? Date.parse(task.next_due_at) : null;
       if (due === null || Number.isNaN(due) || due > nowMs) continue;
       // 待核对任务不自动调度（E06/W-16：关闭期间错过/结果未知——等待显式恢复）
       if (task.control_reason !== null) continue;
-      if (task.kind === 'autonomous' && !settings.autonomous.enabled) {
+      if (task.kind === 'autonomous' && !settings[backgroundControl(task.kind,task.origin)].enabled) {
         // W-16：明确关闭期间到期的一次性预约→needs_review（不突发补发；未来任务按原时间继续）
         if (task.schedule_kind === 'once') {
           this.d.db.prepare("UPDATE background_tasks SET control_reason = 'disabled_missed_needs_review', updated_at = ? WHERE id = ?").run(new Date(nowMs).toISOString(), task.id);
@@ -177,8 +272,45 @@ export class BackgroundScheduler {
         continue;
       }
       if (task.kind === 'keepwarm' && !settings.keepwarm.enabled) continue;
-      // 前面的执行可能跨入睡眠时段；每次领取用当前时钟再查，不能复用 tick 快照。
-      if (task.kind === 'keepwarm' && keepwarmSleepState(this.d.settings.effective().keepwarm.sleep_window, this.now()).blocked) continue;
+      if (task.kind === 'heartbeat_memory') {
+        if (!settings.keepwarm.enabled || task.id !== HEARTBEAT_DAILY_MEMORY_TASK || task.origin !== 'system_heartbeat_memory') continue;
+        const now = this.now();
+        if (now - due >= DAILY_MEMORY_WINDOW_MS) {
+          // Record the missed occurrence with zero traffic; never backfill
+          // paid selection at noon or pretend that it occurred at midnight.
+          const missed = this.claim(task, now);
+          if (missed) this.finishRun(missed,task,'skipped','DAILY_MEMORY_MIDNIGHT_MISSED');
+          const next = nextDailyMemoryDue(now);
+          this.d.db.prepare('UPDATE background_tasks SET next_due_at=?,updated_at=? WHERE id=? AND revision=?')
+            .run(next,new Date(now).toISOString(),task.id,task.revision);
+          // If this process returned during today's genuine midnight window,
+          // skip the old occurrence but still prepare today before any draw.
+          due = Date.parse(next);
+          if (due > now || now - due >= DAILY_MEMORY_WINDOW_MS) continue;
+          task = { ...task, next_due_at: next };
+        }
+      }
+      // 前面的执行可能跨入睡眠时段、休息或达到连续上限；每次领取用统一权威评估器与当前时钟重检。
+      if (task.kind === 'keepwarm') {
+        const curNow = this.now();
+        const effSettings = this.d.settings.effective();
+        const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(task.conversation_id) as { id: string } | undefined;
+        const schedule = this.activity.evaluateHeartbeatSchedule({
+          conversationId: task.conversation_id,
+          windowId: win?.id ?? null,
+          sleepWindow: effSettings.keepwarm.sleep_window,
+          keepwarmEnabled: effSettings.keepwarm.enabled,
+          nowMs: curNow,
+          currentControlRevision: this.d.settings.keepwarmControlRevision(),
+        });
+        if (!schedule.scheduled || schedule.dueAtMs === null || schedule.dueAtMs > curNow || schedule.blockedReason !== null) continue;
+        if (isCallActivityActive(this.d.db, task.conversation_id, curNow) || this.hasForegroundTurnActive(task.conversation_id)) {
+          if (schedule.kind === 'morning_wake') {
+            this.activity.noteOnlineMorningYield(task.conversation_id, schedule.businessDate, new Date(curNow).toISOString());
+          }
+          continue;
+        }
+      }
       if (task.kind === 'reminder' && !settings.reminders.enabled) continue;
       // 同主体同 kind 已有打开的执行（唯一索引兜底；此处先查少一次约束冲突）
       const open = this.d.db.prepare("SELECT id,task_id,state,result_code FROM background_runs WHERE actor_id = ? AND kind = ? AND state IN ('claimed','running','cancelling') LIMIT 1").get(task.actor_id, task.kind) as { id: string; task_id: string; state: string; result_code: string | null } | undefined;
@@ -186,10 +318,38 @@ export class BackgroundScheduler {
         if (open.task_id === task.id && open.state === 'claimed' && (open.result_code === 'NO_ACTIVE_WINDOW' || open.result_code === 'CONTEXT_SELECTION_REQUIRED')) await this.executeClaimed(open.id, task);
         continue;
       }
-      const runId = this.claim(task, nowMs);
+      const claimAt = task.kind === 'heartbeat_memory' || task.kind === 'keepwarm' ? this.now() : nowMs;
+      const runId = this.claim(task, claimAt);
       if (runId === null) continue; // occurrence 唯一约束拦下并发领取（§9.1 CW-21）
       await this.executeClaimed(runId, task);
+      // 若同 tick 刚收口的是旧普通 keepwarm noop，而当日晨间唤醒此刻已到点，不得被旧 noop 吞掉。
+      if (task.kind === 'keepwarm' && !this.stopped) {
+        const ran = this.d.db.prepare('SELECT state, occurrence_key FROM background_runs WHERE id = ?').get(runId) as { state: string; occurrence_key: string } | undefined;
+        if (ran?.state === 'noop' && !isMorningWakeOccurrence(ran.occurrence_key)) {
+          const afterNow = this.now();
+          const effSettings = this.d.settings.effective();
+          const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(task.conversation_id) as { id: string } | undefined;
+          const schedule = this.activity.evaluateHeartbeatSchedule({
+            conversationId: task.conversation_id,
+            windowId: win?.id ?? null,
+            sleepWindow: effSettings.keepwarm.sleep_window,
+            keepwarmEnabled: effSettings.keepwarm.enabled,
+            nowMs: afterNow,
+            currentControlRevision: this.d.settings.keepwarmControlRevision(),
+          });
+          if (schedule.scheduled && schedule.kind === 'morning_wake' && schedule.blockedReason === null && schedule.dueAtMs !== null && schedule.dueAtMs <= afterNow) {
+            const morningRunId = this.claim(task, afterNow);
+            if (morningRunId !== null) await this.executeClaimed(morningRunId, task);
+          }
+        }
+      }
     }
+  }
+
+  private hasForegroundTurnActive(conversationId: string): boolean {
+    return Boolean(this.d.db.prepare(
+      "SELECT 1 FROM turns WHERE conversation_id = ? AND trigger = 'user_message' AND state IN ('pending','running') LIMIT 1",
+    ).get(conversationId));
   }
 
   /** 领取：插入唯一 occurrence；**不消耗任务**（once 不在此禁用——完成/显式取消才终结）。 */
@@ -198,23 +358,52 @@ export class BackgroundScheduler {
     const runId = genId('bgr');
     let occurrenceKey: string;
     let inputActivityRevision: number | null = null;
+    let inputUserAppearanceRevision: number | null = null;
+    let scheduledFor = task.next_due_at ?? nowIso;
     if (task.kind === 'autonomous') {
       occurrenceKey = `wake:${task.id}:${task.revision}`;
+    } else if (task.kind === 'heartbeat_memory') {
+      occurrenceKey = `heartbeat-memory:${task.conversation_id}:${task.next_due_at}`;
     } else if (task.kind === 'keepwarm') {
       const act = this.activity.get(task.conversation_id);
       const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(task.conversation_id) as { id: string } | undefined;
-      if (!act || act.last_real_activity_at === null || !win) return null; // 无真实活动/无活动窗：本轮无可领机会
-      inputActivityRevision = act.activity_revision;
-      occurrenceKey = `keepwarm:${task.conversation_id}:${win.id}:${act.activity_revision}:${act.maintenance_request_id ?? 'none'}`;
+      if (!win) return null;
+      const effSettings = this.d.settings.effective();
+      const schedule = this.activity.evaluateHeartbeatSchedule({
+        conversationId: task.conversation_id,
+        windowId: win.id,
+        sleepWindow: effSettings.keepwarm.sleep_window,
+        keepwarmEnabled: effSettings.keepwarm.enabled,
+        nowMs,
+        currentControlRevision: this.d.settings.keepwarmControlRevision(),
+      });
+      if (!schedule.scheduled || schedule.dueAtMs === null || schedule.dueAtMs > nowMs || schedule.blockedReason !== null) {
+        return null;
+      }
+      if (isCallActivityActive(this.d.db, task.conversation_id, nowMs) || this.hasForegroundTurnActive(task.conversation_id)) {
+        if (schedule.kind === 'morning_wake') {
+          this.activity.noteOnlineMorningYield(task.conversation_id, schedule.businessDate, nowIso);
+        }
+        return null;
+      }
+      inputActivityRevision = act?.activity_revision ?? 0;
+      inputUserAppearanceRevision = act?.user_appearance_revision ?? 0;
+      scheduledFor = new Date(schedule.dueAtMs).toISOString();
+      if (schedule.kind === 'morning_wake') {
+        occurrenceKey = morningWakeOccurrenceKey(task.conversation_id, schedule.businessDate);
+      } else {
+        const anchorId = schedule.anchorKey ?? 'none';
+        occurrenceKey = `keepwarm:${task.conversation_id}:${win.id}:${act?.activity_revision ?? 0}:${anchorId}`;
+      }
     } else {
       occurrenceKey = `${task.id}:${task.revision}:${task.next_due_at ?? nowIso}`;
     }
     try {
       tx(this.d.db, () => {
         this.d.db.prepare(
-          `INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, scheduled_for, state, settings_revision, input_activity_revision, claimed_at, created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,'claimed',?,?,?,?,?)`,
-        ).run(runId, task.id, task.conversation_id, task.actor_id, task.kind, task.revision, occurrenceKey, task.next_due_at ?? nowIso, this.d.settings.revision(), inputActivityRevision, nowIso, nowIso, nowIso);
+          `INSERT INTO background_runs(id, task_id, conversation_id, actor_id, kind, task_revision, occurrence_key, scheduled_for, state, settings_revision, input_activity_revision, input_user_appearance_revision, claimed_at, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,'claimed',?,?,?,?,?,?)`,
+        ).run(runId, task.id, task.conversation_id, task.actor_id, task.kind, task.revision, occurrenceKey, scheduledFor, this.d.settings.revision(), inputActivityRevision, inputUserAppearanceRevision, nowIso, nowIso, nowIso);
         // interval/daily 推进 next_due_at；once 与 cache_idle 不在领取时消耗
         if (task.schedule_kind === 'interval' && task.interval_ms && task.interval_ms > 0) {
           this.d.db.prepare('UPDATE background_tasks SET next_due_at = ?, updated_at = ? WHERE id = ?').run(new Date(nowMs + task.interval_ms).toISOString(), nowIso, task.id);
@@ -233,28 +422,34 @@ export class BackgroundScheduler {
     }
   }
 
-  /** §5.2/§5.4（2026-10-22 重写）：保温目标由真实活动投影驱动——L+50 分（真实消息）或
-   *  维护回执 dispatch+50 分（技术续温）；任意新真实发布使旧回执失效（wake-activity CAS 语义）。 */
+  /** 外部事件（新用户消息提交、Sol 休息意图落盘、手动设置变化）后立即刷新任务行预计时间；
+   *  只在实际 next_due_at 改变时写库，不额外触发 tick 或模型派发。 */
+  refreshKeepwarmSchedule(): void {
+    this.recalculateKeepwarmTargets(this.d.settings.effective(), this.now());
+  }
+
+  /** §5.2/§5.4 + Heartbeat v2.1：更新现有保温任务行的预计时间（仅在 next_due_at 真正变化时写库，
+   *  避免同时间反复 tick 产生冗余写入或计算流水）。 */
   private recalculateKeepwarmTargets(settings: ReturnType<BackgroundSettingsService['effective']>, nowMs: number): void {
-    if (!settings.keepwarm.enabled) return;
     const rows = this.d.db.prepare("SELECT * FROM background_tasks WHERE kind = 'keepwarm' AND schedule_kind = 'cache_idle' AND enabled = 1").all() as TaskRow[];
     const nowIso = new Date(nowMs).toISOString();
     for (const t of rows) {
-      if (keepwarmSleepState(settings.keepwarm.sleep_window, nowMs).blocked) {
-        this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, t.id);
-        continue;
-      }
       const win = this.d.db.prepare("SELECT id FROM windows WHERE conversation_id = ? AND status = 'ACTIVE' ORDER BY created_at DESC LIMIT 1").get(t.conversation_id) as { id: string } | undefined;
-      if (!win) {
-        this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, t.id);
-        continue;
+      const schedule = this.activity.evaluateHeartbeatSchedule({
+        conversationId: t.conversation_id,
+        windowId: win?.id ?? null,
+        sleepWindow: settings.keepwarm.sleep_window,
+        keepwarmEnabled: settings.keepwarm.enabled,
+        nowMs,
+        currentControlRevision: this.d.settings.keepwarmControlRevision(),
+      });
+      const nextDueIso = schedule.scheduled && schedule.dueAtMs !== null
+        ? new Date(schedule.dueAtMs).toISOString()
+        : null;
+      if (nextDueIso !== t.next_due_at) {
+        this.d.db.prepare('UPDATE background_tasks SET next_due_at = ?, updated_at = ? WHERE id = ?')
+          .run(nextDueIso, nowIso, t.id);
       }
-      const target = this.activity.nextKeepwarmTarget({ conversationId: t.conversation_id, windowId: win.id });
-      if (!target.scheduled) {
-        this.d.db.prepare('UPDATE background_tasks SET next_due_at = NULL, updated_at = ? WHERE id = ?').run(nowIso, t.id);
-        continue;
-      }
-      this.d.db.prepare('UPDATE background_tasks SET next_due_at = ?, updated_at = ? WHERE id = ?').run(new Date(target.dueAtMs).toISOString(), nowIso, t.id);
     }
   }
 
@@ -263,22 +458,10 @@ export class BackgroundScheduler {
     this.aborts.set(runId, controller);
     const isCancelRequested = (): boolean => this.cancelRequested.has(runId);
     const registerAbort = (c: AbortController): void => { this.aborts.set(runId, c); if (this.cancelRequested.has(runId)) c.abort(); };
-    const finish = (state: RunState, resultCode: string | null, cancelReason: string | null = null): void => {
-      const nowIso = new Date(this.now()).toISOString();
-      const dispatched = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id=?').get(runId) as { n: number }).n;
-      const waiting = task.kind === 'autonomous' && dispatched === 0 && ((cancelReason === 'HOST_STOPPED') || (cancelReason === null && (resultCode === 'NO_ACTIVE_WINDOW' || resultCode === 'CONTEXT_SELECTION_REQUIRED')));
-      if (waiting) state = 'claimed';
-      this.d.db.prepare('UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, finished_at = ?, updated_at = ? WHERE id = ?').run(state, resultCode, cancelReason, waiting ? null : nowIso, nowIso, runId);
-      this.aborts.delete(runId);
-      this.cancelRequested.delete(runId);
-      this.cancelReasons.delete(runId);
-      this.yieldRequested.delete(runId);
-      if (waiting) return;
-      if (state === 'cancelled' && task.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
-      this.finalizeTaskAfterRun(task, state, nowIso);
-    };
+    const finish = (state: RunState, resultCode: string | null, cancelReason: string | null = null): void =>
+      this.finishRun(runId, task, state, resultCode, cancelReason);
     try {
-      const r = await this.d.executor.executeRun({ runId, taskId: task.id, kind: task.kind, conversationId: task.conversation_id, payload: JSON.parse(task.payload_json) as Record<string, unknown>, isCancelRequested, registerAbort });
+      const r = await this.d.executor.executeRun({ runId, taskId: task.id, kind: task.kind, origin: task.origin, conversationId: task.conversation_id, payload: JSON.parse(task.payload_json) as Record<string, unknown>, isCancelRequested, registerAbort });
       if (this.cancelRequested.has(runId)) finish('cancelled', r.result_code ?? 'CANCELLED', this.cancelReasons.get(runId) ?? 'RUN_STOPPED');
       else finish(r.outcome, r.result_code ?? null);
     } catch (err) {
@@ -287,15 +470,75 @@ export class BackgroundScheduler {
     }
   }
 
-  /** 领取≠消耗的收尾：once 任务只在成功（completed/noop）后终结；失败/未知→待核对（不自动重放）。 */
+  finishRecoveredCompletion(runId: string, result: {
+    outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string;
+  }): void {
+    this.finishRun(runId, this.taskOfRun(runId), result.outcome, result.result_code ?? null);
+  }
+
+  /** RB2-02（复审 20261106 第二轮）：结束一次执行的共同领域操作——执行完成、无执行者
+   *  停止及需要收尾的恢复入口共用：run 终态、task 资格收尾（finalizeTaskAfterRun）与
+   *  本次资源释放在同一出口。删除 stopRun 的独立 run 终态 SQL 旁路（旧旁路绕过任务
+   *  终结，run 已停而 task 仍伪 scheduled——同 occurrence 实际不能再执行）。 */
+  private finishRun(runId: string, task: TaskRow | null, state: RunState, resultCode: string | null, cancelReason: string | null = null): void {
+    const nowIso = new Date(this.now()).toISOString();
+    const dispatched = (this.d.db.prepare('SELECT COUNT(*) n FROM background_dispatches WHERE run_id=?').get(runId) as { n: number }).n;
+    const waiting = task?.kind === 'autonomous' && dispatched === 0 && ((cancelReason === 'HOST_STOPPED') || (cancelReason === null && (resultCode === 'NO_ACTIVE_WINDOW' || resultCode === 'CONTEXT_SELECTION_REQUIRED')));
+    if (waiting) state = 'claimed';
+    // F03（四仓联合审计 20261104）：finish 只从活态收口——run 已被任务取消
+    // （supersedeOpenRuns 置 cancelled）时不得用执行结果覆盖；也不触发任务终结。
+    // R1（复审 b137e98）：cancelling（stop-run 的待收尾活态）必须可被收口。
+    // R3-B02（第三轮复审）：run CAS 终态与同版本 task 资格收尾在**同一短事务**提交——
+    // 此前分两次提交，提交缝中断会留下"run 已终态、task 仍 enabled/原 due"的半收口，
+    // 且恢复/重试都不会再触达（外连接可观测，P 级反例）。内存资源在事务提交后释放。
+    const finished = tx(this.d.db, () => {
+      const runMeta = this.d.db.prepare('SELECT occurrence_key FROM background_runs WHERE id = ?').get(runId) as { occurrence_key: string } | undefined;
+      const releaseMorning = state === 'noop'
+        && isMorningWakeOccurrence(runMeta?.occurrence_key)
+        && (resultCode === 'KEEPWARM_SUPERSEDED' || resultCode?.startsWith('KEEPWARM_YIELDED') === true)
+        && !this.d.db.prepare(`SELECT 1 FROM background_dispatches WHERE run_id = ?
+          AND state <> 'cancelled_before_send' AND outcome_code IS NOT ? LIMIT 1`)
+          .get(runId, HEARTBEAT_BLOCKED_BEFORE_SEND);
+      const nextOcc = releaseMorning ? `${runMeta!.occurrence_key}:deferred:${runId}` : (runMeta?.occurrence_key ?? null);
+      const n = Number(this.d.db.prepare("UPDATE background_runs SET state = ?, result_code = ?, cancel_reason = ?, occurrence_key = COALESCE(?, occurrence_key), finished_at = ?, updated_at = ? WHERE id = ? AND state IN ('claimed','running','cancelling')").run(state, resultCode, cancelReason, nextOcc, waiting ? null : nowIso, nowIso, runId).changes);
+      if (n > 0 && !waiting) {
+        this.d.db.prepare(`UPDATE attempts SET completion_recovery_json=NULL
+          WHERE turn_id=(SELECT turn_id FROM background_runs WHERE id=?)`).run(runId);
+        if (state === 'cancelled' && task?.kind === 'autonomous') this.d.db.prepare("UPDATE background_tasks SET control_reason=COALESCE(control_reason,'stopped_needs_review'), updated_at=? WHERE id=? AND revision=?").run(nowIso, task.id, task.revision);
+        if (task) this.finalizeTaskAfterRun(task, state, nowIso);
+      }
+      return n;
+    });
+    this.aborts.delete(runId);
+    this.cancelRequested.delete(runId);
+    this.cancelReasons.delete(runId);
+    this.yieldRequested.delete(runId);
+    if (finished > 0 && task?.kind === 'keepwarm') {
+      this.recalculateKeepwarmTargets(this.d.settings.effective(), this.now());
+    }
+  }
+
+  /** RB2-02：按 run 身份取其适用修订的 task（修订已变=null——收尾不作用于新版本）。 */
+  private taskOfRun(runId: string): TaskRow | null {
+    return (this.d.db.prepare(
+      'SELECT t.* FROM background_tasks t JOIN background_runs r ON r.task_id = t.id AND r.task_revision = t.revision WHERE r.id = ?',
+    ).get(runId) as TaskRow | undefined) ?? null;
+  }
+
+  /** 领取≠消耗的收尾（RB04 复审 20261106 扩到全部 once 任务——reminder 同为 once，
+   *  旧实现只收口 autonomous：once 提醒投递后 task 永远 enabled=1/伪 scheduled，且
+   *  occurrence 唯一键已消耗=永不自动执行却每 tick 空扫）。
+   *  成功（completed/noop）=delivered 终结；失败/未知→待核对；取消→终态待核
+   *  （"待下一轮"不会来——唯一 occurrence 已消耗，如实停用并保留复核原因）。 */
   private finalizeTaskAfterRun(task: TaskRow, state: RunState, nowIso: string): void {
-    if (task.kind !== 'autonomous' || task.schedule_kind !== 'once') return;
+    if (task.schedule_kind !== 'once') return;
     if (state === 'completed' || state === 'noop') {
       this.d.db.prepare("UPDATE background_tasks SET enabled = 0, next_due_at = NULL, control_reason = 'delivered', updated_at = ? WHERE id = ? AND revision = ?").run(nowIso, task.id, task.revision);
     } else if (state === 'failed' || state === 'unknown') {
       this.d.db.prepare("UPDATE background_tasks SET control_reason = CASE WHEN ? = 'unknown' THEN 'unknown_needs_review' ELSE 'failed_needs_review' END, next_due_at = NULL, updated_at = ? WHERE id = ? AND revision = ?").run(state, nowIso, task.id, task.revision);
+    } else if (state === 'cancelled') {
+      this.d.db.prepare("UPDATE background_tasks SET enabled = 0, next_due_at = NULL, control_reason = COALESCE(control_reason, 'stopped_needs_review'), updated_at = ? WHERE id = ? AND revision = ?").run(nowIso, task.id, task.revision);
     }
-    // cancelled：显式取消已由 service 标记；宿主停止类取消保持任务待下一轮（开关/恢复决定）
   }
 
   /** 手动停止一次执行（§7.3：不关总开关）。返回实际状态。 */
@@ -303,6 +546,13 @@ export class BackgroundScheduler {
     const row = this.d.db.prepare('SELECT id, state FROM background_runs WHERE id = ?').get(runId) as { id: string; state: RunState } | undefined;
     if (!row) return null;
     if (row.state === 'claimed' || row.state === 'running') {
+      // P5（T19）+RB2-02：已无在途执行者（等待派发的 claimed）直接经共同收尾出口
+      // 结束——run 与 task 资格同一事务边界一致收口（旧实现绕过任务终结）；
+      // 有在途执行者才请求取消并等真实 finish。
+      if (!this.aborts.has(runId)) {
+        this.finishRun(runId, this.taskOfRun(runId), 'cancelled', 'CANCELLED', 'RUN_STOPPED');
+        return { state: 'cancelled' };
+      }
       this.cancelRequested.add(runId);
       this.cancelReasons.set(runId, 'RUN_STOPPED');
       this.aborts.get(runId)?.abort();
@@ -310,6 +560,23 @@ export class BackgroundScheduler {
       return { state: 'cancelling' };
     }
     return { state: row.state };
+  }
+
+  /** 生图可跨过多次 I/O；沿用派发账本的首派发时刻和同一档有效时限。 */
+  remainingRunMs(runId: string): number {
+    if (this.cancelRequested.has(runId) || this.isYieldRequested(runId)) return 0;
+    const row = this.d.db.prepare(`
+      SELECT r.kind, r.conversation_id, r.first_dispatch_started_at, t.origin
+        FROM background_runs r JOIN background_tasks t ON t.id=r.task_id
+       WHERE r.id=? AND r.state='running' AND t.revision=r.task_revision AND t.enabled=1 AND t.control_reason IS NULL
+    `).get(runId) as { kind: BackgroundKind; conversation_id: string; first_dispatch_started_at: string | null; origin: string } | undefined;
+    if (!row?.first_dispatch_started_at || row.kind === 'reminder') return 0;
+    const control = backgroundControl(row.kind, row.origin);
+    const settings = this.d.settings.effective();
+    const nowMs = this.now();
+    const earlyResumedDate = row.kind === 'keepwarm' ? this.activity.get(row.conversation_id)?.early_resumed_date : null;
+    if (!settings[control].enabled || (row.kind === 'keepwarm' && effectiveSleepState(settings.keepwarm.sleep_window, nowMs, earlyResumedDate).blocked)) return 0;
+    return Math.max(0, Date.parse(row.first_dispatch_started_at) + settings[control].max_run_ms - nowMs);
   }
 
   /** 派发记账入口（executor 在每次 transport 前调用；§10.1 唯一预算账本）。
@@ -323,29 +590,50 @@ export class BackgroundScheduler {
       const nowMs = this.now();
       const nowIso = new Date(nowMs).toISOString();
       const run = this.d.db.prepare('SELECT * FROM background_runs WHERE id = ?').get(input.runId) as {
-        id: string; state: RunState; kind: BackgroundKind; task_id: string; task_revision: number;
+        id: string; state: RunState; kind: BackgroundKind; task_id: string; task_revision: number; conversation_id: string;
         model_requests_started: number; tool_calls_started: number; first_dispatch_started_at: string | null;
+        occurrence_key: string; scheduled_for: string | null;
       } | undefined;
       if (!run) return reject('RUN_NOT_FOUND');
       if (this.cancelRequested.has(input.runId) || (run.state !== 'claimed' && run.state !== 'running')) return reject('CANCELLED');
-      const task = this.d.db.prepare('SELECT revision,enabled,control_reason FROM background_tasks WHERE id = ?').get(run.task_id) as { revision: number; enabled: number; control_reason: string | null } | undefined;
+      const task = this.d.db.prepare('SELECT revision,enabled,control_reason,origin FROM background_tasks WHERE id = ?').get(run.task_id) as { revision: number; enabled: number; control_reason: string | null; origin: string } | undefined;
       if (!task) return reject('TASK_NOT_FOUND');
       if (task.revision !== run.task_revision) return reject('TASK_SUPERSEDED');
       if (!task.enabled || task.control_reason !== null) return reject('TASK_CANCELLED');
       if (!Number.isSafeInteger(input.reservedCostMicroUsd) || input.reservedCostMicroUsd < 0) return reject('BUDGET_ESTIMATE_UNAVAILABLE');
       const settings = this.d.settings.effective();
-      if (run.kind === 'autonomous' || run.kind === 'keepwarm') {
-        if (!settings[run.kind].enabled) return reject(run.kind === 'keepwarm' ? 'KEEPWARM_DISABLED' : 'AUTONOMOUS_DISABLED');
+      if (run.kind === 'autonomous' || run.kind === 'keepwarm' || run.kind === 'heartbeat_memory') {
+        const control=backgroundControl(run.kind,task.origin);
+        if (!settings[control].enabled) return reject(control==='keepwarm'?'KEEPWARM_DISABLED':control==='free_activity'?'FREE_ACTIVITY_DISABLED':'AUTONOMOUS_DISABLED');
         if (run.kind === 'keepwarm') {
-          const sleep = keepwarmSleepState(settings.keepwarm.sleep_window, nowMs);
+          const act = this.activity.get(run.conversation_id);
+          const sleep = effectiveSleepState(settings.keepwarm.sleep_window, nowMs, act?.early_resumed_date);
           if (sleep.blocked) return reject(sleep.code!);
+          // Preparation may finish after the grace period that was still open when the run was claimed.
+          if (input.dispatchKind === 'model' && run.first_dispatch_started_at === null
+              && isMorningWakeOccurrence(run.occurrence_key) && run.scheduled_for) {
+            const morningDate = run.occurrence_key.split(':').at(-1) ?? '';
+            const onlineYieldValid = act?.morning_yielded_date === morningDate
+              && act.morning_yielded_at !== null
+              && nowMs - Date.parse(act.morning_yielded_at) < MORNING_WAKE_GRACE_MS;
+            if (!onlineYieldValid && nowMs - Date.parse(run.scheduled_for) >= MORNING_WAKE_GRACE_MS) {
+              return reject('MORNING_WAKE_EXPIRED');
+            }
+          }
+        }
+        if (run.kind === 'heartbeat_memory') {
+          const due = this.d.db.prepare('SELECT scheduled_for FROM background_runs WHERE id=?').get(run.id) as {scheduled_for:string|null};
+          const dueMs = Date.parse(due.scheduled_for ?? '');
+          if (run.task_id !== HEARTBEAT_DAILY_MEMORY_TASK || task.origin !== 'system_heartbeat_memory'
+            || input.capabilityName !== 'heartbeat_memory_select' || input.dispatchKind !== 'tool'
+            || !Number.isFinite(dueMs) || nowMs < dueMs || nowMs - dueMs >= DAILY_MEMORY_WINDOW_MS) return reject('DAILY_MEMORY_DISPATCH_NOT_ADMITTED');
         }
         const gate = budgetGate({
-          kind: run.kind, settings, dispatchKind: input.dispatchKind === 'tool' ? 'tool' : 'model', nowMs,
+          kind: control, settings, dispatchKind: input.dispatchKind === 'tool' ? 'tool' : 'model', nowMs,
           nextRequestCostMicroUsd: input.reservedCostMicroUsd,
           run: { model_requests_started: run.model_requests_started, tool_calls_started: run.tool_calls_started,
             output_tokens_observed: 0, startedAtMs: run.first_dispatch_started_at ? Date.parse(run.first_dispatch_started_at) : nowMs,
-            reserved_cost_micro_usd: this.dailyOccupiedMicroUsd(run.kind, this.budgetDayNow(nowMs)), known_cost_micro_usd: 0, unknown_cost_count: 0 },
+            reserved_cost_micro_usd: this.dailyOccupiedMicroUsd(control, this.budgetDayNow(nowMs)), known_cost_micro_usd: 0, unknown_cost_count: 0 },
         });
         if (!gate.allowed) return reject(gate.code);
       } else if (!settings.reminders.enabled) return reject('REMINDERS_DISABLED');
@@ -365,12 +653,14 @@ export class BackgroundScheduler {
 
   /** §10.1 日占用：settled 按 actual、未结算（reserved/started/unknown）按预占；
    *  cancelled_before_send 不计；跨该 kind 全部 run 聚合（B-02）。 */
-  dailyOccupiedMicroUsd(kind: 'autonomous' | 'keepwarm', budgetDay: string): number {
+  dailyOccupiedMicroUsd(kind: ModelBackgroundControl, budgetDay: string): number {
     const row = this.d.db.prepare(
       `SELECT COALESCE(SUM(CASE WHEN bd.state = 'settled' THEN bd.actual_cost_micro_usd ELSE bd.reserved_cost_micro_usd END), 0) AS occ
-       FROM background_dispatches bd JOIN background_runs r ON r.id = bd.run_id
-       WHERE bd.budget_day = ? AND r.kind = ? AND bd.state != 'cancelled_before_send'`,
-    ).get(budgetDay, kind) as { occ: number };
+       FROM background_dispatches bd JOIN background_runs r ON r.id=bd.run_id JOIN background_tasks t ON t.id=r.task_id
+       WHERE bd.budget_day=? AND ((?='keepwarm' AND r.kind IN ('keepwarm','heartbeat_memory'))
+         OR (?<>'keepwarm' AND r.kind='autonomous' AND (t.origin='self_schedule')=?))
+       AND bd.state!='cancelled_before_send'`,
+    ).get(budgetDay,kind,kind,kind==='autonomous'?1:0) as { occ: number };
     return row?.occ ?? 0;
   }
 

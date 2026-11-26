@@ -43,8 +43,9 @@ function harness() {
   };
 }
 
-test('approved form has a display-only owner and no preview controls or placeholder authentication', () => {
-  assert.match(html, /id="account"[^>]*value="宿主用户"[^>]*readonly/);
+test('login account is editable and the form has no preview controls or placeholder authentication', () => {
+  assert.match(html, /id="account"[^>]*autocomplete="username"[^>]*required/);
+  assert.doesNotMatch(html, /id="account"[^>]*readonly/);
   assert.match(html, /id="password"[^>]*type="password"[^>]*required/);
   assert.doesNotMatch(html, /id="(?:replay|play-pause|seek)"/);
   assert.doesNotMatch(source, /登录服务尚未连接|localStorage|sessionStorage|console\./);
@@ -60,11 +61,12 @@ test('existing valid session enters home without posting credentials', async () 
   assert.equal(h.requests.length, 1);
 });
 
-test('login posts only the existing token, locks duplicate submits, clears secret then enters home', async () => {
+test('login submits the chosen account and unmodified password, locks duplicate submits and clears the secret', async () => {
   const h = harness();
   h.requests[0].resolve(response(401));
   await flush();
   h.nodes.get('password').value = ' isolated-test-credential ';
+  h.nodes.get('account').value = ' fixture-owner ';
   const pending = h.submit();
   assert.equal(h.nodes.get('login-submit').disabled, true);
   assert.equal(h.nodes.get('login-form').attrs.get('aria-busy'), 'true');
@@ -74,7 +76,7 @@ test('login posts only the existing token, locks duplicate submits, clears secre
   assert.equal(request.url, '/api/v1/auth/login');
   assert.equal(request.options.method, 'POST');
   assert.equal(request.options.credentials, 'same-origin');
-  assert.deepEqual(JSON.parse(request.options.body), { token: 'isolated-test-credential' });
+  assert.deepEqual(JSON.parse(request.options.body), { username: 'fixture-owner', password: ' isolated-test-credential ' });
   request.resolve(response(200, { ok: true }));
   await pending;
   assert.deepEqual(h.redirects, ['/']);
@@ -87,7 +89,7 @@ test('wrong credentials, origin denial and server errors remain on the form and 
   h.requests[0].resolve(response(401));
   await flush();
   h.nodes.get('password').value = 'isolated-test-credential';
-  for (const [status, expected] of [[401, '口令不正确'], [403, '登录请求被拒绝'], [503, '暂时连接不上']] as const) {
+  for (const [status, expected] of [[401, '账号或密码不正确'], [403, '登录请求被拒绝'], [503, '暂时连接不上']] as const) {
     const pending = h.submit();
     h.requests.at(-1).resolve(response(status));
     await pending;

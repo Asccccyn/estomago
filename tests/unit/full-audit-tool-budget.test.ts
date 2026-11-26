@@ -35,7 +35,7 @@ async function fixture(t: TestContext) {
   const root = tempRoot('audit-tool-budget-'); writeApprovedIdentity(root); const { db } = makeDb(root);
   const config = buildConfig({ ...readyRuntimePatch(), runtime: { ...readyRuntimePatch().runtime, provider: 'openrouter', tool_schema_mode: 'legacy' }, openrouter: { model: 'anthropic/claude-test-1' } });
   const paths = buildPaths(root), events = new EventService(db), messages = new MessageService(db), identity = new IdentityService(config, paths);
-  const routing = new RoutingService(db, events, messages), windows = new WindowManager(db, events, identity, config);
+  const routing = new RoutingService(db, events, messages), windows = new WindowManager(db, identity, config);
   const settings = new BackgroundSettingsService(db, config); settings.applyUpdate({ expectedRevision: 0, patch: { autonomous_enabled: true, autonomous_daily_cost_cap_usd: 0.1 } });
   const alerts = new SystemAlertService(db, events);
   let now = Date.now(), externalCalls = 0, round = 0, runNo = 0;
@@ -45,8 +45,8 @@ async function fixture(t: TestContext) {
   const payloads: Record<string, unknown>[] = [];
   const transport: OrTransport = async payload => {
     payloads.push(structuredClone(payload)); round++;
-    const name = mode === 'free' ? 'chat_send_text' : 'wishstar_special_dates';
-    const args = mode === 'free' ? { text: '合成正式后台发言', idempotency_key: `free-${runNo}` } : {};
+    const name = mode === 'free' ? 'chat_send_text' : 'wishstar_read'; // special_dates 已并入 wishstar_read（what=dates）
+    const args = mode === 'free' ? { text: '合成正式后台发言', idempotency_key: `free-${runNo}` } : { what: 'dates' };
     const call = sse({ choices: [{ delta: { tool_calls: [{ index: 0, id: `call-${runNo}`, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 100, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, cost: 0.000001 } }) + 'data: [DONE]\n\n';
     return { status: 200, headers: new Map(), body: Readable.from([Buffer.from(mode !== 'seed' && round === 1 ? call : textReply)]) };
   };
@@ -90,7 +90,7 @@ test('F-T03 successful external handler with no cost receipt retains positive re
   const f = await fixture(t); f.setQuote(60000); const first = await f.run();
   assert.equal(f.externalCalls, 1); assert.equal(first.state, 'completed');
   const dispatch = f.db.prepare("SELECT capability_name,state,reserved_cost_micro_usd,actual_cost_micro_usd FROM background_dispatches WHERE run_id=? AND dispatch_kind='tool'").get(first.id) as Record<string, unknown>;
-  assert.deepEqual({ ...dispatch }, { capability_name: 'wishstar_special_dates', state: 'unknown', reserved_cost_micro_usd: 60000, actual_cost_micro_usd: null });
+  assert.deepEqual({ ...dispatch }, { capability_name: 'wishstar_special_dates' /* 报价键=动作路径 */, state: 'unknown', reserved_cost_micro_usd: 60000, actual_cost_micro_usd: null });
   assert.equal(first.reserved_cost_micro_usd, 60000);
   const second = await f.run(); assert.equal(second.result_code, 'BACKGROUND_BUDGET_EXHAUSTED'); assert.equal(f.externalCalls, 1, 'unsettled first reservation prevents second external call');
 });

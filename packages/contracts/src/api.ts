@@ -37,6 +37,9 @@ export type MessageDto = {
   published_at: string | null;
   created_at: string;
   revision: MessageRevisionDto; // 当前有效修订
+  publication_breaks?: Array<{ before_message_id: string; end_char: number }>;
+  heartbeat_card?: { run_id: string; origin?: 'chat' };
+  heartbeat?: 'invite' | 'progress' | 'assistant';
   reply_status?: MessageReplyStatusDto;
   mutation_status?: { can_edit: boolean; can_withdraw: boolean; reason: string | null };
 };
@@ -60,7 +63,7 @@ export type MessagePageDto = {
   date?: string;
   empty_date?: boolean;
   event_cursor?: number; // Only snapshot=1; never advance an existing SSE cursor from a history page.
-  active_turns?: Array<{ turn_id: string; attempt_id: string | null; state: string }>;
+  active_turns?: Array<{ turn_id: string; attempt_id: string | null; state: string; trigger?: string }>;
   pending_route?: {
     decision_id: string;
     turn_id: string;
@@ -75,7 +78,7 @@ export type MessagePageDto = {
 
 export type MessageAttachmentInput = {
   asset_id: string; // 必须先经资产创建/导入取得（不接受 URL/路径/Base64）
-  presentation: 'image' | 'sticker' | 'voice';
+  presentation: 'image' | 'sticker' | 'voice' | 'work'; // work=SVG/HTML 代码作品引用（隔离预览交付，包1 M02 2026-11-15）
   caption?: string | null; // 图片/表情可选说明——不是用户亲笔正文
 };
 

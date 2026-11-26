@@ -1,0 +1,5806 @@
+{
+  "contract_version": "1.1",
+  "generated_from": "backend/mariposa/capabilities/registry.py",
+  "source_commit": "7e4366f8f324391c0465b43793cd14f183e12ddc",
+  "source_files": {
+    "backend/mariposa/capabilities/registry.py": "447b073a8c6f4dd3adf947ddc5ee286ed9a5722fbe5fc9c804043f2bc7cdb7f7",
+    "backend/mariposa/capabilities/input_schemas.py": "89cc9a4fe2e809a0d066cabfc9040acb2e58a7158cf7e8a7ddef10e676504320",
+    "backend/mariposa/memory/categories.py": "cbc96a59341f6c58ed2ac452457ae40bab87cffec1e05965cd5010e03215a88d",
+    "backend/mariposa/memory/service.py": "445e097e13d7698cd3e711baa2c1a4bf2a1a835269c3aa6ca0287d69bccc8d26",
+    "backend/mariposa/memory/relations.py": "437a58ae6603f572e2519db6db6c828aa42eda7746bb6a7cfe5e39aebdfdd527",
+    "backend/mariposa/plans/service.py": "926efe757dba7a02dff6ab914b361d8f94817a8484f72678ca73942ad6836568",
+    "backend/mariposa/canonical.py": "ffbc168159027603e01a9426a56573065928f6fca518840007e90267e0372926",
+    "backend/mariposa/recall/models.py": "ab36f6441608413c97818626672d38f1208646bf9de7edd9a81c9b0a254003b4",
+    "backend/mariposa/retrieval/query_plan.py": "aeeb426055278665f23dcf74a02f38f8ba7f3d86ec1038c9045d8e7fd8d0d8e8",
+    "backend/mariposa/recall/round2.py": "01f1f89ce4d2474573facec4bbec97d83888e427d5d9399e0da05086d0a7d85b",
+    "backend/mariposa/config.py": "b79e208555ed24d5a1cb7667f73b710b1baffb92cffe9308b33d0bedeac94d02",
+    "scripts/export_contracts.py": "e1fe32f896cb576129d2f5d216eecb103c7ddd6d9243eacf6ff6e4402ab4addc"
+  },
+  "capabilities": [
+    {
+      "canonical_name": "activity.list",
+      "transport_name": "mariposa_activity_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "[规格别名] 审计查询（管理接口，不参与召回）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_type": {
+            "type": "string"
+          },
+          "limit": {}
+        }
+      }
+    },
+    {
+      "canonical_name": "bootstrap.get",
+      "transport_name": "mariposa_bootstrap_get",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "两入口开窗（entry_source 校验 profile；worker 拒绝）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "profile"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "type": "string",
+            "enum": [
+              "claude_chat",
+              "cc",
+              "estomago"
+            ]
+          },
+          "known_snapshot_id": {
+            "type": "string"
+          },
+          "loaded_snapshot_id": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "bootstrap.next",
+      "transport_name": "mariposa_bootstrap_next",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "续取开窗分页（snapshot 变化返回 SNAPSHOT_STALE）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "snapshot_id",
+          "cursor",
+          "section"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cursor": {
+            "type": "object"
+          },
+          "section": {
+            "type": "string",
+            "enum": [
+              "memory_days",
+              "plans",
+              "i",
+              "plan_content",
+              "memory_item"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "capabilities.list",
+      "transport_name": "mariposa_capabilities_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "当前能力清单",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "capabilities.status",
+      "transport_name": "mariposa_capabilities_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "当前能力可用状态统计",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "emotion.context.get",
+      "transport_name": "mariposa_emotion_context_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "reserved",
+      "idempotent": false,
+      "description": "情绪补充召回（默认禁用）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "episode.apply",
+      "transport_name": "mariposa_episode_apply",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "语义事件动作（start/continue/pause/close/correct）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "action",
+          "scope_id",
+          "reason_code"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "start",
+              "continue",
+              "pause",
+              "close",
+              "correct"
+            ]
+          },
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "episode_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "source_selections": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "terminal_source_ref": {
+            "type": "object"
+          },
+          "decision_source_refs": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "reason_code": {
+            "type": "string",
+            "enum": [
+              "tracking_requested",
+              "same_episode",
+              "waiting",
+              "explicit_completion",
+              "goal_resolved",
+              "episode_concluded",
+              "boundary_error"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "corrected_state": {
+            "type": "string",
+            "enum": [
+              "OPEN",
+              "QUIESCENT",
+              "CLOSED"
+            ]
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "episode.get",
+      "transport_name": "mariposa_episode_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按 ID 读取事件当前状态与证据引用",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "episode_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "episode_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "episode.list",
+      "transport_name": "mariposa_episode_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "scope 内分页读取事件状态（不给全库）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "scope_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "scope_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "OPEN",
+                "QUIESCENT",
+                "CLOSED"
+              ]
+            }
+          },
+          "limit": {},
+          "cursor": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.get",
+      "transport_name": "mariposa_i_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "I 正本当前版（char写）",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "canonical_name": "i.item.create",
+      "transport_name": "mariposa_i_item_create",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "新增一条 I",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "change_reason": {
+            "type": "string"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "memory_id",
+                "relation_type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "memory_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "relation_type": {
+                  "type": "string",
+                  "enum": [
+                    "changed_because_of",
+                    "clarified_by",
+                    "informed_by",
+                    "related_to",
+                    "related"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.item.get",
+      "transport_name": "mariposa_i_item_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "读取单条当前 I",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.item.history",
+      "transport_name": "mariposa_i_item_history",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "显式读取某条 I 的历史、理由和记忆关联",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "item_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.item.relations.correct",
+      "transport_name": "mariposa_i_item_relations_correct",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "纠错 I 修订与桶的错误关系（不改 I 正文）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "relation_id",
+          "correction_action",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "relation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "correction_action": {
+            "type": "string",
+            "enum": [
+              "remove_wrong_binding",
+              "replace_wrong_binding"
+            ]
+          },
+          "replacement": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.item.restore",
+      "transport_name": "mariposa_i_item_restore",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "恢复旧 I：复制旧版形成新 revision",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "restore_revision",
+          "expected_revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "restore_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "change_reason": {
+            "type": "string"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "memory_id",
+                "relation_type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "memory_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "relation_type": {
+                  "type": "string",
+                  "enum": [
+                    "changed_because_of",
+                    "clarified_by",
+                    "informed_by",
+                    "related_to",
+                    "related"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.item.revise",
+      "transport_name": "mariposa_i_item_revise",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "修改 I：追加 revision，可记录理由和旧版启发",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "item_id",
+          "content",
+          "expected_revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "change_reason": {
+            "type": "string"
+          },
+          "informed_by_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "memory_id",
+                "relation_type"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "memory_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "relation_type": {
+                  "type": "string",
+                  "enum": [
+                    "changed_because_of",
+                    "clarified_by",
+                    "informed_by",
+                    "related_to",
+                    "related"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.items.list",
+      "transport_name": "mariposa_i_items_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "I 当前生效条目；旧版需显式读取",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "canonical_name": "i.suggest",
+      "transport_name": "mariposa_i_suggest",
+      "allowed_principals": [
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "宿主用户提建议（待提议材料，不改正本）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.suggestions.list",
+      "transport_name": "mariposa_i_suggestions_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "I 建议列表",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "accepted",
+              "dismissed"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "i.versions.read",
+      "transport_name": "mariposa_i_versions_read",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "兼容整篇 I 快照历史；条目历史优先用 i.item.history",
+      "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      }
+    },
+    {
+      "canonical_name": "identity.bindings.revoke",
+      "transport_name": "mariposa_identity_bindings_revoke",
+      "allowed_principals": [
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "撤销客户端绑定（旧 token 立即失效）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "binding_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "jobs.status",
+      "transport_name": "mariposa_jobs_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "[规格别名] 维护任务状态总览",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "maintenance.activity.list",
+      "transport_name": "mariposa_maintenance_activity_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "审计查询（管理接口，不参与召回）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "event_type": {
+            "type": "string"
+          },
+          "limit": {}
+        }
+      }
+    },
+    {
+      "canonical_name": "maintenance.idempotency.reconcile",
+      "transport_name": "mariposa_maintenance_idempotency_reconcile",
+      "allowed_principals": [
+        "qiaosheng",
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "崩溃窗口对账：核实业务结果后清除 running 幂等占位",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "capability",
+          "idempotency_key"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "capability": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "record_principal": {
+            "type": "string"
+          },
+          "stale_seconds": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "maintenance.jobs.status",
+      "transport_name": "mariposa_maintenance_jobs_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "维护任务状态总览",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "maintenance.outbox.drain",
+      "transport_name": "mariposa_maintenance_outbox_drain",
+      "allowed_principals": [
+        "qiaosheng",
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "读取已停写 outbox 的历史状态（无消费者，不执行投递）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {}
+        }
+      }
+    },
+    {
+      "canonical_name": "maintenance.outbox.status",
+      "transport_name": "mariposa_maintenance_outbox_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "outbox 待处理统计",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "maintenance.rebuild_index",
+      "transport_name": "mariposa_maintenance_rebuild_index",
+      "allowed_principals": [
+        "qiaosheng",
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "按当前版本重建全部派生索引（旧投影+分字段+words+source）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "maintenance.recall_policy.get",
+      "transport_name": "mariposa_maintenance_recall_policy_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "召回判断政策只读（模式/provider/model/revision/就绪探针；零模型调用——刷新不触发推理）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "maintenance.recall_policy.update",
+      "transport_name": "mariposa_maintenance_recall_policy_update",
+      "allowed_principals": [
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "召回判断政策写入（expected_revision CAS + 幂等键；开启=所选 provider 判断，关闭=零判断调用+候选全集分页；仅 qiaosheng，且仅网页登录会话可写——OAuth 绑定/模型通道调用即拒 POLICY_WRITE_WEB_ONLY）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "expected_revision",
+          "enabled"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "typesafe_jev",
+                  "codex_sdk",
+                  ""
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idempotency_key": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "maintenance.semantic.warmup",
+      "transport_name": "mariposa_maintenance_semantic_warmup",
+      "allowed_principals": [
+        "qiaosheng",
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "全量预热语义向量（冷启动/重建后一次；查询路径仅限流补算）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "maintenance.settings.get",
+      "transport_name": "mariposa_maintenance_settings_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "只读配置快照（时区/开窗/遗忘/provider 状态）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "maintenance.source.cleanup",
+      "transport_name": "mariposa_maintenance_source_cleanup",
+      "allowed_principals": [
+        "qiaosheng",
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "清理 Source 暂存残留（过期 staging/part 文件）；返回清理计数",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_age_hours": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 720
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "media.get",
+      "transport_name": "mariposa_media_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "媒体元数据",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "content_hash"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "content_hash": {
+            "type": "string",
+            "minLength": 64,
+            "maxLength": 64
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "media.list",
+      "transport_name": "mariposa_media_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "媒体对象列表",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {}
+        }
+      }
+    },
+    {
+      "canonical_name": "media.upload.finalize",
+      "transport_name": "mariposa_media_upload_finalize",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": true,
+      "description": "完成上传（hash 去重）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "upload_token"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "upload_token": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]{8,128}$"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "media.upload.prepare",
+      "transport_name": "mariposa_media_upload_prepare",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "申请上传 token（字节走专用 HTTP 端点，不进工具参数）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "mime",
+          "size"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mime": {
+            "type": "string",
+            "minLength": 1
+          },
+          "size": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.calendar",
+      "transport_name": "mariposa_memory_calendar",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "上海日历的记忆桶数量、缺原文数和按日标题，仅读取当前有效桶",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "period"
+        ],
+        "properties": {
+          "period": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}(-\\d{2})?$"
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.cards.batch",
+      "transport_name": "mariposa_memory_cards_batch",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "批量读卡片附加面（words/recollections/keepers/bindings/relations），≤100 桶一次返回",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_ids"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "include_memory": {
+            "type": "boolean"
+          },
+          "memory_ids": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.categories.replace",
+      "transport_name": "mariposa_memory_categories_replace",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "整组替换分类（十类平行多选，非空必填；剧本/日记须单分类）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "categories"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "categories": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "daily",
+                "milestone",
+                "sad",
+                "sweet",
+                "date",
+                "plan",
+                "sex",
+                "anniversary",
+                "reloplay",
+                "diary"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.deletion.decide",
+      "transport_name": "mariposa_memory_deletion_decide",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "审批删除申请（仅char；approve 执行物理删除——CB-055：archive 已退役，描述与 v2.0 语义对齐）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "decision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "reject"
+            ]
+          },
+          "rejection_reason": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.deletion.direct",
+      "transport_name": "mariposa_memory_deletion_direct",
+      "allowed_principals": [
+        "jiaming"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "char直删（P-D02）：无申请/理由/审批；关系硬门（P-D04）同样生效；pending 申请置 superseded",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.deletion.get",
+      "transport_name": "mariposa_memory_deletion_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "读删除申请（含人类/拒绝理由；桶删除后仍可查）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.deletion.list",
+      "transport_name": "mariposa_memory_deletion_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "删除申请列表",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "memory_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.deletion.request",
+      "transport_name": "mariposa_memory_deletion_request",
+      "allowed_principals": [
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "提交删除申请（reason 必填；daily=10/lifetime=5 与旧系统一致）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "reason",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.deletion.withdraw",
+      "transport_name": "mariposa_memory_deletion_withdraw",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "撤回 pending 删除申请",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.detail.read",
+      "transport_name": "mariposa_memory_detail_read",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按已见 detail_ref 直读该桶当前完整内容与五域关系（分页快照；绝不 recall；不建 view_receipt、不确认明确打开）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "detail_ref"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_scope": {
+            "type": "string"
+          },
+          "view": {
+            "enum": [
+              "full",
+              "model"
+            ]
+          },
+          "section": {
+            "enum": [
+              "memory",
+              "relations",
+              "source"
+            ]
+          },
+          "detail_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.get",
+      "transport_name": "mariposa_memory_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "读取当前表示（历史 forgotten_summary 只返回审批摘要——LEGACY_CONTENT_GAP；v1.7 遗忘链已退役，无新遗忘产生）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.hold",
+      "transport_name": "mariposa_memory_hold",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "写入一条正式记忆（v1.7 分层：标题/分类（十类平行多选，剧本/日记须单分类）/事件/同期心情/我们的话）；自动化路径可带 operation_id+source_selections（同事务回执）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "text",
+          "original_title",
+          "categories",
+          "creation_mode"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "view": {
+            "enum": [
+              "full",
+              "model"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "description": "自主选择保存，一条一事；正文可叙述经历和感受，逐字引语须有原文依据。"
+          },
+          "memory_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "事件发生日期（ISO 日期），补记必填；不以记录时间代替过去的事件日期。"
+          },
+          "date_confidence": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "inferred",
+              "unknown"
+            ],
+            "default": "unknown"
+          },
+          "occurred_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurred_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "raw_pending": {
+            "type": "boolean"
+          },
+          "original_title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "daily",
+                "milestone",
+                "sad",
+                "sweet",
+                "date",
+                "plan",
+                "sex",
+                "anniversary",
+                "reloplay",
+                "diary"
+              ]
+            },
+            "description": "普通分类可并列多选；diary、reloplay 各自单分类隔离。daily=日常；milestone=关系重大转折或对我们是什么有新结论；第一次归 anniversary，争吵不归此类；sad=事件本身是难过的；sweet=事件本身温柔、亲密或被爱；当时情绪另写心情；date=约会；plan=计划桶，须以 plan_ids 绑定已有计划；sex=做爱；anniversary=纪念日、值得纪念的时刻或第一次；reloplay=角色扮演的虚构剧情；diary=成篇的信或日记，一篇一桶",
+            "x-exclusive": [
+              "diary",
+              "reloplay"
+            ]
+          },
+          "plan_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "关联已有计划时填写真实 plan_id。记录新计划时选 plan 分类并省略此字段，由服务端在保存记忆的同一事务创建并关联计划，需要 plan.create 权限。"
+          },
+          "mood": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "开心",
+                    "爱",
+                    "生气",
+                    "吃醋",
+                    "悲伤",
+                    "渴望",
+                    "不安"
+                  ]
+                }
+              }
+            },
+            "x-creation-mode": "contemporaneous",
+            "description": "仅 contemporaneous 可写当下心情；tags 或 text 任一出现都是写心情，两者都省略才是不写。"
+          },
+          "our_words": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "speaker",
+                "text"
+              ],
+              "properties": {
+                "speaker": {
+                  "type": "string",
+                  "enum": [
+                    "jiaming",
+                    "qiaosheng"
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_ref": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "creation_mode": {
+            "type": "string",
+            "enum": [
+              "contemporaneous",
+              "retrospective"
+            ],
+            "description": "contemporaneous=当下记录，省略 memory_date 时由服务端按业务时区取记录当日；retrospective=补记过去，须 memory_date。"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "source_selections": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "required": [
+                "conversation_id",
+                "members"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "conversation_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "members": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 500,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "source_message_id",
+                      "content_hash"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "source_message_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "content_hash": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64
+                      }
+                    }
+                  }
+                },
+                "start_char_offset": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_char_offset": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "event_source_ranges": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "conversation_id",
+                    "members"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "conversation_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "members": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 500,
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "source_message_id",
+                          "content_hash"
+                        ],
+                        "additionalProperties": false,
+                        "properties": {
+                          "source_message_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "content_hash": {
+                            "type": "string",
+                            "minLength": 64,
+                            "maxLength": 64
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "conversation_id",
+                    "start_message_id",
+                    "end_message_id",
+                    "source_revision"
+                  ],
+                  "properties": {
+                    "conversation_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "start_message_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "end_message_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "source_revision": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "creation_mode": {
+                  "const": "retrospective"
+                }
+              },
+              "required": [
+                "creation_mode"
+              ]
+            },
+            "then": {
+              "required": [
+                "memory_date"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "canonical_name": "memory.hold.status",
+      "transport_name": "mariposa_memory_hold_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按 operation_id 查 hold 完成回执（历史成功与当前资源状态分列；无记录=尚无提交证据）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.keep.revoke",
+      "transport_name": "mariposa_memory_keep_revoke",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "撤销本人的「留」标记（谁留谁撤；撤销不重置年龄）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "mark_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mark_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.keeps.list",
+      "transport_name": "mariposa_memory_keeps_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "桶的留标记列表（含已撤销；阶段用有效标记）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.list",
+      "transport_name": "mariposa_memory_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "记忆倒序列表（历史 forgotten_summary 只给摘要表示）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {},
+          "cursor": {
+            "type": "object"
+          },
+          "cursor_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.mood.update",
+      "transport_name": "mariposa_memory_mood_update",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "当时心情修订（文字+标签，覆盖更新留审计；仅char，整理期豁免口见 service 层）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "mood"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mood": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "tags": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.mood.vocab",
+      "transport_name": "mariposa_memory_mood_vocab",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "心情词表开放接口（大类/下层词+写入规则，单一事实源）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "memory.open",
+      "transport_name": "mariposa_memory_open",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "明确打开：返回当前表示并签发一次性查看票据（不自动确认）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "view": {
+            "enum": [
+              "full",
+              "model"
+            ]
+          },
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.our_words.source.correct",
+      "transport_name": "mariposa_memory_our_words_source_correct",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "纠错话语来源引用（旧证据/指纹随之失效）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "word_id",
+          "correction_action",
+          "operation_id",
+          "expected_source_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "word_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_source_version": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "correction_action": {
+            "type": "string",
+            "enum": [
+              "remove_wrong_binding",
+              "replace_wrong_binding"
+            ]
+          },
+          "replacement": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall",
+      "transport_name": "mariposa_memory_recall",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "v2 统一召回：query可空浏览；分类/心情标签/事件日期筛选；any/all；去重分页",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string"
+          },
+          "lexical_terms": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "keyword_match": {
+            "type": "string",
+            "enum": [
+              "any",
+              "all"
+            ]
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": "array",
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "filters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "categories": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "category_match": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "all"
+                ]
+              },
+              "mood_tags": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mood_match": {
+                "type": "string",
+                "enum": [
+                  "any",
+                  "all"
+                ]
+              },
+              "event_date": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "type": "string"
+                  },
+                  "to": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.accept",
+      "transport_name": "mariposa_memory_recall_accept",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "确认目标候选；可选 close 一并解决",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "candidate_ref": {
+            "type": "string"
+          },
+          "close": {
+            "type": "boolean"
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.close",
+      "transport_name": "mariposa_memory_recall_close",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "显式结束：resolved/cancelled；终止本次自动补查",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "cancelled"
+            ]
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.navigate",
+      "transport_name": "mariposa_memory_recall_navigate",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "沿 temporal_axis 导航前后候选（earlier/later）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "direction",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "earlier",
+              "later"
+            ]
+          },
+          "anchor_candidate_ref": {
+            "type": "string"
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.page",
+      "transport_name": "mariposa_memory_recall_page",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "判断关闭模式：按服务端游标读取冻结结果集下一页（零检索/零判断/零 COUNT；政策切换拒绝混页；游标与 refine/Raw 续页引用分槽不互换）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "result_set_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "covered_ranges": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "resource_ref",
+                "content_version",
+                "start_char",
+                "end_char"
+              ],
+              "properties": {
+                "resource_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "content_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "start_char": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_char": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "result_set_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.refine",
+      "transport_name": "mariposa_memory_recall_refine",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "同 session 纠正：改条件/证据需求/继续申请新 burst（revision+1）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "query_plan"
+        ],
+        "required_oneof": [
+          [
+            "operation_id",
+            "request_ref"
+          ]
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "covered_ranges": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "resource_ref",
+                "content_version",
+                "start_char",
+                "end_char"
+              ],
+              "properties": {
+                "resource_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "content_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "start_char": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_char": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "query_plan": {
+            "type": "object",
+            "required": [
+              "original_request"
+            ],
+            "properties": {
+              "request_ref": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "original_request": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "[\\s\\S]*\\S"
+              },
+              "intent": {
+                "type": "string",
+                "default": "recall_event",
+                "enum": [
+                  "recall_event",
+                  "find_words",
+                  "mixed"
+                ],
+                "x-default-by-channels": {
+                  "event": "recall_event",
+                  "words": "find_words",
+                  "mixed": "mixed"
+                }
+              },
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "event",
+                    "words"
+                  ]
+                },
+                "default": [
+                  "event"
+                ],
+                "description": "event 查事件，words 查已保存话语；raw 仅由已有会话的授权第二轮进入。"
+              },
+              "semantic_query": {
+                "type": "string",
+                "default": ""
+              },
+              "lexical_terms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "补充词法关键词；省略按既有查询计划检索，不等于只走语义。无词项、无明确条件时仍会以原始请求作词面匹配。"
+              },
+              "exact_phrases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "explicit_constraints": {
+                "type": "object",
+                "default": {},
+                "x-fields-by-channel": {
+                  "event": [
+                    "categories",
+                    "category_match",
+                    "event_date",
+                    "mood_match",
+                    "mood_tags"
+                  ],
+                  "words": [
+                    "event_date",
+                    "source_date",
+                    "speaker"
+                  ]
+                },
+                "additionalProperties": false,
+                "properties": {
+                  "categories": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "category_match": {
+                    "type": "string",
+                    "enum": [
+                      "any",
+                      "all"
+                    ],
+                    "default": "any"
+                  },
+                  "event_date": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "mood_match": {
+                    "type": "string",
+                    "enum": [
+                      "any",
+                      "all"
+                    ],
+                    "default": "any"
+                  },
+                  "mood_tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_date": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "speaker": {
+                    "type": "string",
+                    "enum": [
+                      "jiaming",
+                      "qiaosheng"
+                    ]
+                  }
+                }
+              },
+              "explicit_negative_constraints": {
+                "type": "object",
+                "default": {},
+                "x-fields-by-channel": {
+                  "event": [
+                    "categories_excluded",
+                    "event_date_excluded"
+                  ],
+                  "words": [
+                    "source_date_excluded",
+                    "speaker_excluded"
+                  ]
+                },
+                "additionalProperties": false,
+                "properties": {
+                  "categories_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "event_date_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from"
+                      ]
+                    }
+                  },
+                  "source_date_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from"
+                      ]
+                    }
+                  },
+                  "speaker_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "jiaming",
+                        "qiaosheng"
+                      ]
+                    }
+                  }
+                }
+              },
+              "resolved_references": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "default": []
+              },
+              "inferred_hints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "alternate_queries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "maxItems": 2
+              },
+              "unknowns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "temporal_axis": {
+                "type": "string",
+                "default": "event_time",
+                "enum": [
+                  "event_time",
+                  "source_conversation_time",
+                  "hold_time",
+                  "plan_time",
+                  "retention_time"
+                ]
+              },
+              "evidence_requirement": {
+                "type": "string",
+                "default": "any",
+                "enum": [
+                  "any",
+                  "summary_ok",
+                  "verbatim_required"
+                ]
+              },
+              "raw_fallback": {
+                "type": "string",
+                "default": "off",
+                "enum": [
+                  "off",
+                  "when_evidence_insufficient"
+                ]
+              },
+              "delivery_limit": {
+                "type": "integer",
+                "default": 3,
+                "x-clamp": [
+                  0,
+                  3
+                ]
+              },
+              "excluded_source_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              }
+            }
+          },
+          "expected_revision": {
+            "type": "integer"
+          },
+          "continue_request_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request_ref": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.reject",
+      "transport_name": "mariposa_memory_recall_reject",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "session-local 拒绝候选（candidate/event/word/source_selection）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "candidate_ref": {
+            "type": "string"
+          },
+          "resource_ref": {
+            "type": "string"
+          },
+          "reject_target": {
+            "type": "string",
+            "enum": [
+              "candidate",
+              "event",
+              "word",
+              "source_selection"
+            ]
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.round2",
+      "transport_name": "mariposa_memory_recall_round2",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "v1.7 Round 2 原文深搜：同 session+revision、ROUND1_COMPLETE 回执、judge 完成且 reason 属闭集",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "reason",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "covered_ranges": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "resource_ref",
+                "content_version",
+                "start_char",
+                "end_char"
+              ],
+              "properties": {
+                "resource_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "content_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "start_char": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_char": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "enum": [
+              "EVIDENCE_INSUFFICIENT",
+              "EXPLICIT_REJECT_AFTER_DELIVERY",
+              "NO_DELIVERABLE_CANDIDATE",
+              "SOURCE_DISAMBIGUATION_NEEDED",
+              "VERBATIM_REQUIRED_NOT_MET"
+            ]
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "continuation_token": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.start",
+      "transport_name": "mariposa_memory_recall_start",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "新建 Recall Session 并执行首轮检索（0—3 条证据包）",
+      "input_schema": {
+        "type": "object",
+        "required_oneof": [
+          [
+            "operation_id",
+            "request_ref"
+          ]
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "covered_ranges": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "resource_ref",
+                "content_version",
+                "start_char",
+                "end_char"
+              ],
+              "properties": {
+                "resource_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "content_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "start_char": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_char": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "query_plan": {
+            "type": "object",
+            "required": [
+              "original_request"
+            ],
+            "properties": {
+              "request_ref": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "original_request": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "[\\s\\S]*\\S"
+              },
+              "intent": {
+                "type": "string",
+                "default": "recall_event",
+                "enum": [
+                  "recall_event",
+                  "find_words",
+                  "mixed"
+                ],
+                "x-default-by-channels": {
+                  "event": "recall_event",
+                  "words": "find_words",
+                  "mixed": "mixed"
+                }
+              },
+              "channels": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "event",
+                    "words"
+                  ]
+                },
+                "default": [
+                  "event"
+                ],
+                "description": "event 查事件，words 查已保存话语；raw 仅由已有会话的授权第二轮进入。"
+              },
+              "semantic_query": {
+                "type": "string",
+                "default": ""
+              },
+              "lexical_terms": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "description": "补充词法关键词；省略按既有查询计划检索，不等于只走语义。无词项、无明确条件时仍会以原始请求作词面匹配。"
+              },
+              "exact_phrases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "explicit_constraints": {
+                "type": "object",
+                "default": {},
+                "x-fields-by-channel": {
+                  "event": [
+                    "categories",
+                    "category_match",
+                    "event_date",
+                    "mood_match",
+                    "mood_tags"
+                  ],
+                  "words": [
+                    "event_date",
+                    "source_date",
+                    "speaker"
+                  ]
+                },
+                "additionalProperties": false,
+                "properties": {
+                  "categories": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "category_match": {
+                    "type": "string",
+                    "enum": [
+                      "any",
+                      "all"
+                    ],
+                    "default": "any"
+                  },
+                  "event_date": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "mood_match": {
+                    "type": "string",
+                    "enum": [
+                      "any",
+                      "all"
+                    ],
+                    "default": "any"
+                  },
+                  "mood_tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "source_date": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "from": {
+                        "type": "string"
+                      },
+                      "to": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "speaker": {
+                    "type": "string",
+                    "enum": [
+                      "jiaming",
+                      "qiaosheng"
+                    ]
+                  }
+                }
+              },
+              "explicit_negative_constraints": {
+                "type": "object",
+                "default": {},
+                "x-fields-by-channel": {
+                  "event": [
+                    "categories_excluded",
+                    "event_date_excluded"
+                  ],
+                  "words": [
+                    "source_date_excluded",
+                    "speaker_excluded"
+                  ]
+                },
+                "additionalProperties": false,
+                "properties": {
+                  "categories_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "event_date_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from"
+                      ]
+                    }
+                  },
+                  "source_date_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from"
+                      ]
+                    }
+                  },
+                  "speaker_excluded": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "jiaming",
+                        "qiaosheng"
+                      ]
+                    }
+                  }
+                }
+              },
+              "resolved_references": {
+                "type": "array",
+                "items": {
+                  "type": "object"
+                },
+                "default": []
+              },
+              "inferred_hints": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "alternate_queries": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": [],
+                "maxItems": 2
+              },
+              "unknowns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              },
+              "temporal_axis": {
+                "type": "string",
+                "default": "event_time",
+                "enum": [
+                  "event_time",
+                  "source_conversation_time",
+                  "hold_time",
+                  "plan_time",
+                  "retention_time"
+                ]
+              },
+              "evidence_requirement": {
+                "type": "string",
+                "default": "any",
+                "enum": [
+                  "any",
+                  "summary_ok",
+                  "verbatim_required"
+                ]
+              },
+              "raw_fallback": {
+                "type": "string",
+                "default": "off",
+                "enum": [
+                  "off",
+                  "when_evidence_insufficient"
+                ]
+              },
+              "delivery_limit": {
+                "type": "integer",
+                "default": 3,
+                "x-clamp": [
+                  0,
+                  3
+                ]
+              },
+              "excluded_source_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "default": []
+              }
+            }
+          },
+          "conversation_scope": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "request_ref": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recall.status",
+      "transport_name": "mariposa_memory_recall_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "当前 session 状态+引用重校验（不重放旧正文）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "session_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_scope": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recollections.append",
+      "transport_name": "mariposa_memory_recollections_append",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "凭有效查看回执追加本人回忆（不索引；触发保留线索）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "receipt_id",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receipt_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "keep_wide": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recollections.list",
+      "transport_name": "mariposa_memory_recollections_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "列出桶的回忆（当前版；include_history 含修订历史）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "include_history": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.recollections.revise",
+      "transport_name": "mariposa_memory_recollections_revise",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "修订本人回忆（原话留底，supersedes 链）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "recollection_id",
+          "text"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "recollection_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.relations.correct",
+      "transport_name": "mariposa_memory_relations_correct",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "纠错桶间关系（binding_error；remove/replace_wrong_binding）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "relation_id",
+          "correction_action",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "relation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "correction_action": {
+            "type": "string",
+            "enum": [
+              "remove_wrong_binding",
+              "replace_wrong_binding"
+            ]
+          },
+          "replacement": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.relations.link",
+      "transport_name": "mariposa_memory_relations_link",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "建立关联（单向存储，显式反向查询）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "from_memory",
+          "to_memory",
+          "relation_type"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "from_memory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "to_memory": {
+            "type": "string",
+            "minLength": 1
+          },
+          "relation_type": {
+            "type": "string",
+            "enum": [
+              "continuation_of",
+              "related_to",
+              "contradicts",
+              "custom"
+            ]
+          },
+          "custom_label": {
+            "type": "string"
+          },
+          "reverse_label": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.relations.list",
+      "transport_name": "mariposa_memory_relations_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "列出关联",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "out",
+              "in",
+              "both"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.relations.trace",
+      "transport_name": "mariposa_memory_relations_trace",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "沿 continuation_of 追事件链",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "max_depth": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 5,
+            "description": "continuation_of 延续链深度，默认 5，整数 1–10"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.surfacing.check",
+      "transport_name": "mariposa_memory_surfacing_check",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "纯本地版本/权限/政策校验（无检索、无 judge、无网络；最终冻结前 as-of 复核，回执绑目标消息/修订/窗口）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "validation_receipt",
+          "conversation_scope",
+          "target_message_id",
+          "target_revision",
+          "window_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "validation_receipt": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "window_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "delivery_budget_bytes": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.surfacing.prepare",
+      "transport_name": "mariposa_memory_surfacing_prepare",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "自动浮现准备（v5）：消费 Sol 检索计划（purpose/route/breadth/queries）→ event/words 分域检索→按用途严格 prepare 判断（serves_purpose 主问；same_occurrence 仅定位锚）→按 breadth 选证据规模（快照入 surface 运行库；judge 费用独立台账；默认 SURFACE_ENABLED=false 时 blocked）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "conversation_scope",
+          "source_input",
+          "recent_dialogue",
+          "plan"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "speaker_names": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "owner",
+              "assistant"
+            ],
+            "properties": {
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "assistant": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            }
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deadline_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "delivery_budget_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "source_input": {
+            "type": "object",
+            "required": [
+              "message_id",
+              "revision",
+              "sequence",
+              "text",
+              "body_hash"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string"
+              },
+              "body_hash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "occurred_at": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            }
+          },
+          "excluded_source_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "covered_ranges": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "resource_ref",
+                "content_version",
+                "start_char",
+                "end_char"
+              ],
+              "properties": {
+                "resource_ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "content_version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "start_char": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "end_char": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "recent_dialogue": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "required": [
+                "message_id",
+                "revision",
+                "role",
+                "text",
+                "sequence"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "message_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "role": {
+                  "enum": [
+                    "owner",
+                    "assistant"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "occurred_at": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "plan": {
+            "type": "object",
+            "required": [
+              "purpose",
+              "route",
+              "breadth",
+              "queries"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "purpose": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 400
+              },
+              "route": {
+                "enum": [
+                  "event",
+                  "words",
+                  "mixed"
+                ]
+              },
+              "breadth": {
+                "enum": [
+                  "single",
+                  "related"
+                ]
+              },
+              "queries": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 3,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "need_kind",
+                    "need",
+                    "semantic",
+                    "keywords"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "need_kind": {
+                      "enum": [
+                        "event",
+                        "words"
+                      ]
+                    },
+                    "need": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 240
+                    },
+                    "source_mode": {
+                      "enum": [
+                        null,
+                        "words_only",
+                        "raw_context"
+                      ]
+                    },
+                    "person_focus": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "names",
+                            "order",
+                            "relation"
+                          ],
+                          "properties": {
+                            "names": {
+                              "type": "array",
+                              "minItems": 1,
+                              "maxItems": 3,
+                              "items": {
+                                "type": "string",
+                                "minLength": 2,
+                                "maxLength": 48
+                              }
+                            },
+                            "order": {
+                              "enum": [
+                                "latest",
+                                "relevance"
+                              ]
+                            },
+                            "relation": {
+                              "enum": [
+                                "about",
+                                "participated"
+                              ]
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "semantic": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 300
+                    },
+                    "keywords": {
+                      "type": "array",
+                      "maxItems": 16,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 48
+                      }
+                    },
+                    "time_hint": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "maxLength": 80
+                        }
+                      ]
+                    },
+                    "speaker": {
+                      "anyOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "type": "string",
+                          "maxLength": 80
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "covered_context": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 320
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.surfacing.validate",
+      "transport_name": "mariposa_memory_surfacing_validate",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "投递前复核：目标消息当前相关性+版本/域向量复核+验证回执签发（不检索；不改原赢家；deadline 内有界）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "conversation_scope",
+          "candidate_snapshot_ref",
+          "source_input_ref",
+          "target_input",
+          "recent_dialogue",
+          "window_id",
+          "deadline_at"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "speaker_names": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "owner",
+              "assistant"
+            ],
+            "properties": {
+              "owner": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "assistant": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            }
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "conversation_scope": {
+            "type": "string",
+            "minLength": 1
+          },
+          "candidate_snapshot_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "words_view": {
+            "type": "string",
+            "enum": [
+              "memory_with_words"
+            ]
+          },
+          "delivery_budget_bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "source_input_ref": {
+            "type": "object",
+            "required": [
+              "message_id",
+              "revision"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "target_input": {
+            "type": "object",
+            "required": [
+              "message_id",
+              "revision",
+              "sequence",
+              "text",
+              "body_hash"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "sequence": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "text": {
+                "type": "string"
+              },
+              "body_hash": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "occurred_at": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "string"
+                  }
+                ]
+              }
+            }
+          },
+          "recent_dialogue": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "required": [
+                "message_id",
+                "revision",
+                "role",
+                "text",
+                "sequence"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "message_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "role": {
+                  "enum": [
+                    "owner",
+                    "assistant"
+                  ]
+                },
+                "text": {
+                  "type": "string"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "occurred_at": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "window_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "deadline_at": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.update",
+      "transport_name": "mariposa_memory_update",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "修改桶（2026-10-18 她裁定：就地更新当前版本，不留历史版本；CAS 锁与审计保留）；可同时改正文/标题/日期/分类与我们的话（新增/修改——话语只存原文，说话人由出处推导，服务端逐字核验连续片段）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "expected_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "original_title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 30
+          },
+          "categories": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "memory_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date_confidence": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "inferred",
+              "unknown"
+            ]
+          },
+          "our_words_add": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "text",
+                "source_ref"
+              ],
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_ref": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          },
+          "our_words_revise": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "word_id",
+                "text",
+                "source_ref"
+              ],
+              "properties": {
+                "word_id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "source_ref": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "memory.view.confirm",
+      "transport_name": "mariposa_memory_view_confirm",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": true,
+      "description": "确认本次明确查看（明开回温：explicit-open basis，刷新回温基准；plan 不适用）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id",
+          "receipt_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "receipt_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confirm_key": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.cancel",
+      "transport_name": "mariposa_plan_cancel",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "放弃计划（expected_version 乐观锁；state=cancelled；不物理删除）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id",
+          "expected_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.complete",
+      "transport_name": "mariposa_plan_complete",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "标记计划完成（expected_version 乐观锁；state=done 的专用动作）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id",
+          "expected_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.create",
+      "transport_name": "mariposa_plan_create",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "创建计划（唯一真源，记忆经链接引用）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "active",
+              "waiting",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weight": {
+            "type": "integer"
+          },
+          "link_memory_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.get",
+      "transport_name": "mariposa_plan_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "读取单个计划明细（含正文、状态与版本）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "include_links": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.list",
+      "transport_name": "mariposa_plan_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "列出计划",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "states": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.memory.correct",
+      "transport_name": "mariposa_plan_memory_correct",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "纠错 Plan↔Memory 成员链接（Plan 状态变化不解绑）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "link_id",
+          "correction_action",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "link_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "correction_action": {
+            "type": "string",
+            "enum": [
+              "remove_wrong_binding",
+              "replace_wrong_binding"
+            ]
+          },
+          "replacement": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "plan.update",
+      "transport_name": "mariposa_plan_update",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "修改计划（expected_version 乐观锁）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "plan_id",
+          "expected_version"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "active",
+              "waiting",
+              "blocked",
+              "done",
+              "cancelled"
+            ]
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date_start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "date_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "weight": {
+            "type": "integer"
+          },
+          "operation_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "presence.status",
+      "transport_name": "mariposa_presence_status",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "当前活动状态（三时间线概览）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "presence.touch",
+      "transport_name": "mariposa_presence_touch",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "轻量活动登记（actor 由凭据决定，不可参数自报）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "relations.corrections.list",
+      "transport_name": "mariposa_relations_corrections_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "关系纠错历史（只读；目标已删返回原始身份）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "instance_id": {
+            "type": "string"
+          },
+          "domain": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "relations.list",
+      "transport_name": "mariposa_relations_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "跨域有效关系正/反查（方向语义不颠倒）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "resource": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "type": "string"
+              },
+              "memory_id": {
+                "type": "string"
+              },
+              "item_id": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "plan_id": {
+                "type": "string"
+              },
+              "word_id": {
+                "type": "string"
+              },
+              "conversation_id": {
+                "type": "string"
+              },
+              "start_message_id": {
+                "type": "string"
+              },
+              "end_message_id": {
+                "type": "string"
+              },
+              "start_char_offset": {
+                "type": "integer"
+              },
+              "end_char_offset": {
+                "type": "integer"
+              },
+              "ref": {
+                "type": "string"
+              }
+            }
+          },
+          "memory_id": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "word_id": {
+            "type": "string"
+          },
+          "item_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out",
+              "both"
+            ]
+          },
+          "domains": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "settings.get",
+      "transport_name": "mariposa_settings_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "[规格别名] 只读配置快照（时区/开窗/遗忘/provider 状态）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "source.archives.list",
+      "transport_name": "mariposa_source_archives_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "对话存档总览（R6/A65：E 推送的存档事实投影，无截图存档条目+原文跳转锚点）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {}
+        }
+      }
+    },
+    {
+      "canonical_name": "source.attachments.sync",
+      "transport_name": "mariposa_source_attachments_sync",
+      "allowed_principals": [
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "GLM_VOICE_UNIFICATION：Source 附属信息补同步（晚到媒体/通话/观察关联；正文不可变；同 op 幂等；stream grant 钉定）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "stream_id",
+          "origin_message_id",
+          "revision",
+          "kind",
+          "payload",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "stream_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "origin_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "media",
+              "call",
+              "observation"
+            ]
+          },
+          "payload": {
+            "type": "object"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.binding.bind",
+      "transport_name": "mariposa_source_binding_bind",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "把 memory 绑定到原文消息区间（可叠加多个 range；默认消息边界，句内片段用可选 char offset）",
+      "input_schema": {
+        "type": "object",
+        "anyOf": [
+          {
+            "type": "object",
+            "required": [
+              "memory_id",
+              "conversation_id",
+              "start_message_id",
+              "end_message_id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "memory_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "conversation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start_message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "end_message_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "start_char_offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end_char_offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "confidence": {
+                "type": "string",
+                "enum": [
+                  "exact",
+                  "high",
+                  "low"
+                ]
+              },
+              "expected_memory_version": {
+                "type": "integer"
+              },
+              "expected_binding_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "event_scope": {
+                "type": "boolean"
+              },
+              "members": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "source_message_id",
+                    "content_hash"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "source_message_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "content_hash": {
+                      "type": "string",
+                      "minLength": 64,
+                      "maxLength": 64
+                    }
+                  }
+                }
+              },
+              "source_revision": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "memory_id",
+              "expected_memory_version",
+              "expected_binding_ids",
+              "event_source_ranges",
+              "operation_id"
+            ],
+            "properties": {
+              "memory_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "expected_memory_version": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "expected_binding_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "event_source_ranges": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "conversation_id",
+                        "members"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "conversation_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "members": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 500,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "source_message_id",
+                              "content_hash"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "source_message_id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "content_hash": {
+                                "type": "string",
+                                "minLength": 64,
+                                "maxLength": 64
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "conversation_id",
+                        "start_message_id",
+                        "end_message_id",
+                        "source_revision"
+                      ],
+                      "properties": {
+                        "conversation_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "start_message_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "end_message_id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "source_revision": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  ]
+                },
+                "minItems": 1
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "canonical_name": "source.binding.correct",
+      "transport_name": "mariposa_source_binding_correct",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "纠错原文区间绑定（remove/replace_wrong_binding）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "binding_id",
+          "correction_action",
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "binding_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "correction_action": {
+            "type": "string",
+            "enum": [
+              "remove_wrong_binding",
+              "replace_wrong_binding"
+            ]
+          },
+          "replacement": {
+            "type": "object"
+          },
+          "note": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.bindings.of_conversation",
+      "transport_name": "mariposa_source_bindings_of_conversation",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "§6.1 反查（会话方向）：该会话被哪些记忆桶绑定、各覆盖哪段消息序（前端原文页点击跳桶用）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "conversation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.bindings.of_memory",
+      "transport_name": "mariposa_source_bindings_of_memory",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按记忆列全部有效来源绑定（只读）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "memory_id"
+        ],
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.conversation.get",
+      "transport_name": "mariposa_source_conversation_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按页码或 (sequence, id) 游标分页读原文会话（超长会话不整段拉取）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "conversation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "limit": {},
+          "after_seq": {
+            "type": "integer"
+          },
+          "before_seq": {
+            "type": "integer"
+          },
+          "around_seq": {
+            "type": "integer"
+          },
+          "around_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "after_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/cursor"
+              }
+            ]
+          },
+          "before_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/cursor"
+              }
+            ]
+          }
+        },
+        "$defs": {
+          "cursor": {
+            "type": "object",
+            "required": [
+              "seq",
+              "id"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "seq": {
+                "type": "integer"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.conversations.list",
+      "transport_name": "mariposa_source_conversations_list",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "原文会话列表（标题/时间/条数）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {},
+          "offset": {},
+          "provider": {
+            "type": "string"
+          },
+          "titled": {
+            "type": "boolean"
+          },
+          "order": {
+            "type": "string",
+            "enum": [
+              "updated_desc",
+              "first_asc",
+              "first_desc"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.import",
+      "transport_name": "mariposa_source_import",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": true,
+      "description": "导入 Claude conversations 导出（.json/.zip；流式解析；Raw Archive 留只读母本；同 provider+sha256 幂等）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.ingest",
+      "transport_name": "mariposa_source_ingest",
+      "allowed_principals": [
+        "worker"
+      ],
+      "write": true,
+      "status": "available",
+      "idempotent": false,
+      "description": "在线原文增量入库（live_delta；estómago 归档 worker 专用，stream 授权钉 origin/说话人；同 op 幂等）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "stream_id",
+          "origin_instance",
+          "origin_conversation_id",
+          "messages"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "stream_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "origin_instance": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100
+          },
+          "origin_conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "messages": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "required": [
+                "origin_message_id",
+                "revision",
+                "conversation_sequence",
+                "sender",
+                "published_kind",
+                "text",
+                "content_hash"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "origin_message_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "previous_revision": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "conversation_sequence": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "predecessor": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "origin_message_id",
+                        "revision"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "origin_message_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 200
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "sender": {
+                  "type": "string",
+                  "enum": [
+                    "user",
+                    "assistant"
+                  ]
+                },
+                "published_kind": {
+                  "type": "string",
+                  "enum": [
+                    "chat_message",
+                    "sticker_message",
+                    "voice_message"
+                  ]
+                },
+                "occurred_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "received_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "published_at": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "text": {
+                  "type": "string",
+                  "minLength": 0
+                },
+                "assets": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "content_hash": {
+                  "type": "string",
+                  "minLength": 64,
+                  "maxLength": 64
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.ingest.status",
+      "transport_name": "mariposa_source_ingest_status",
+      "allowed_principals": [
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按 operation_id 查 ingest 完成回执（无记录=尚无提交证据）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "operation_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.memory.open",
+      "transport_name": "mariposa_source_memory_open",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按 memory 动态打开其绑定的原文区间（原文不复制进记忆）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "include_content": {
+            "type": "boolean"
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.message.get",
+      "transport_name": "mariposa_source_message_get",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按 provider UUID 精确打开原文消息（含前后上下文）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "provider": {
+            "type": "string"
+          },
+          "provider_message_id": {
+            "type": "string"
+          },
+          "context": {},
+          "include_content": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.range.open",
+      "transport_name": "mariposa_source_range_open",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "打开原文消息区间（语义绑定的动态查看入口；for_binding 返回 hold 绑定所需 source_revision——Codex 审计 P0 恢复：写侧 event_source_ranges 合同仍要求 revision）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "start_message_id",
+          "end_message_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "end_message_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "start_char_offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end_char_offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "include_content": {
+            "type": "boolean"
+          },
+          "for_binding": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.search",
+      "transport_name": "mariposa_source_search",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "原文专项检索：关键词/说话人/日期区间/会话。不是普通 Recall，不参与记忆召回（分层边界）",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "limit": {},
+          "offset": {},
+          "provider": {
+            "type": "string"
+          },
+          "conversation_id": {
+            "type": "string"
+          },
+          "senders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "date_from": {
+            "type": "string"
+          },
+          "date_to": {
+            "type": "string"
+          },
+          "include_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 500,
+            "description": "候选限定在给定 source_messages.id 集内（对话存档检索限定存档钉住的修订集；集合内的已发布历史修订同样可见）；空数组=无候选"
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "source.selection.open",
+      "transport_name": "mariposa_source_selection_open",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "按钉住成员 manifest 读回片段（逐成员 hash 核对，漂移显式标注不静默）",
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "selection"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "include_content": {
+            "type": "boolean"
+          },
+          "selection": {
+            "type": "object",
+            "required": [
+              "conversation_id",
+              "members"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "conversation_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "members": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 500,
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "source_message_id"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "source_message_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "content_hash": {
+                      "type": "string",
+                      "maxLength": 64
+                    }
+                  }
+                }
+              },
+              "start_char_offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "end_char_offset": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "canonical_name": "time.context",
+      "transport_name": "mariposa_time_context",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "三条时间线分开的活动证据",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "time.now",
+      "transport_name": "mariposa_time_now",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "真实 now + 共同时区",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "canonical_name": "time.since",
+      "transport_name": "mariposa_time_since",
+      "allowed_principals": [
+        "jiaming",
+        "qiaosheng",
+        "worker"
+      ],
+      "write": false,
+      "status": "available",
+      "idempotent": false,
+      "description": "自最后已知联系",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import type { Db } from './connection.ts';
 import { validateAbsoluteIso } from '../util/time.ts';
 import { tx } from './connection.ts';
 
-const MIGRATIONS: Array<{ version: number; name: string; sql: string; preSql?: string; postSql?: string; repair?: (db: Db) => number }> = [
+export const MIGRATIONS: Array<{ version: number; name: string; sql: string; preSql?: string; postSql?: string; repair?: (db: Db) => number }> = [
   {
     version: 1,
     name: 'base-schema',
@@ -1186,6 +1186,7 @@ CREATE INDEX IF NOT EXISTS idx_media_embed_namespace ON media_embedding_index(na
 `,
 });
 
+
 export function schemaVersion(db: Db): number {
   const row = db.prepare('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations').get() as { v: number };
   return row.v;
@@ -1395,4 +1396,737 @@ CREATE TABLE voice_reply_links(
 );
 CREATE INDEX IF NOT EXISTS idx_voice_reply_links_msg ON voice_reply_links(message_id);
 ` });
+// v51：接在当前SDK/语音发布线之后；既有v1–v50迁移及其hash保持原样。
+//  - surfacing_jobs 增列：sol 判定/依据/计划/usage（旧 hypotheses_json 保留
+//    存量行，不再写入——旧分句假设链退役）；
+//  - surfacing_settings：自动浮现设置覆盖（模板/模型；与配置文件同源合并，
+//    预览与实际请求共用同一生效值读者）。
+MIGRATIONS.push({
+  version: 51,
+  name: 'surfacing-sol-decision-state',
+  sql: `
+ALTER TABLE surfacing_jobs ADD COLUMN sol_decision TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_topic TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_basis TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_plan_json TEXT;
+ALTER TABLE surfacing_jobs ADD COLUMN sol_usage_json TEXT;
+CREATE TABLE surfacing_settings(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+});
+// v52（R9，裁定 2026-11-03）：surfacing_jobs 增列——M 响应返回的真实
+// 政策/提示词版本。作业唯一键继续用 E 自身调度身份（schema
+// memory_surfacing.job_policy_revision / job_prompt_revision）；本列只做
+// 观测与失效对账依据（"M 实际执行的是什么版本"），不参与键。
+MIGRATIONS.push({
+  version: 52,
+  name: 'surfacing-m-execution-versions',
+  sql: `
+ALTER TABLE surfacing_jobs ADD COLUMN m_policy_revision INTEGER;
+ALTER TABLE surfacing_jobs ADD COLUMN m_prompt_revision TEXT;
+`,
+});
+
+MIGRATIONS.push({version:53,name:'frozen-tool-groups-and-delivery',sql:`
+ALTER TABLE window_toolsets ADD COLUMN groups_json TEXT;
+ALTER TABLE window_toolsets ADD COLUMN initial_text TEXT;
+ALTER TABLE provider_requests ADD COLUMN tool_context_json TEXT;
+`});
+// 54（2026-11-04，执行稿 B4）：pending_program_facts——一次性程序事实待消费
+// （首个用例：通话结束事实，随下一次正常文字请求附带，不为此花独立模型轮）。
+// 消费=该事实随本轮尾部装配发出（onBeforeDispatch 后置 consumed）；崩溃/取消保留待重试。
+MIGRATIONS.push({version:54,name:'pending-program-facts',sql:`
+CREATE TABLE pending_program_facts(
+ id TEXT PRIMARY KEY,
+ conversation_id TEXT NOT NULL,
+ kind TEXT NOT NULL,
+ fact_text TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ consumed_at TEXT
+);
+CREATE INDEX idx_pending_facts_conv ON pending_program_facts(conversation_id, consumed_at);
+`});
+// 55（2026-11-04，四仓联合审计 F04）：analysis_input_digest——快观察键复用时的输入
+// 版本快照（转写文本摘要；'-'=无转写）。修复：E 把分析操作键永久绑定音频资产，
+// 迟到转写改变 O 输入 digest 后同键 409，提示"重新发起"但下一次仍取旧键→永远失败。
+// 旧行 digest=NULL 视为不匹配→不复用快键（保守自愈，走 legacy 新键）。
+MIGRATIONS.push({version:55,name:'oido-analysis-input-digest',sql:`
+ALTER TABLE oido_ingest_receipts ADD COLUMN analysis_input_digest TEXT;
+`});
+// 56（2026-11-06，四仓合并审计 F06/F07 P1）：content owner 已应用版本锚——
+// 每个内容对象最近一次按权威快照确认到的 owner_revision 与成员集合（含删除/零集合）。
+// 迟到旧确认按单调准入跳过；零集合完成版本不依赖活跃引用行（旧确认不能复活删除）。
+// 确认事务 = 本表 + asset_external_refs 映射 + outbox(content.operation) ack 同步维护。
+MIGRATIONS.push({version:56,name:'content-owner-applied-state',sql:`
+CREATE TABLE IF NOT EXISTS content_owner_state(
+  owner_type TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  applied_revision INTEGER NOT NULL,
+  deleted INTEGER NOT NULL,
+  asset_ids_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (owner_type, owner_id)
+);
+`});
+// 57（2026-11-06，四仓审计 V01/P2）：语音观察资格终结——每个正式消息修订的深听
+// 采纳决定只落一次（delivered=随首次模型输入提交；abandoned=资格放弃）。决定之后：
+// 不再驱动分析、迟到结果不写行、UI/Source 不再消费新成功、在途 O 分析被取消。
+MIGRATIONS.push({version:57,name:'voice-observation-decisions',sql:`
+CREATE TABLE IF NOT EXISTS voice_observation_decisions(
+  message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('delivered','abandoned')),
+  turn_id TEXT,
+  request_id TEXT,
+  decided_at TEXT NOT NULL,
+  PRIMARY KEY (message_id, revision)
+);
+`});
+
+// RB05（复审 20261106）：free-activity 显式入口接通正式分派后，origin='free_activity'
+// 被 v33 的 CHECK 拒绝（handler 此前 404 不可达，从未真实执行）。backgroundControl 按
+// origin!=='self_schedule' 路由 free_activity 控制——补列值 CHECK 需整表重建
+//（SQLite 不能改 CHECK；background_runs 无 FK 引用本表，重建安全；索引重建）。
+MIGRATIONS.push({version:58,name:'background-task-origin-free-activity',sql:`
+CREATE TABLE background_tasks_v58(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('autonomous','keepwarm','reminder')),
+  enabled INTEGER NOT NULL DEFAULT 1,
+  revision INTEGER NOT NULL DEFAULT 1,
+  schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('once','daily','interval','cache_idle')),
+  scheduled_at TEXT,
+  next_due_at TEXT,
+  timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+  local_time TEXT,
+  interval_ms INTEGER,
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_by_actor_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  origin TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK (origin IN ('self_schedule','system_keepwarm','legacy_unknown','free_activity')),
+  control_reason TEXT,
+  client_operation_key TEXT
+);
+INSERT INTO background_tasks_v58(id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,local_time,interval_ms,payload_json,created_by_actor_id,created_at,updated_at,origin,control_reason,client_operation_key)
+  SELECT id,conversation_id,actor_id,kind,enabled,revision,schedule_kind,scheduled_at,next_due_at,timezone,local_time,interval_ms,payload_json,created_by_actor_id,created_at,updated_at,origin,control_reason,client_operation_key FROM background_tasks;
+DROP TABLE background_tasks;
+ALTER TABLE background_tasks_v58 RENAME TO background_tasks;
+CREATE INDEX IF NOT EXISTS idx_bg_tasks_due ON background_tasks(enabled, next_due_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bg_tasks_client_op ON background_tasks(conversation_id, client_operation_key) WHERE client_operation_key IS NOT NULL;
+`});
+
+// RV2-01（复审 20261106 第二轮）：区分"消息已发"与"分析被本轮采纳"——观察行记录
+// 该次分析快照是否真正随首次模型输入采用（analysis_adopted）。未采纳的分析（超时
+// 占位轮的迟到结果）不得再被任何消费面当成功读取。历史行按"已用于派发且有模型
+// 投影"回填为已采纳。
+MIGRATIONS.push({version:59,name:'voice-observation-analysis-adopted',sql:`
+ALTER TABLE voice_observations ADD COLUMN analysis_adopted INTEGER NOT NULL DEFAULT 0;
+UPDATE voice_observations SET analysis_adopted = 1
+ WHERE status IN ('ready','partial') AND projection_request_id IS NOT NULL AND model_projection IS NOT NULL;
+`});
+
+// RB2-01（复审 20261106 第二轮）：模型主动邀请的宿主忠实投影——S 是邀请正本，
+// E 只保存同步准入（Sol 门/忙时判定）所需的活动事实；期限=S 的 expires_at，
+// 读时解释，不依赖前端轮询。接听/拒接/过期由 state=ended 收口。
+MIGRATIONS.push({version:60,name:'voice-invites-mirror',sql:`
+CREATE TABLE IF NOT EXISTS voice_invites(
+  invite_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('pending','ended')),
+  expires_at INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_voice_invites_activity ON voice_invites(conversation_id, state, expires_at);
+`});
+
+// R3-M01（第三轮复审 20261106）：v61 重建 tool_side_effects 时把既有 seen_sequence 一并
+// SELECT 成 NULL（该列自旧迁移早已存在，7 条生产 committed 行被清空）。v61 已在生产应用、
+// code_hash 校验禁止原地改写，且保留 v61 会让未升级库（如从 G4 前备份恢复）先丢数据再无据可恢复
+// ——因此从迁移序列移除 v61，由 v62 以条件重建统一两种库形：v61 前形状（有 seen_sequence、
+// 无 args_json、CHECK 无 i_write）整表重建并**保留 seen_sequence**；v61 后形状（生产）已是
+// 目标 schema，v62 幂等跳过。生产已清空的 7 条为 committed 终态、无消费者，不回填（复审已撤销）。
+MIGRATIONS.push({version:62,name:'tool-side-effects-rebuild-preserve-seen-sequence',sql:`
+SELECT 1; -- 结构性重建由 repair 按到达形状条件执行（两种库形列集不同，无法用单一 SQL 同时覆盖）
+`, repair: (db): number => {
+  const tableSql = (db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tool_side_effects'").get() as { sql: string } | undefined)?.sql ?? '';
+  const cols = new Set((db.prepare('PRAGMA table_info(tool_side_effects)').all() as Array<{ name: string }>).map((c) => c.name));
+  if (cols.has('args_json') && tableSql.includes("'i_write'")) return 0; // v61 后形状：已是目标 schema
+  db.exec(`CREATE TABLE tool_side_effects_v62(
+    id TEXT PRIMARY KEY,
+    review_id TEXT,
+    turn_id TEXT,
+    window_id TEXT,
+    kind TEXT NOT NULL CHECK (kind IN ('hold','source_bind','review_complete','i_write')),
+    state TEXT NOT NULL CHECK (state IN ('pending','running','unknown','failed_unresolved','failed_resolved','committed','cancelled')),
+    verified INTEGER NOT NULL DEFAULT 0,
+    memory_id TEXT,
+    operation_id TEXT,
+    tool_call_id TEXT,
+    seen_sequence INTEGER,
+    args_json TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );`);
+  // R3-M01：seen_sequence 原值保留（旧库自早期迁移已有该列）；args_json 为新列，旧库无则置 NULL
+  db.exec(`INSERT INTO tool_side_effects_v62(id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,seen_sequence,args_json,created_at,updated_at)
+    SELECT id,review_id,turn_id,window_id,kind,state,verified,memory_id,operation_id,tool_call_id,
+           ${cols.has('seen_sequence') ? 'seen_sequence' : 'NULL'},
+           ${cols.has('args_json') ? 'args_json' : 'NULL'},
+           created_at,updated_at FROM tool_side_effects`);
+  db.exec('DROP TABLE tool_side_effects');
+  db.exec('ALTER TABLE tool_side_effects_v62 RENAME TO tool_side_effects');
+  return 1;
+}});
+
+// R3-V02（第三轮复审 20261106）：v59 回填把"先冻结尚未就绪占位、后晚到 ready"的旧行误判
+// 为已采纳（projection 非空可能是占位文案而非分析证据）。生产命中 0（复审核实），本迁移
+// 保护从旧备份恢复的库：占位文案行改回未采纳。
+MIGRATIONS.push({version:63,name:'voice-observation-placeholder-adoption-corrective',sql:`
+UPDATE voice_observations SET analysis_adopted = 0
+ WHERE analysis_adopted = 1
+   AND model_projection LIKE '%尚未就绪%';
+`});
+
+// v64（相册重构 P2，GLM_ALBUM_REFACTOR_EXECUTION 20261108）：M 成为媒体字节唯一长期
+// 正本——media_assets 记录每个资产在 M 的落正状态。m_sync_state 仅两值：
+// pending=本地已存、M 落正待完成（初始与可重试失败都回到这里）；synced=M 已确认
+// content_hash。attempts/last_error 供可见状态与退避重试；不设终态 failed——重试由
+// 后台循环带退避推进，不静默放弃也不假装成功。存量行默认 pending，由存量迁移脚本补齐。
+MIGRATIONS.push({
+  version: 64,
+  name: 'media-assets-mariposa-master',
+  sql: `
+ALTER TABLE media_assets ADD COLUMN m_content_hash TEXT;
+ALTER TABLE media_assets ADD COLUMN m_sync_state TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE media_assets ADD COLUMN m_sync_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE media_assets ADD COLUMN m_synced_at TEXT;
+ALTER TABLE media_assets ADD COLUMN m_last_sync_error TEXT;
+UPDATE media_assets SET m_sync_state='out_of_scope' WHERE ingest_purpose='chat_voice';
+`,
+});
+
+// v65（相册重构 P5）：随窗携带计划——新窗初始化时把开窗携带图片集合（选集图+相册
+// 携带，去重 ≤CARRY_IMAGE_LIMIT）定格。plan_json 为审计/减选提示的正本快照；
+// has_next_once 标记本窗初始资料含"下次滚窗一次"项，窗内首次成功投递后置
+// consumed_at（对应 content carry-set 的 next_once 消费），未成功前保持 NULL。
+MIGRATIONS.push({
+  version: 65,
+  name: 'window-carry-plans',
+  sql: `
+CREATE TABLE IF NOT EXISTS window_carry_plans(
+  window_id TEXT PRIMARY KEY,
+  plan_json TEXT NOT NULL,
+  has_next_once INTEGER NOT NULL DEFAULT 0,
+  consumed_at TEXT,
+  created_at TEXT NOT NULL
+);
+`,
+});
+
+// v66（相册重构 P4）：宿主一次性通知——用户侧操作（如对话存档）的结果告知模型，
+// 在下一次正常请求的信封装配时投递一次（独立 system 数据块，authority=none），
+// 投递即标记 delivered_at（SDK 会话前缀保留已发内容，重试不重复）。工具发起的
+// 操作回执即通知，不排队。dedupe_key 幂等（同操作身份只投一次）。
+MIGRATIONS.push({
+  version: 66,
+  name: 'host-notices',
+  sql: `
+CREATE TABLE IF NOT EXISTS host_notices(
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  dedupe_key TEXT UNIQUE,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT
+);
+CREATE INDEX idx_host_notices_pending ON host_notices(conversation_id, delivered_at);
+`,
+});
+
+// v67（相册重构 P3）：图片生成两阶段操作账——生成成功即暂存字节（result_b64），
+// 入库失败重试只走存储不二次付费生成；saved 后清空暂存（字节正本在 media/M）。
+// unknown=供应商结果未确认（禁止自动重发）。
+MIGRATIONS.push({
+  version: 67,
+  name: 'imagegen-operations',
+  sql: `
+CREATE TABLE IF NOT EXISTS imagegen_operations(
+  op_key TEXT PRIMARY KEY,
+  state TEXT NOT NULL,
+  result_b64 TEXT,
+  asset_id TEXT,
+  creation_id TEXT,
+  revised_prompt TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+`,
+});
+
+// v68（相册整改 ALB-01，审计 2026-11-08）：E 本地媒体缓存 LRU 逐出——仅 M 已落正
+// (m_sync_state='synced') 的资产可逐（语音/未 synced 永不）；行保留、读取回源 M。
+MIGRATIONS.push({
+  version: 68,
+  name: 'media-assets-cache-lru',
+  sql: `
+ALTER TABLE media_assets ADD COLUMN cache_last_used_at TEXT;
+`,
+});
+
+// v69（宿主用户 2026-11-08 裁定：语音同图片进 M 唯一正本——撤销 v64 对 chat_voice 的
+// out_of_scope 标记）：存量语音行回到 pending，由 media-master-backfill 迁入 M。
+MIGRATIONS.push({
+  version: 69,
+  name: 'chat-voice-to-mariposa-master',
+  sql: `
+UPDATE media_assets SET m_sync_state='pending' WHERE ingest_purpose='chat_voice' AND m_sync_state='out_of_scope';
+`,
+});
+
+// v70（相册整改复审 2026-11-09，RR5/GIF）：
+// ① 附件对象元数据补传标记——post-ACK 推送与存量/失败回推（backfillObjectMeta）
+//    共用的"已推"正本（幂等 op 键在 M 侧去重，本地标记防无限重放放大）；
+// ② imagegen 格式留存——同键重试的生成调用沿用首次请求的 output_format
+//    （GIF 动图生成，她 2026-11-09 裁定 gpt-image 可生动图；不带格式供应商默认
+//    静态 PNG，"画动图"被静默降级）。
+MIGRATIONS.push({
+  version: 70,
+  name: 'album-rework-rr5-object-meta-marker-and-imagegen-format',
+  sql: `
+ALTER TABLE message_attachments ADD COLUMN object_meta_synced_at TEXT;
+ALTER TABLE imagegen_operations ADD COLUMN output_format TEXT;
+`,
+});
+
+// v71（包1 M02 2026-11-15）：附件 presentation 增加 work——SVG/HTML 代码作品引用。
+// 交付走沙箱预览（/api/v1/assets/:id/preview），不进普通图片白名单。SQLite 不能改
+// CHECK，整表重建（message_attachments 为叶子表，无 FK 引用，重建安全；索引重建）。
+MIGRATIONS.push({
+  version: 71,
+  name: 'attachment-presentation-work',
+  sql: `
+CREATE TABLE message_attachments_v71(
+  message_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  position INTEGER NOT NULL,
+  asset_id TEXT NOT NULL,
+  presentation TEXT NOT NULL CHECK (presentation IN ('image','sticker','voice','work')),
+  caption TEXT,
+  derived_text TEXT,
+  derived_source TEXT,
+  created_at TEXT NOT NULL,
+  object_meta_synced_at TEXT,
+  PRIMARY KEY (message_id, revision, position)
+);
+INSERT INTO message_attachments_v71 SELECT message_id, revision, position, asset_id, presentation, caption, derived_text, derived_source, created_at, object_meta_synced_at FROM message_attachments;
+DROP TABLE message_attachments;
+ALTER TABLE message_attachments_v71 RENAME TO message_attachments;
+CREATE INDEX IF NOT EXISTS idx_msg_attachments_asset ON message_attachments(asset_id);
+`,
+});
+
+// v72（包1审计返修 2026-11-15 P1-c/D02）：同键业务请求指纹——同 opKey 异参
+// （prompt/格式/尺寸/帧参数/交付选择）按冲突拒绝，不把第一次的图当第二次结果。
+MIGRATIONS.push({
+  version: 72,
+  name: 'imagegen-request-fingerprint',
+  sql: `
+ALTER TABLE imagegen_operations ADD COLUMN request_fingerprint TEXT;
+`,
+});
+
+// v73（二轮返修 2026-11-15 P1-2/D01）：供应商 200+URL-only 应答的结果 URL 留存——
+// 同键重试只重取 URL 恢复字节，不重新发起付费生成。
+MIGRATIONS.push({
+  version: 73,
+  name: 'imagegen-result-url',
+  sql: `
+ALTER TABLE imagegen_operations ADD COLUMN result_url TEXT;
+`,
+});
+
+// v74（包2 批C BIND 2026-11-16）：午夜来源绑定任务状态——每条已提交记忆的自动补绑
+// 处理状态唯一正本（E 持有调度与状态；绑定写入走 M source.binding.bind 领域服务）。
+MIGRATIONS.push({
+  version: 74,
+  name: 'source-bind-jobs',
+  sql: `
+CREATE TABLE IF NOT EXISTS source_bind_jobs(
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL UNIQUE,
+  memory_version INTEGER,
+  conversation_id TEXT,
+  turn_id TEXT,
+  batch_boundary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','bound','no_match','source_unavailable','failed','version_conflict','skipped_existing')),
+  detail TEXT,
+  binding_ids_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(status);
+`,
+});
+
+// v75（包2 返修 2026-11-17，Codex 复审指令）：①status 封闭枚举加 credential_blocked
+//（402/401 凭据余额类故障——当日熔断不耗尝试次数，跨上海日界自动复活；SQLite 不能
+// ALTER CHECK，整表重建保留数据）；②加 pending_segments_json（多段部分成功时存
+// 剩余段——恢复时只补缺段不重新付费判断）。
+MIGRATIONS.push({
+  version: 75,
+  name: 'source-bind-jobs-retry-semantics',
+  sql: `
+CREATE TABLE IF NOT EXISTS source_bind_jobs_v75(
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL UNIQUE,
+  memory_version INTEGER,
+  conversation_id TEXT,
+  turn_id TEXT,
+  batch_boundary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','bound','no_match','source_unavailable','failed','version_conflict','skipped_existing','credential_blocked')),
+  detail TEXT,
+  binding_ids_json TEXT,
+  pending_segments_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO source_bind_jobs_v75(id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, pending_segments_json, attempts, created_at, updated_at)
+  SELECT id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, NULL, attempts, created_at, updated_at FROM source_bind_jobs;
+DROP TABLE source_bind_jobs;
+ALTER TABLE source_bind_jobs_v75 RENAME TO source_bind_jobs;
+CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(status);
+`,
+});
+
+// v76（包2 生命周期返修 2026-11-17）：status 枚举加 judging（判断已发出的在途事实——
+// 发出前落账，重启后可追溯不重记；SQLite 不能 ALTER CHECK，整表重建保留数据）。
+MIGRATIONS.push({
+  version: 76,
+  name: 'source-bind-jobs-judging',
+  sql: `
+CREATE TABLE IF NOT EXISTS source_bind_jobs_v76(
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL UNIQUE,
+  memory_version INTEGER,
+  conversation_id TEXT,
+  turn_id TEXT,
+  batch_boundary TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending','judging','bound','no_match','source_unavailable','failed','version_conflict','skipped_existing','credential_blocked')),
+  detail TEXT,
+  binding_ids_json TEXT,
+  pending_segments_json TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO source_bind_jobs_v76(id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, pending_segments_json, attempts, created_at, updated_at)
+  SELECT id, memory_id, memory_version, conversation_id, turn_id, batch_boundary, status, detail, binding_ids_json, pending_segments_json, attempts, created_at, updated_at FROM source_bind_jobs;
+DROP TABLE source_bind_jobs;
+ALTER TABLE source_bind_jobs_v76 RENAME TO source_bind_jobs;
+CREATE INDEX IF NOT EXISTS idx_source_bind_jobs_status ON source_bind_jobs(status);
+`,
+});
+
+MIGRATIONS.push({
+  version: 77, name: 'source-bind-decision',
+  sql: `ALTER TABLE source_bind_jobs ADD COLUMN operation_id TEXT;
+    ALTER TABLE source_bind_jobs ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+    UPDATE source_bind_jobs SET status='failed', detail='上次判断结果未知，请在日历中手动重算。'
+      WHERE status='judging' OR (status='pending' AND attempts>0);
+    UPDATE source_bind_jobs SET detail=substr(detail,1,instr(detail,'——')-1) || '。请在日历中手动重算。'
+      WHERE status IN ('failed','source_unavailable','credential_blocked','version_conflict') AND instr(detail,'——')>0;`,
+});
+
+MIGRATIONS.push({
+  version: 78, name: 'verified-hold-commit-time',
+  sql: 'ALTER TABLE tool_side_effects ADD COLUMN hold_committed_at TEXT;',
+});
+
+MIGRATIONS.push({
+  version: 79, name: 'imagegen-origin-target',
+  sql: `ALTER TABLE imagegen_operations ADD COLUMN origin_room_id TEXT;
+    ALTER TABLE imagegen_operations ADD COLUMN origin_background_run_id TEXT;`,
+});
+
+MIGRATIONS.push({
+  version: 80, name: 'require-observed-hold-commit-time',
+  // v78 accepted transaction-internal timestamps. Keep the successful effects
+  // and existing jobs, but handle uncollected ones as unproven for time-of-day.
+  sql: "UPDATE tool_side_effects SET hold_committed_at=NULL WHERE kind='hold' AND hold_committed_at IS NOT NULL;",
+});
+
+MIGRATIONS.push({
+  version: 81, name: 'turn-completion-intent',
+  sql: `ALTER TABLE attempts ADD COLUMN completion_outcome TEXT CHECK (completion_outcome IN ('done', 'noop'));`,
+});
+
+MIGRATIONS.push({
+  version: 82,
+  name: 'heartbeat-decks-and-delivery',
+  sql: `
+CREATE TABLE heartbeat_decks (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  business_date TEXT NOT NULL,
+  UNIQUE (conversation_id, business_date)
+);
+CREATE TABLE heartbeat_cards (
+  deck_id TEXT NOT NULL REFERENCES heartbeat_decks(id),
+  card_number INTEGER NOT NULL CHECK(card_number BETWEEN 1 AND 10),
+  source_identity TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('wishstar','memory','archive','album','moments','reserved_note')),
+  source_ref_json TEXT NOT NULL,
+  first_response_replay INTEGER NOT NULL DEFAULT 0 CHECK(first_response_replay IN (0,1)),
+  invalid_reason TEXT,
+  PRIMARY KEY (deck_id, card_number),
+  UNIQUE (deck_id, source_identity)
+);
+CREATE TABLE heartbeat_runs (
+  run_id TEXT PRIMARY KEY,
+  business_date TEXT NOT NULL,
+  deck_id TEXT REFERENCES heartbeat_decks(id),
+  mode TEXT NOT NULL CHECK(mode IN ('unprepared','source_unavailable','draw','exhausted_keepwarm')),
+  corrections INTEGER NOT NULL DEFAULT 0 CHECK(corrections BETWEEN 0 AND 2)
+);
+CREATE TABLE heartbeat_draw_operations (
+  run_id TEXT NOT NULL REFERENCES heartbeat_runs(run_id),
+  operation_id TEXT NOT NULL,
+  selection_key TEXT NOT NULL,
+  deck_id TEXT,
+  card_number INTEGER,
+  source_identity TEXT,
+  state TEXT NOT NULL CHECK(state IN ('rejected','claimed','prepared','dispatching','delivered','not_dispatched','unknown')),
+  reason TEXT,
+  remaining_json TEXT,
+  retry_allowed INTEGER CHECK(retry_allowed IN (0,1)),
+  attempted_at TEXT,
+  delivered_at TEXT,
+  provider_request_id TEXT,
+  PRIMARY KEY (run_id, operation_id),
+  FOREIGN KEY (deck_id, card_number) REFERENCES heartbeat_cards(deck_id, card_number),
+  CHECK(state != 'delivered' OR (provider_request_id IS NOT NULL AND delivered_at IS NOT NULL))
+);
+CREATE INDEX idx_heartbeat_draw_source ON heartbeat_draw_operations(source_identity,state,delivered_at,attempted_at);
+CREATE INDEX idx_heartbeat_draw_card ON heartbeat_draw_operations(deck_id,card_number,state);
+CREATE UNIQUE INDEX idx_heartbeat_draw_one_per_run ON heartbeat_draw_operations(run_id)
+  WHERE state IN ('claimed','prepared','dispatching','delivered','unknown');
+CREATE UNIQUE INDEX idx_heartbeat_draw_source_in_flight ON heartbeat_draw_operations(source_identity)
+  WHERE state IN ('claimed','prepared','dispatching');
+CREATE UNIQUE INDEX idx_heartbeat_card_delivered ON heartbeat_draw_operations(deck_id,card_number)
+  WHERE state = 'delivered';
+`,
+});
+
+MIGRATIONS.push({
+  version: 83, name: 'imagegen-photo-album-destination',
+  sql: `ALTER TABLE imagegen_operations ADD COLUMN album_kind TEXT;
+    ALTER TABLE imagegen_operations ADD COLUMN album_caption TEXT;
+    ALTER TABLE imagegen_operations ADD COLUMN album_entry_id TEXT;`,
+});
+
+MIGRATIONS.push({
+  version: 84, name: 'recoverable-completion-protocol',
+  sql: 'ALTER TABLE attempts ADD COLUMN completion_recovery_json TEXT;',
+});
+
+MIGRATIONS.push({
+  version: 85, name: 'trusted-heartbeat-source-extensions',
+  // Rebuild both sides of the FK together, preserving every existing fixed
+  // reference, draw receipt and uniqueness constraint. Registration lives in Host.
+  sql: `
+CREATE TABLE heartbeat_cards_v85 (
+  deck_id TEXT NOT NULL REFERENCES heartbeat_decks(id),
+  card_number INTEGER NOT NULL CHECK(card_number BETWEEN 1 AND 10),
+  source_identity TEXT NOT NULL,
+  source_kind TEXT NOT NULL CHECK(source_kind IN ('wishstar','memory','archive','album','moments','reserved_note')
+    OR (source_kind GLOB 'ext:[a-z]*' AND length(source_kind) BETWEEN 5 AND 68
+       AND substr(source_kind,5) NOT GLOB '*[^a-z0-9_-]*' AND source_kind!='ext:family')),
+  source_ref_json TEXT NOT NULL,
+  first_response_replay INTEGER NOT NULL DEFAULT 0 CHECK(first_response_replay IN (0,1)),
+  invalid_reason TEXT,
+  PRIMARY KEY (deck_id, card_number),
+  UNIQUE (deck_id, source_identity)
+);
+INSERT INTO heartbeat_cards_v85 SELECT * FROM heartbeat_cards;
+CREATE TABLE heartbeat_draw_operations_v85 (
+  run_id TEXT NOT NULL REFERENCES heartbeat_runs(run_id),
+  operation_id TEXT NOT NULL,
+  selection_key TEXT NOT NULL,
+  deck_id TEXT,
+  card_number INTEGER,
+  source_identity TEXT,
+  state TEXT NOT NULL CHECK(state IN ('rejected','claimed','prepared','dispatching','delivered','not_dispatched','unknown')),
+  reason TEXT,
+  remaining_json TEXT,
+  retry_allowed INTEGER CHECK(retry_allowed IN (0,1)),
+  attempted_at TEXT,
+  delivered_at TEXT,
+  provider_request_id TEXT,
+  PRIMARY KEY (run_id, operation_id),
+  FOREIGN KEY (deck_id, card_number) REFERENCES heartbeat_cards_v85(deck_id, card_number),
+  CHECK(state != 'delivered' OR (provider_request_id IS NOT NULL AND delivered_at IS NOT NULL))
+);
+INSERT INTO heartbeat_draw_operations_v85 SELECT * FROM heartbeat_draw_operations;
+DROP TABLE heartbeat_draw_operations;
+DROP TABLE heartbeat_cards;
+ALTER TABLE heartbeat_cards_v85 RENAME TO heartbeat_cards;
+ALTER TABLE heartbeat_draw_operations_v85 RENAME TO heartbeat_draw_operations;
+CREATE INDEX idx_heartbeat_draw_source ON heartbeat_draw_operations(source_identity,state,delivered_at,attempted_at);
+CREATE INDEX idx_heartbeat_draw_card ON heartbeat_draw_operations(deck_id,card_number,state);
+CREATE UNIQUE INDEX idx_heartbeat_draw_one_per_run ON heartbeat_draw_operations(run_id)
+  WHERE state IN ('claimed','prepared','dispatching','delivered','unknown');
+CREATE UNIQUE INDEX idx_heartbeat_draw_source_in_flight ON heartbeat_draw_operations(source_identity)
+  WHERE state IN ('claimed','prepared','dispatching');
+CREATE UNIQUE INDEX idx_heartbeat_card_delivered ON heartbeat_draw_operations(deck_id,card_number)
+  WHERE state = 'delivered';
+`,
+});
+
+MIGRATIONS.push({
+  version: 86, name: 'heartbeat-business-action-references',
+  sql: `
+ALTER TABLE heartbeat_runs ADD COLUMN invite_text TEXT;
+CREATE TABLE heartbeat_actions (
+  run_id TEXT NOT NULL REFERENCES heartbeat_runs(run_id),
+  call_id TEXT NOT NULL,
+  action_json TEXT NOT NULL,
+  PRIMARY KEY (run_id, call_id)
+);
+`,
+});
+
+MIGRATIONS.push({
+  version: 87, name: 'heartbeat-midnight-memory-choice',
+  sql: `
+CREATE TABLE background_tasks_v87(
+  id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, actor_id TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('autonomous','keepwarm','reminder','heartbeat_memory')),
+  enabled INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 1,
+  schedule_kind TEXT NOT NULL CHECK (schedule_kind IN ('once','daily','interval','cache_idle')),
+  scheduled_at TEXT, next_due_at TEXT, timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai', local_time TEXT,
+  interval_ms INTEGER, payload_json TEXT NOT NULL DEFAULT '{}', created_by_actor_id TEXT NOT NULL,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  origin TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK (origin IN ('self_schedule','system_keepwarm','legacy_unknown','free_activity','system_heartbeat_memory')),
+  control_reason TEXT, client_operation_key TEXT
+);
+INSERT INTO background_tasks_v87 SELECT * FROM background_tasks;
+DROP TABLE background_tasks;
+ALTER TABLE background_tasks_v87 RENAME TO background_tasks;
+CREATE INDEX idx_bg_tasks_due ON background_tasks(enabled,next_due_at);
+CREATE UNIQUE INDEX idx_bg_tasks_client_op ON background_tasks(conversation_id,client_operation_key) WHERE client_operation_key IS NOT NULL;
+CREATE TABLE heartbeat_daily_memory_choices(
+  conversation_id TEXT NOT NULL REFERENCES conversations(id), business_date TEXT NOT NULL,
+  memory_id TEXT NOT NULL, revision INTEGER NOT NULL, frozen_at TEXT NOT NULL, selected_at TEXT NOT NULL,
+  run_id TEXT NOT NULL UNIQUE REFERENCES background_runs(id), provider_response_id TEXT,
+  PRIMARY KEY(conversation_id,business_date)
+);
+`,
+});
+
+// NULL preserves historical native/deferred snapshots. New native windows
+// start with an empty ordered list of discoveries alongside their frozen opener.
+MIGRATIONS.push({
+  version: 88, name: 'window-on-demand-tools',
+  sql: 'ALTER TABLE window_toolsets ADD COLUMN activated_tools_json TEXT;',
+});
+
+// NULL keeps the discovery and parameter semantics of already-open windows.
+MIGRATIONS.push({
+  version: 89, name: 'frozen-tool-capability-summaries',
+  sql: 'ALTER TABLE window_toolsets ADD COLUMN tool_summaries_json TEXT;',
+});
+
+MIGRATIONS.push({
+  version: 90, name: 'milestone-write-receipts',
+  sql: 'ALTER TABLE audit_events ADD COLUMN receipt_json TEXT;',
+});
+
+// 0 keeps every existing conversation on its current schedule. Rest is only
+// established by a new owner statement or an explicit control operation.
+MIGRATIONS.push({
+  version: 91, name: 'conversation-rest-decision',
+  sql: `ALTER TABLE conversation_activity ADD COLUMN resting INTEGER NOT NULL DEFAULT 0 CHECK (resting IN (0,1));
+    ALTER TABLE conversation_activity ADD COLUMN rest_decided_at TEXT;
+    ALTER TABLE conversation_activity ADD COLUMN rest_source TEXT;
+    ALTER TABLE conversation_activity ADD COLUMN rest_message_id TEXT;`,
+});
+
+// v92（心跳规则重构 v2.1）：分离"她是否出现"、"双方末句/有效心跳锚点"与"连续未出现次数"；
+// 区分正常夜休（次晨 08:00 兜底）与 02:00 起补觉/午睡（等下条新消息）；绑定夜间四小时判定、
+// 异步 Sol 休息判断版本栅栏与在线让位事实。不扫描历史对话；旧库保留既有手动关、有效休息与
+// 已确认机会，连续未出现次数从 0 起算（旧库无独立出现版本与单机会计数标记，无法可靠反推）。
+MIGRATIONS.push({
+  version: 92,
+  name: 'heartbeat-unified-v21-state',
+  sql: `
+ALTER TABLE conversation_activity ADD COLUMN user_appearance_revision INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversation_activity ADD COLUMN last_user_message_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN last_user_message_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN rest_recovery_mode TEXT CHECK (rest_recovery_mode IS NULL OR rest_recovery_mode IN ('morning_0800','next_user_message'));
+ALTER TABLE conversation_activity ADD COLUMN rest_morning_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN early_resumed_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN morning_fallback_superseded_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN morning_yielded_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN morning_yielded_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN consecutive_unanswered_count INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE conversation_activity ADD COLUMN last_effective_heartbeat_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN last_effective_heartbeat_run_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN last_effective_heartbeat_window_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN streak_paused_date TEXT;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_message_id TEXT;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_revision INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_accepted_at TEXT;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_control_revision INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_user_appearance_revision INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_was_night_pause INTEGER;
+ALTER TABLE conversation_activity ADD COLUMN pending_rest_gap_eligible INTEGER;
+ALTER TABLE background_runs ADD COLUMN input_user_appearance_revision INTEGER;
+ALTER TABLE background_runs ADD COLUMN streak_counted_at TEXT;
+`,
+  repair: (db: Db): number => {
+    const SHANGHAI_OFFSET_MS = 8 * 3_600_000;
+    const rows = db.prepare('SELECT conversation_id, rest_decided_at FROM conversation_activity WHERE resting = 1 AND rest_recovery_mode IS NULL').all() as Array<{ conversation_id: string; rest_decided_at: string | null }>;
+    let touched = 0;
+    for (const row of rows) {
+      const ms = row.rest_decided_at ? Date.parse(row.rest_decided_at) : NaN;
+      let mode: 'morning_0800' | 'next_user_message' = 'next_user_message';
+      let morningDate: string | null = null;
+      if (Number.isFinite(ms)) {
+        const sh = new Date(ms + SHANGHAI_OFFSET_MS);
+        const hour = sh.getUTCHours();
+        const dateStr = sh.toISOString().slice(0, 10);
+        if (hour >= 18) {
+          mode = 'morning_0800';
+          morningDate = new Date(Date.parse(`${dateStr}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+        } else if (hour < 2) {
+          mode = 'morning_0800';
+          morningDate = dateStr;
+        }
+      }
+      db.prepare('UPDATE conversation_activity SET rest_recovery_mode = ?, rest_morning_date = ? WHERE conversation_id = ?')
+        .run(mode, morningDate, row.conversation_id);
+      touched++;
+    }
+    return touched;
+  },
+});
+
+// v93（心跳 2.1 复审修复）：记录手动关→开事务内已过期的旧机会截止时间，
+// 避免手动重新开启时补发关闭期间错过的 08:00 或 50 分钟心跳，同时不伪造真实发言时间。
+MIGRATIONS.push({
+  version: 93,
+  name: 'heartbeat-v21-reenable-suppression',
+  sql: 'ALTER TABLE conversation_activity ADD COLUMN keepwarm_suppressed_due_before_at TEXT;',
+});
+
 export const SUPPORTED_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]?.version ?? 0;

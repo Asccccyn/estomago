@@ -13,7 +13,7 @@ test('回忆详情HTTP：鉴权、房间/轮绑定、游标传递；点击不触
  await host.start();t.after(async()=>{await host.stop();fs.rmSync(root,{recursive:true,force:true})});
  const a=host.messages.submitUserMessageWithTurn({conversationId:'primary',content:'合成原话',clientMessageId:'detail'});
  const reads:Array<unknown>=[];
- host.surfacing!.visibleMemoriesForTurn=()=>[{memory_ref:'sf_internal',date:'2026-07-09',text:'完整事件正文'}];
+ host.surfacing!.visibleMemoriesForTurn=()=>[{memory_ref:'sf_internal',kind:'event',date:'2026-07-09',text:'完整事件正文'}];
  host.surfacing!.readMemoryForTurn=async(room,turn,ref,cursor,section)=>{
   reads.push({room,turn,ref,cursor,section});
   return ref==='sf_internal'?{ok:true as const,data:{sections:{our_words:['完整话语'],relations:[{direction:'in'},{direction:'out'}]},complete:!!cursor,next_cursor:cursor?null:'p1'}}:{ok:false as const,code:'DETAIL_REF_NOT_SEEN',message:'not seen'};

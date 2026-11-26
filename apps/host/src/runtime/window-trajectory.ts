@@ -77,11 +77,15 @@ export class WindowTrajectoryService {
     });
   }
 
-  /** 成功回合后整体替换（append-only 语义由调用方保证；manifest 与 messages 同步推进） */
-  replace(windowId: string, messages: OrMessage[], lastBoundary: PrevBoundary | null, manifest: ManifestEntry[]): void {
+  /** 整体替换轨迹，可在同一连接上登记这次替换的凭据。 */
+  replace(windowId: string, messages: OrMessage[], lastBoundary: PrevBoundary | null, manifest: ManifestEntry[], record?: (db: Db) => void): void {
     tx(this.db, () => {
-      this.db.prepare('UPDATE window_trajectories SET messages_json = ?, last_boundary_json = ?, manifest_json = ?, updated_at = ? WHERE window_id = ?')
+      const updated = this.db.prepare('UPDATE window_trajectories SET messages_json = ?, last_boundary_json = ?, manifest_json = ?, updated_at = ? WHERE window_id = ?')
         .run(JSON.stringify(messages), lastBoundary ? JSON.stringify(lastBoundary) : null, JSON.stringify(manifest), new Date().toISOString(), windowId);
+      if (record) {
+        if (Number(updated.changes) !== 1) throw new Error('BACKGROUND_TRAJECTORY_MISSING');
+        record(this.db);
+      }
     });
   }
 }

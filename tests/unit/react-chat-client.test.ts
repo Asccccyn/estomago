@@ -2,6 +2,23 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EstomagoClient } from '../../apps/web/react/src/chat-client.ts'
 const dto=(id:string,text:string,revision=1)=>({id,sequence:1,speaker:'owner',turn_id:'turn-fixture',current_revision:revision,mutation_status:{can_edit:true,can_withdraw:true,reason:null},revision:{revision,content:text,content_hash:'fixture-hash-'+revision,occurred_at:'2026-10-13T12:00:00Z',attachments:[]}})
+test('tool activity merges start/result and restores concrete names and errors after refresh',async()=>{
+  const event={kind:'turn.tool',turn_id:'turn-fixture',attempt_id:'a1',request_id:'r1',tool_call_id:'call-1',tool:'tool_invoke',effective_tool:'memory_recall',label:'检索记忆'}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[dto('m-tool','synthetic')]}):url.endsWith('/reasoning')?Response.json({blocks:[],tools:[{...event,sequence:2,phase:'result',ok:false,error_code:'TOOL_ARG_TYPE'}]}):undefined)
+  try{
+    h.client.handleEvent({...event,sequence:1,phase:'start'})
+    h.client.handleEvent({...event,sequence:2,phase:'result',ok:false,error_code:'TOOL_ARG_TYPE'})
+    let steps=h.client.snapshot.messages.find(m=>m.id==='m-tool')!.steps!
+    assert.equal(steps.length,1);assert.match(steps[0].text,/检索记忆 · memory_recall · 失败：参数格式错误/)
+    await h.client.loadTurnDetails('turn-fixture')
+    steps=h.client.snapshot.messages.find(m=>m.id==='m-tool')!.steps!
+    assert.equal(steps.length,1);assert.equal(steps[0].state,'failed')
+    h.client.handleEvent({...event,sequence:3,tool_call_id:'call-2',phase:'start'})
+    h.client.handleEvent({...event,sequence:4,tool_call_id:'call-2',phase:'result',ok:true})
+    steps=h.client.snapshot.messages.find(m=>m.id==='m-tool')!.steps!
+    assert.equal(steps.length,2);assert.equal(steps[1].state,'completed')
+  }finally{h.client.stop()}
+})
 test('推理默认是未选择状态，取消选择清除覆盖值，不添加第五档',async()=>{
   let effort:string|null=null
   const h=await setup((url,init)=>{
@@ -49,15 +66,87 @@ test('晚到回执不清空新草稿；发送过程中不重复提交',async()=>
     resolve(Response.json({message:dto('m1','原草稿')}));await pending;assert.equal(h.client.snapshot.draft,'新草稿')
   }finally{h.client.stop()}
 })
-test('仅附件可发送，失败重试冻结完整载荷，新附件不被清除',async()=>{
+test('附件消息回执丢失时保留原发送键和附件，新草稿留在输入框',async()=>{
   let uploads=0,posts=0;const bodies:any[]=[]
   const h=await setup((url,init)=>{
     if(url.startsWith('/api/v1/assets?'))return Response.json({asset_id:'asset-'+(++uploads)})
     if(url.endsWith('/messages')&&init?.method==='POST'){bodies.push({body:JSON.parse(String(init.body)),key:(init.headers as any)['Idempotency-Key']});return ++posts===1?Promise.reject(new Error('lost response')):Response.json({message:dto('m1','')})}
   })
   try{await h.client.queue(new Blob(['a']),'a.png');assert.equal(h.client.canSend,true);await h.client.send()
-    await h.client.queue(new Blob(['b']),'b.png');await h.client.send();assert.deepEqual(bodies[0],bodies[1]);assert.equal(bodies[1].body.kind,undefined)
+    const original=h.client.snapshot.attachments[0]!
+    assert.equal(h.client.isAttachmentLocked(original.id),true)
+    h.client.removeAttachment(original.id)
+    assert.equal(h.calls.some(c=>c.init?.method==='DELETE'),false)
+    await h.client.queue(new Blob(['b']),'b.png');h.client.setDraft('给下一条消息')
+    await h.client.send();assert.deepEqual(bodies[0],bodies[1]);assert.equal(bodies[1].body.kind,undefined)
+    assert.equal(h.client.snapshot.draft,'给下一条消息')
     assert.equal(h.client.snapshot.attachments.length,1);assert.equal(h.client.snapshot.attachments[0].assetId,'asset-2')
+  }finally{h.client.stop()}
+})
+for (const [code,status] of [['asset_master_commit_failed',503],['too_many_attachments',422]] as const) {
+test(`发送中的附件受保护，明确未发出后可重选；仅载荷改变才使用新发送键（${code}）`,async()=>{
+  let uploads=0
+  let finishFirst!:(r:Response)=>void
+  const sends:Array<{ key:string|null; body:Record<string,unknown> }>=[]
+  const rejected=()=>Response.json({error:{code,message:'本次未发出。'}},{status})
+  const h=await setup((url,init)=>{
+    if(url.startsWith('/api/v1/assets?'))return Response.json({asset_id:'asset-'+(++uploads)})
+    if(url.endsWith('/messages')&&init?.method==='POST'){
+      sends.push({ key:new Headers(init.headers).get('idempotency-key'),body:JSON.parse(String(init.body)) })
+      if(sends.length===1)return new Promise(resolve=>{finishFirst=resolve})
+      return sends.length===2?rejected():Response.json({message:dto('m1','')})
+    }
+  })
+  try{
+    await h.client.queue(new Blob(['a']),'a.png')
+    await h.client.queue(new Blob(['b']),'b.png')
+    const [first,second]=h.client.snapshot.attachments
+    const inFlight=h.client.send()
+    assert.equal(h.client.isAttachmentLocked(first!.id),true)
+    assert.equal(h.client.isAttachmentLocked(second!.id),true)
+    h.client.removeAttachment(second!.id)
+    assert.equal(h.calls.some(c=>c.init?.method==='DELETE'),false)
+    finishFirst(rejected());await inFlight
+    assert.equal(h.client.isAttachmentLocked(second!.id),false)
+
+    await h.client.send()
+    assert.deepEqual(sends[0],sends[1])
+    h.client.removeAttachment(second!.id)
+    assert.ok(h.calls.some(c=>c.url==='/api/v1/assets/asset-2?staged=1'&&c.init?.method==='DELETE'))
+    await h.client.queue(new Blob(['b']),'b.png')
+    await h.client.send()
+    assert.notEqual(sends[1]!.key,sends[2]!.key)
+    assert.equal(sends[2]!.body.client_message_id,sends[2]!.key)
+    assert.deepEqual(sends[2]!.body.attachments,[
+      {asset_id:'asset-1',presentation:'image'},
+      {asset_id:'asset-3',presentation:'image'},
+    ])
+  }finally{h.client.stop()}
+})
+}
+test('选图的上传回执丢失时按同一资产键重试，直到点击发送才提交消息',async()=>{
+  const uploadKeys:Array<string|null>=[]
+  const file=new Blob(['selected bytes'])
+  const h=await setup((url,init)=>{
+    if(url==='/api/v1/assets?purpose=chat_image&staged=1'){
+      assert.equal(init?.body,file)
+      uploadKeys.push(new Headers(init?.headers).get('idempotency-key'))
+      return uploadKeys.length===1?Promise.reject(new Error('lost upload response')):Response.json({asset_id:'confirmed-asset'})
+    }
+    if(url.endsWith('/messages')&&init?.method==='POST')return Response.json({message:dto('m1','')})
+  })
+  try{
+    await h.client.queue(file,'a.png')
+    const attachment=h.client.snapshot.attachments[0]!
+    assert.equal(attachment.status,'failed')
+    await h.client.retryAttachment(attachment.id)
+    assert.ok(uploadKeys[0])
+    assert.deepEqual(uploadKeys,[uploadKeys[0],uploadKeys[0]])
+    assert.equal(attachment.assetId,'confirmed-asset')
+    assert.equal(h.calls.some(c=>c.url.endsWith('/messages')&&c.init?.method==='POST'),false)
+    await h.client.send()
+    const sent=h.calls.find(c=>c.url.endsWith('/messages')&&c.init?.method==='POST')!
+    assert.deepEqual(JSON.parse(String(sent.init?.body)).attachments,[{asset_id:'confirmed-asset',presentation:'image'}])
   }finally{h.client.stop()}
 })
 test('语音必须完成可信转写才可发送，正文请求不携带客户端派生文字',async()=>{
@@ -99,6 +188,19 @@ test('非OR模型不借用OR配置；容量未知不产生虚假百分比',async
   const h=await setup(url=>url.endsWith('/runtime-settings')?Response.json({driver:'deepseek',or_model:{effective:'not-the-real-model'}}):url.endsWith('/context-records')?Response.json({driver:'deepseek',exactModel:'deepseek-chat',context:{estimatedInput:20,hardCapacity:null}}):undefined)
   try{assert.deepEqual(h.client.snapshot.models,['deepseek-chat']);assert.equal(h.client.snapshot.canConfigure,false);await h.client.loadContext();assert.equal(h.client.snapshot.context.limit,null)}finally{h.client.stop()}
 })
+
+test('锚点在实时和历史工具行都显示为我们的锚点',async()=>{
+  const event={kind:'turn.tool',turn_id:'turn-fixture',attempt_id:'a1',request_id:'r1',tool_call_id:'anchor-call',tool:'identity_milestone_write',effective_tool:'identity_milestone_write'}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[dto('m-anchor','合成输入')]}):url.endsWith('/reasoning')?Response.json({blocks:[],tools:[{...event,tool:'tool_invoke',label:'更新长期记忆里程碑',sequence:2,phase:'result',ok:true}]}):undefined)
+  try{
+    const steps=()=>h.client.snapshot.messages.find(m=>m.id==='m-anchor')!.steps!
+    h.client.handleEvent({...event,label:'我们的锚点',sequence:1,phase:'start'})
+    assert.equal(steps()[0].text,'我们的锚点 · 进行中')
+    await h.client.loadTurnDetails('turn-fixture')
+    assert.equal(steps()[0].text,'我们的锚点 · 完成')
+  }finally{h.client.stop()}
+})
+
 
 test('图片能力预检失败明确消息已保存、模型未发送，不自动重发',async()=>{
   const h=await setup()
@@ -239,6 +341,35 @@ test('后来发布的系统或助手消息立即隐藏旧失败消息的直接�
     assert.equal(h.client.snapshot.messages.find(m=>m.id==='m1')!.canRetry,false)
   }finally{h.client.stop()}
 })
+
+test('聊天保留心跳邀请与真实发言，牌面和工具进度不会成为聊天行',async()=>{
+  const turnId='heartbeat-turn'
+  const invite={...dto('invite','合成心跳邀请'),sequence:2,speaker:'system',turn_id:turnId,heartbeat:'invite'}
+  const card={...dto('card','合成揭牌'),sequence:3,speaker:'system',turn_id:turnId,heartbeat:'progress',heartbeat_card:{run_id:'heartbeat-run'}}
+  const ordinary={...dto('ordinary','普通对话回复'),sequence:4,speaker:'assistant'}
+  const sent={...dto('sent','心跳真实发言'),sequence:5,speaker:'assistant',turn_id:turnId,heartbeat:'assistant'}
+  const h=await setup(url=>url.includes('/messages?')?Response.json({messages:[invite,card,ordinary],event_cursor:10,
+    active_turns:[{turn_id:turnId,state:'running',trigger:'cache_keepalive'}]}):undefined)
+  try{
+    assert.deepEqual(h.client.snapshot.messages.map(m=>m.id),['invite','ordinary'])
+    assert.equal(h.client.snapshot.messages[0]?.system,true)
+    const tool=(id:string,sequence:number)=>({kind:'turn.tool',turn_id:id,tool:'heartbeat_draw',tool_call_id:'fixture-call',phase:'start',sequence})
+    h.client.handleEvent(tool(turnId,11))
+    h.client.handleEvent({kind:'message.published',sequence:12,message:sent})
+    h.client.handleEvent({kind:'message.published',sequence:13,message:invite})
+    h.client.handleEvent({kind:'message.published',sequence:14,message:{...card,id:'later-card',sequence:6}})
+    h.client.handleEvent(tool('turn-fixture',15))
+    assert.deepEqual(h.client.snapshot.messages.map(m=>m.id),['invite','ordinary','sent'])
+    const visible=h.client.snapshot.messages.find(m=>m.id==='sent')!
+    assert.equal(visible.heartbeat,true)
+    assert.equal(visible.text,sent.revision.content)
+    assert.equal(visible.steps,undefined)
+    assert.equal(h.client.snapshot.messages.find(m=>m.id==='ordinary')?.steps?.length,1)
+    await h.client.loadTurnDetails(turnId)
+    assert.equal(h.calls.some(call=>String(call.url).includes('/turns/'+turnId+'/reasoning')),false)
+  }finally{h.client.stop()}
+})
+
 test('失败状态经SSE回放保留原因，打开活动日志不丢失也不重复',async()=>{
   const h=await setup(url=>url.includes('/context-records/events?')?Response.json({events:[]}):undefined)
   try{
@@ -294,3 +425,92 @@ test('旧DS协议缺失通过既有失败事件明确提示正常人工换窗，
   assert.equal(h.calls.filter(c=>c.init?.method==='POST').length,before);
  }finally{h.client.stop()}
 });
+test('订阅入口首次切入也显示已配置 SDK 型号，不被上一笔 API 记录显示成未配置',async()=>{
+  let policy='configured'
+  const h=await setup((url,init)=>{
+    if(url.endsWith('/runtime-settings')){
+      if(init?.method==='PUT')policy=JSON.parse(String(init.body)).access_policy
+      return Response.json({driver:policy==='configured'?'openrouter':'claude-agent-sdk',configured_entry:'openrouter',sdk_model:'claude-sonnet-5',access:{policy},or_model:{effective:'anthropic/claude-opus-4.6'}})
+    }
+    if(url.endsWith('/context-records'))return Response.json({driver:'openrouter',exactModel:'anthropic/claude-opus-4.6',context:{}})
+  })
+  try{
+    await h.client.setAccessPolicy('subscription-first')
+    assert.deepEqual(h.client.snapshot.modelIds,['claude-sonnet-5'])
+    await h.client.setAccessPolicy('configured')
+    assert.deepEqual(h.client.snapshot.modelIds,['anthropic/claude-opus-4.6'])
+  }finally{h.client.stop()}
+})
+
+test('SDK model picker writes SDK IDs and does not use the last response model as the selected model', async()=>{
+ let selected='claude-opus-4-6';const writes:any[]=[];
+ const h=await setup((url,init)=>{
+  if(url.endsWith('/runtime-settings')){
+   if(init?.method==='PUT'){const body=JSON.parse(String(init.body));writes.push(body);if(body.sdk_model)selected=body.sdk_model;}
+   return Response.json({driver:'claude-agent-sdk',sdk_model:selected,sdk_model_options:['claude-opus-4-6','claude-opus-5-5'],effort_options:['default','low','medium','high','max'],reasoning_effort:{effective:'medium'}})
+  }
+  if(url.endsWith('/context-records'))return Response.json({driver:'claude-agent-sdk',exactModel:'claude-sonnet-5',context:{}})
+ });
+ try{
+  assert.deepEqual(h.client.snapshot.models,['opus4.6','opus5.5']);
+  await h.client.setModel(1);
+  assert.deepEqual(writes,[{sdk_model:'claude-opus-5-5'}]);
+  assert.equal(h.client.snapshot.model,1);
+  assert.deepEqual(h.client.snapshot.efforts,['low','medium','high','max']);
+  await h.client.setEffort(2);
+  assert.deepEqual(writes.at(-1),{reasoning_effort:'high'});
+ }finally{h.client.stop()}
+});
+
+test('one reply keeps live reasoning, media and text when an earlier detail read finishes late', async () => {
+  const {chatRows, replyContent} = await import('../../apps/web/react/src/chat-rows.ts')
+  let resolveDetails!: (response: Response) => void
+  let reads = 0
+  const h = await setup(url => {
+    if (url.includes('/messages?')) return Response.json({messages:[dto('owner','合成请求')]})
+    if (url.includes('/reasoning')) {
+      reads++
+      return new Promise<Response>(resolve => { resolveDetails = resolve })
+    }
+  })
+  const turn_id = 'turn-fixture', attempt_id = 'a1'
+  let sequence = 0
+  const send = (kind: string, data: object = {}) => h.client.handleEvent({kind,turn_id,attempt_id,sequence:++sequence,...data})
+  const reply = () => chatRows(h.client.snapshot.messages).find(row => row.key === 'reply:'+turn_id)!
+  try {
+    send('turn.started')
+    const key = reply().key
+    assert.equal(reply().parts[0].thinking,false)
+    const details = h.client.loadTurnDetails(turn_id)
+    const block = {block_id:'b1',block_revision:1}
+    send('reasoning.started',{...block,payload:{visibility:'summary'}})
+    assert.equal(reply().parts[0].thinking,true)
+    send('reasoning.delta',{...block,block_revision:2,payload:{delta:'合成摘要',state:'streaming'}})
+    assert.equal(reply().parts[0].steps?.[0].text,'合成摘要')
+    send('reasoning.completed',{...block,block_revision:2,payload:{state:'complete'}})
+    assert.equal(reply().parts[0].thinking,false)
+    send('turn.tool',{phase:'start',tool:'image_generate',effective_tool:'image_generate',label:'生成图片',tool_call_id:'c1'})
+    const image={...dto('img',''),sequence:2,speaker:'assistant'}
+    send('message.published',{message:{...image,revision:{...image.revision,attachments:[{asset_id:'pic',presentation:'image'}]}}})
+    send('message.published',{message:{...dto('desc','完成。'),sequence:3,speaker:'assistant'}})
+    resolveDetails(Response.json({blocks:[{id:'b1',revision:2,state:'streaming',visibility:'summary',text:'合成摘要'}]}))
+    await details
+    const row=reply()
+    assert.equal(row.key,key)
+    assert.deepEqual(row.parts.map(p=>p.id),['img','desc'])
+    assert.deepEqual(replyContent(row.parts).map(c=>c.part.kind ?? c.part.text),['image','完成。'])
+    assert.equal(row.parts[0].thinking,false)
+    assert.equal(row.parts[0].steps?.[0].text,'合成摘要')
+    assert.equal(reads,1)
+  } finally { h.client.stop() }
+})
+
+test('text, voice and a later text revision retain publication order and original selection anchors', async () => {
+  const {replyContent} = await import('../../apps/web/react/src/chat-rows.ts')
+  const first={id:'t',role:'ai' as const,time:'',text:'先说🌙\n\n后续文字',publicationBreaks:[{before_message_id:'v',end_char:3}]}
+  const voice={id:'v',role:'ai' as const,time:'',kind:'voice' as const,text:'合成语音'}
+  const segments=replyContent([first,voice])
+  assert.deepEqual(segments.map(c=>c.part.text),['先说🌙','合成语音','后续文字'])
+  assert.deepEqual(segments.map(c=>c.anchor),['t','v',undefined])
+  assert.equal(replyContent([first])[0].part.text,first.text)
+})

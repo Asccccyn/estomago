@@ -2,7 +2,10 @@
 import { toolCapability } from '../../capabilities/domain-factory.ts';
 import type { CapabilityDescriptor } from '../../capabilities/registry.ts';
 import type { HostToolSpec } from '../../capabilities/contracts.ts';
-import { WishstarService } from './service.ts';
+import contract from '../../integrations/wishstar/contracts/public-fields.json' with {type:'json'};
+import { projectWishstarToolResult } from './projection.ts';
+import { quoteBackgroundTool } from '../../runtime/background-tool-cost.ts';
+import { WishstarService, WISHSTAR_READ_ACTIONS } from './service.ts';
 
 /** wishstar_write_star 定义唯一正本（原 host-tools 域工厂内该块逐字搬迁）。 */
 export const WISHSTARWRITESTAR_DEFINITION: HostToolSpec = {
@@ -13,14 +16,14 @@ export const WISHSTARWRITESTAR_DEFINITION: HostToolSpec = {
       parameters: {
         type: 'object',
         properties: {
-          content: { type: 'string', minLength: 1, maxLength: 5000, description: '星星内容（想许的愿/想记的话）' },
+          text: { type: 'string', minLength: 1, maxLength: contract.limits.content, description: '星星内容（想许的愿/想记的话）' },
           visibility: { type: 'string', enum: ['visible', 'hidden'], description: 'visible=我们的瓶子；hidden=自己的私人瓶' },
-          mood_type: { type: 'string', maxLength: 20, description: '可选：星星的心情境况' },
-          mood_text: { type: 'string', maxLength: 200, description: '可选：写星时的一句话心情' },
-          note: { type: 'string', maxLength: 500, description: '可选：附注' },
+          mood_type: { type: 'string', maxLength: contract.limits.mood, description: '可选：星星的心情境况' },
+          mood_text: { type: 'string', maxLength: contract.limits.mood, description: '可选：写星时的一句话心情' },
+          note: { type: 'string', maxLength: contract.limits.note, description: '可选：附注' },
           idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '幂等键：同键重试只写一颗' },
         },
-        required: ['content', 'visibility', 'idempotency_key'], additionalProperties: false,
+        required: ['text', 'visibility', 'idempotency_key'], additionalProperties: false,
       },
     }
   };
@@ -54,7 +57,7 @@ export const WISHSTARSTARTSESSION_DEFINITION: HostToolSpec = {
       parameters: {
         type: 'object',
         properties: {
-          special_date_id: { type: 'string', minLength: 1, maxLength: 64, description: '绑定的特殊日期 id（wishstar_special_dates 查）' },
+          special_date_id: { type: 'string', minLength: 1, maxLength: 64, description: '绑定的特殊日期 id（wishstar_read(what=dates) 的 id）' },
         },
         required: ['special_date_id'], additionalProperties: false,
       },
@@ -122,7 +125,7 @@ export const WISHSTARRESPONDREQUEST_DEFINITION: HostToolSpec = {
       parameters: {
         type: 'object',
         properties: {
-          request_id: { type: 'string', minLength: 1, maxLength: 64 },
+          request_id: { type: 'string', minLength: 1, maxLength: 64,description:'wishstar_read(what=requests) 的 incoming 项 id，或可信请求回执；不可猜测' },
           decision: { type: 'string', enum: ['give', 'not_now'] },
           star_id: { type: 'string', maxLength: 64, description: '可选：give 时指定给哪一颗' },
         },
@@ -140,8 +143,8 @@ export const WISHSTAROFFERSTAR_DEFINITION: HostToolSpec = {
       parameters: {
         type: 'object',
         properties: {
-          star_id: { type: 'string', minLength: 1, maxLength: 64 },
-          message: { type: 'string', maxLength: 300, description: '可选：递星时捎的一句话' },
+          star_id: { type: 'string', minLength: 1, maxLength: 64,description:'自己的星 id，可来自写星回执或 wishstar_read(what=hidden)' },
+          message: { type: 'string', maxLength: contract.limits.message, description: '可选：递星时捎的一句话' },
         },
         required: ['star_id'], additionalProperties: false,
       },
@@ -166,7 +169,7 @@ export const WISHSTARACCEPTOFFER_DEFINITION: HostToolSpec = {
       description: '收下她递来的一颗星。',
       parameters: {
         type: 'object',
-        properties: { offer_id: { type: 'string', minLength: 1, maxLength: 64 } },
+        properties: { offer_id: { type: 'string', minLength: 1, maxLength: 64,description:'wishstar_read(what=offers) 的 incoming 项 id' } },
         required: ['offer_id'], additionalProperties: false,
       },
     }
@@ -182,88 +185,120 @@ export const WISHSTARNOTIFICATIONS_DEFINITION: HostToolSpec = {
     }
   };
 
+export const WISHSTARREAD_DEFINITION: HostToolSpec = {
+  type:'function',function:{name:'wishstar_read',description:'读取自己的私人星、纪念日、待收星、开星请求、通知或我们的瓶子。hidden=自己的私人星，dates=特殊日期（发起仪式所需 id），offers=递星列表（收星所需 id），requests=开星请求（回应所需 id），notifications=通知，shared=我们的瓶子里两人可见的星（含对方写进来的可见星正文）；读取不打开对方的星。',parameters:{type:'object',properties:{what:{type:'string',enum:Object.keys(WISHSTAR_READ_ACTIONS)}},required:['what'],additionalProperties:false}},
+};
+
 export type WishstarModuleDeps = {
   wishstar: { forward(method: 'GET' | 'POST', path: string, body?: Record<string, unknown>, idempotencyKey?: string): Promise<{ status: number; body: Record<string, unknown> }> } | null;
+  replyTarget?: ConstructorParameters<typeof WishstarService>[0]['replyTarget'];
 };
 
 export function registerWishstarCapabilities(registry: { register(d: CapabilityDescriptor<any, any>): void }, deps: WishstarModuleDeps): void {
   const service = new WishstarService(deps);
   registry.register(toolCapability({
+    owner: 'wishstar', id: 'wishstar_reply_star', group: 'D', baselineOrder: 62,
+    heartbeatAction: 'star_reply',
+    memoryOnlyAllowed: false, label: '回应抽到的许愿星',
+    definition: { type: 'function', function: {
+      name: 'wishstar_reply_star',
+      description: '回应本轮抽到并已交付的共享星（心跳或聊天里抽到的那张）。使用揭牌回执的 reply_ref，直接写文字回应到原星；不是聊天发言。',
+      parameters: { type: 'object', properties: {
+        reply_ref: { type: 'string', minLength: 1, maxLength: 256, description: '本轮星牌 heartbeat_card.reply_ref' },
+        text: { type: 'string', minLength: 1, maxLength: 1000 },
+        idempotency_key: { type: 'string', minLength: 1, maxLength: 128, description: '同键重试同一条回应' },
+      }, required: ['reply_ref', 'text', 'idempotency_key'], additionalProperties: false },
+    } },
+    run: (input: Record<string, unknown>, ctx) => service.replyStar(input, ctx),
+    toModel: value => projectWishstarToolResult('wishstar_reply_star', value as Record<string, unknown>),
+  }));
+  registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_write_star', baselineOrder: 35, definition: () => WISHSTARWRITESTAR_DEFINITION, memoryOnlyAllowed: false, label: '往许愿星写了一颗星',
+    heartbeatAction: 'star_write',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_write_star', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_write_star',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
-    id: 'wishstar_hidden_stars', baselineOrder: 36, definition: () => WISHSTARHIDDENSTARS_DEFINITION, memoryOnlyAllowed: false, label: '看自己的私人瓶子',
+    id: 'wishstar_hidden_stars', legacyOnly: true, replacedBy: 'wishstar_read', baselineOrder: 36, definition: () => WISHSTARHIDDENSTARS_DEFINITION, memoryOnlyAllowed: false, label: '看自己的私人瓶子',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_hidden_stars', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_hidden_stars',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
-    id: 'wishstar_special_dates', baselineOrder: 37, definition: () => WISHSTARSPECIALDATES_DEFINITION, memoryOnlyAllowed: false, label: '查特殊日期',
+    id: 'wishstar_special_dates', legacyOnly: true, replacedBy: 'wishstar_read', baselineOrder: 37, definition: () => WISHSTARSPECIALDATES_DEFINITION, memoryOnlyAllowed: false, label: '查特殊日期',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_special_dates', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_special_dates',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_start_session', baselineOrder: 38, definition: () => WISHSTARSTARTSESSION_DEFINITION, memoryOnlyAllowed: false, label: '发起拆星仪式',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_start_session', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_start_session',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_confirm_session', baselineOrder: 39, definition: () => WISHSTARCONFIRMSESSION_DEFINITION, memoryOnlyAllowed: false, label: '确认拆星仪式',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_confirm_session', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_confirm_session',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_take_star', baselineOrder: 40, definition: () => WISHSTARTAKESTAR_DEFINITION, memoryOnlyAllowed: false, label: '拆开一颗星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_take_star', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_take_star',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_finish_session', baselineOrder: 41, definition: () => WISHSTARFINISHSESSION_DEFINITION, memoryOnlyAllowed: false, label: '完成拆星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_finish_session', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_finish_session',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_request_star', baselineOrder: 42, definition: () => WISHSTARREQUESTSTAR_DEFINITION, memoryOnlyAllowed: false, label: '请求开对方的星',
+    heartbeatAction: 'star_request',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_request_star', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_request_star',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_respond_request', baselineOrder: 43, definition: () => WISHSTARRESPONDREQUEST_DEFINITION, memoryOnlyAllowed: false, label: '回应开星请求',
+    heartbeatAction: 'star_respond',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_respond_request', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_respond_request',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_offer_star', baselineOrder: 44, definition: () => WISHSTAROFFERSTAR_DEFINITION, memoryOnlyAllowed: false, label: '递一颗星',
+    heartbeatAction: 'star_offer',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_offer_star', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_offer_star',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
-    id: 'wishstar_list_offers', baselineOrder: 45, definition: () => WISHSTARLISTOFFERS_DEFINITION, memoryOnlyAllowed: false, label: '看收到的星',
+    id: 'wishstar_list_offers', legacyOnly: true, replacedBy: 'wishstar_read', baselineOrder: 45, definition: () => WISHSTARLISTOFFERS_DEFINITION, memoryOnlyAllowed: false, label: '看收到的星',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_list_offers', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_list_offers',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
     id: 'wishstar_accept_offer', baselineOrder: 46, definition: () => WISHSTARACCEPTOFFER_DEFINITION, memoryOnlyAllowed: false, label: '收下递来的星',
+    heartbeatAction: 'star_accept',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_accept_offer', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_accept_offer',value as Record<string,unknown>),
   }));
   registry.register(toolCapability({
     owner: 'wishstar',
-    id: 'wishstar_notifications', baselineOrder: 47, definition: () => WISHSTARNOTIFICATIONS_DEFINITION, memoryOnlyAllowed: false, label: '看许愿星通知',
+    id: 'wishstar_notifications', legacyOnly: true, replacedBy: 'wishstar_read', baselineOrder: 47, definition: () => WISHSTARNOTIFICATIONS_DEFINITION, memoryOnlyAllowed: false, label: '看许愿星通知',
     run: (input: Record<string, unknown>, ctx) => service.wishstarTool('wishstar_notifications', input, ctx),
-    toModel: (value) => value,
+    toModel: (value) => projectWishstarToolResult('wishstar_notifications',value as Record<string,unknown>),
   }));
+  registry.register(toolCapability({owner:'wishstar',id:'wishstar_read',baselineOrder:36,definition:WISHSTARREAD_DEFINITION,memoryOnlyAllowed:false,label:'读许愿星',
+    quote:(db,input)=>quoteBackgroundTool(db,input?.what==='requests'?'wishstar_read':WISHSTAR_READ_ACTIONS[input!.what as keyof typeof WISHSTAR_READ_ACTIONS]),
+    run:(input:Record<string,unknown>,ctx)=>service.wishstarTool(WISHSTAR_READ_ACTIONS[input.what as keyof typeof WISHSTAR_READ_ACTIONS],{},ctx),
+    toModel:(value,input)=>projectWishstarToolResult(WISHSTAR_READ_ACTIONS[input.what as keyof typeof WISHSTAR_READ_ACTIONS],value as Record<string,unknown>),
+  }));
+
 }

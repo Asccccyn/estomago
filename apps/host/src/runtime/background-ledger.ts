@@ -3,6 +3,8 @@
 import type { Db } from '../db/connection.ts';
 import { tx } from '../db/connection.ts';
 
+export const HEARTBEAT_BLOCKED_BEFORE_SEND = 'HEARTBEAT_BLOCKED_BEFORE_SEND';
+
 function verifiedMicroUsd(cost: number | null): number | null {
   if (cost === null || !Number.isFinite(cost) || cost < 0) return null;
   const rounded = Math.round(cost * 1_000_000);

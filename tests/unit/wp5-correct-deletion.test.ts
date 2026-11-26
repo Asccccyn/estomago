@@ -76,10 +76,10 @@ test('纠错④：link 建关联 → memory.relations.link；relations 列表路
   const calls: string[] = [];
   const mariposa: MariposaTransport = async (cap) => { calls.push(cap); return { ok: true, result: { relation_id: 'rel_9' } }; };
   const { tools, db } = makeTools(mariposa);
-  const lk = await tools.execute('memory_correct', { action: 'link', from_memory: 'm1', to_memory: 'm2', relation_type: 'related_to' }, CTX);
+  const lk = await tools.execute('memory_relations', { action: 'link', from_memory: 'm1', to_memory: 'm2', relation_type: 'related_to' }, CTX);
   assert.equal(lk.ok, true);
   assert.equal(calls[0], 'memory.relations.link');
-  const rl = await tools.execute('memory_correct', { action: 'relations', memory_id: 'm1' }, CTX);
+  const rl = await tools.execute('memory_relations', { action: 'list', memory_id: 'm1' }, CTX);
   assert.equal(rl.ok, true);
   assert.equal(calls[1], 'memory.relations.list');
   db.close();

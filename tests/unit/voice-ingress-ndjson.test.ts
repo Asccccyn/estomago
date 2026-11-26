@@ -2,8 +2,10 @@
 // 合同逐字段对齐 http-core-bridge.ts：POST /v1/chat/stream NDJSON 流（delta*/done|error）。
 // 同窗=supervisor.enqueue 共用串行链/工具/轨迹；断开=stop 同管线；token 未配=503 fail-closed。
 import { test } from 'node:test';
-import { assembleTestTools, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
+import { assembleTestTools, freezeLegacyToolWindow, LEGACY_CONVERSATIONREAD_SPEC, readyRuntimePatch, tempRoot, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { once } from 'node:events';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
@@ -27,6 +29,7 @@ import { RotationReviewService } from '../../apps/host/src/context/rotation-revi
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { handleVoiceChatStream } from '../../apps/host/src/server/http.ts';
+import { endCallConfirmed } from '../../apps/host/src/modules/voice/call-service.ts';
 
 assert.equal(process.env.ESTOMAGO_TEST_MODE, '1');
 const enc = new TextEncoder();
@@ -64,11 +67,11 @@ function compose(root: string, transport: OrTransport) {
   messages.ensureConversation('c1');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
+  const windows = new WindowManager(db, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db) });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
-  return { db, config, messages, events, supervisor, deps: { config, db, events, messages, supervisor } as never, close() { db.close(); } };
+  return { db, config, messages, events, identity, windows, supervisor, deps: { config, db, events, messages, supervisor } as never, close() { db.close(); } };
 }
 
 const REQ = (obj: unknown, headers: Record<string, string> = {}): never => {
@@ -110,9 +113,15 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
   const root = tempRoot('r4-2-');
   process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'tok';
   let n = 0;
-  const ctx = compose(root, async () => {
+  const dispatched: Array<Array<{ role: string; content: string }>> = [];
+  const ctx = compose(root, async (payload) => {
+    dispatched.push(payload.messages as Array<{ role: string; content: string }>);
     n += 1;
-    return { status: 200, headers: new Map(), body: frameStream(sse({ id: `g${n}`, choices: [{ delta: { content: '电话回复正文。' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + DONE) };
+    return { status: 200, headers: new Map(), body: frameStream(
+      sse({ id: `g${n}`, choices: [{ delta: { content: '[12' } }] }) +
+      sse({ id: `g${n}`, choices: [{ delta: { content: '3] 电话回复正文。' } }] }) +
+      sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + DONE,
+    ) };
   });
   try {
     const res = new FakeRes();
@@ -126,11 +135,9 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
     });
     await done.catch(() => {});
     assert.equal(res.status, 200, 'NDJSON 200');
-    const evRows = ctx.db.prepare('SELECT kind, turn_id FROM runtime_stream_events ORDER BY sequence').all() as Array<{kind:string;turn_id:string|null}>;
-    const mpRow = ctx.db.prepare("SELECT payload_ref FROM runtime_stream_events WHERE kind='message.published' LIMIT 1").get() as { payload_ref: string };
-    
-    const deltas = lines.filter((l) => l.includes('"type":"delta"'));
-    assert.ok(deltas.length >= 1 && deltas.some((l) => l.includes('电话回复正文')), `lines=${JSON.stringify(lines)} status=${res.status}`);
+    const deltas = lines.map(l => JSON.parse(l) as { type: string; text?: string }).filter(l => l.type === 'delta');
+    assert.equal(deltas.map(l => l.text).join(''), '[123] 电话回复正文。', '新窗通话保留合法编号');
+    assert.equal(assistantContent(ctx.db), '[123] 电话回复正文。', '新窗正式发布保留同一正文');
     assert.ok(lines.some((l) => l.includes('"type":"done"')), 'done 终态');
     // 主聊天留存：用户语音输入与助手正文都入 messages
     const msgs = ctx.db.prepare('SELECT speaker, kind FROM messages WHERE conversation_id=? ORDER BY sequence').all('c1') as Array<{ speaker: string; kind: string }>;
@@ -139,8 +146,83 @@ test('同窗电话轮：NDJSON delta…done；正文进主聊天留存；同窗�
     // 轨迹同窗：助手正文进入窗口轨迹（与文字轮同链产物）
     const trajRow = ctx.db.prepare('SELECT messages_json FROM window_trajectories ORDER BY updated_at DESC LIMIT 1').get() as { messages_json: string } | undefined;
     assert.ok(trajRow && trajRow.messages_json.includes('电话回复正文'), '助手正文入窗口轨迹（同窗，不另造历史）');
+
+    const phoneFact = '这一轮是你和宿主用户在通电话。';
+    const firstInput = dispatched[0]!.at(-1)!;
+    assert.equal(firstInput.role, 'user');
+    assert.match(firstInput.content, /\[program_fact\]\n这一轮是你和宿主用户在通电话。/);
+    assert.match(firstInput.content, /她会在同一通电话里实时听到/);
+    assert.match(firstInput.content, /通话回复无需另外发送语音条/);
+    assert.ok(firstInput.content.endsWith('[user_input]\n电话里说的话'));
+
+    const sendTyped = async (content: string, clientMessageId: string) => {
+      const typed = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId });
+      ctx.supervisor.enqueue(typed.turnId);
+      await ctx.supervisor.waitIdle();
+      return dispatched.at(-1)!.at(-1)!.content;
+    };
+    const typedInCall = await sendTyped('电话期间键入的文字', 'voice:synthetic-typed-id');
+    assert.ok(typedInCall.endsWith('[user_input]\n电话期间键入的文字'));
+    assert.ok(!typedInCall.includes(phoneFact), '客户端消息 ID 无法把文字轮变成电话输出');
+
+    const second = new FakeRes();
+    const secondFinished = once(second, 'finish');
+    await handleVoiceChatStream(REQ({ conversation_id: 'c1', call_id: 'call-1', turn_id: 'st-2', text: '电话里说的第二句' },
+      { authorization: 'Bearer tok' }), second as never, ctx.deps);
+    await secondFinished;
+    assert.ok(dispatched.at(-1)!.at(-1)!.content.includes(phoneFact));
+    assert.ok(second.lines.some((line) => JSON.parse(line).type === 'delta'));
+    assert.ok(second.lines.some((line) => JSON.parse(line).type === 'done'));
+
+    assert.equal(endCallConfirmed(ctx.db, 'call-1').factRegistered, true);
+    const typedAfterCall = await sendTyped('挂断后键入的文字', 'typed-after-call');
+    assert.ok(typedAfterCall.includes('语音通话已结束。本轮回到文字聊天。'));
+    assert.ok(!typedAfterCall.includes(phoneFact));
+    assert.deepEqual(dispatched.at(-1)![dispatched[0]!.length - 1], firstInput, '已派发的真实电话轮原样留在同窗历史');
   } finally {
     delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
     ctx.close();
+  }
+});
+
+
+function assistantContent(db: ReturnType<typeof openDatabase>): string | undefined {
+  const row = db.prepare(
+    "SELECT r.content FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision WHERE m.conversation_id = 'c1' AND m.speaker = 'assistant'",
+  ).get() as { content: string } | undefined;
+  return row?.content;
+}
+
+test('旧冻结窗：实际通话轮仍剥除旧编号标记', async () => {
+  const root = tempRoot('r4-legacy-marker-');
+  const previousToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'tok';
+  const ctx = compose(root, async () => ({
+    status: 200, headers: new Map(), body: frameStream(
+      sse({ id: 'legacy', choices: [{ delta: { content: '[seq 123] 电话回复正文。' } }] }) +
+      sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5 } }) + DONE,
+    ),
+  }));
+  try {
+    const gate = ctx.identity.evaluateGate(ctx.db, { driver: 'deepseek' });
+    assert.equal(gate.state, 'READY');
+    const { window } = ctx.windows.createWindow({ conversationId: 'c1', gate });
+    freezeLegacyToolWindow(ctx.db, window.id, {
+      conversation_read: LEGACY_CONVERSATIONREAD_SPEC as { function: { name: string; parameters: Record<string, unknown> } },
+    });
+    const res = new FakeRes();
+    const finished = once(res, 'finish');
+    const req = REQ({ conversation_id: 'c1', call_id: 'legacy-call', turn_id: 'legacy-turn', modality: 'voice', text: '合成输入' }, { authorization: 'Bearer tok' });
+    await handleVoiceChatStream(req, res as never, ctx.deps);
+    await finished;
+    const frames = res.lines.map(l => JSON.parse(l) as { type: string; text?: string });
+    assert.ok(frames.some(frame => frame.type === 'done'), '实际模型替身的通话已完成');
+    assert.equal(frames.filter(frame => frame.type === 'delta').map(frame => frame.text).join(''), '电话回复正文。');
+    assert.equal(assistantContent(ctx.db), '电话回复正文。');
+  } finally {
+    if (previousToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+    else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = previousToken;
+    ctx.close();
+    fs.rmSync(root, { recursive: true, force: true });
   }
 });

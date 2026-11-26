@@ -1,9 +1,20 @@
-/* Confirmed actions are handed to the existing authenticated host.
-   wishes（她 2026-10-18）：跳站内许愿星页——页面她自己做，先占位。 */
 (() => {
+  const previews = ['calendar', 'reading', 'anniversaries', 'voice', 'upstairs'];
   document.addEventListener('home:action', event => {
-    const action = event.detail?.action;
-    if (action === 'chat') { event.preventDefault(); window.top.location.assign('/chat'); }
-    if (action === 'wishes') { event.preventDefault(); window.top.location.assign('/wishstar'); }
+    if (event.defaultPrevented) return;
+    const { action, season } = event.detail ?? {};
+    let route;
+    if (action === 'chat') route = '/chat';
+    else if (action === 'wishes') route = '/wishstar';
+    else if (action === 'album') route = '/home/album';
+    else if (action === 'moments') route = '/home/moments';
+    else if (previews.includes(action)) {
+      route = `/home/feature.html?feature=${action}`;
+      if (action === 'calendar' && season === 'summer') route += '&season=summer';
+    }
+    if (route) {
+      event.preventDefault();
+      window.top.location.assign(route);
+    }
   });
 })();

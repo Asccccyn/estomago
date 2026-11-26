@@ -31,6 +31,7 @@ import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoin
 import { WindowTrajectoryService } from '../../apps/host/src/runtime/window-trajectory.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
+import { fakeSolJudge } from '../helpers.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
 import {writeApprovedIdentity, readyRuntimePatch, tempRoot } from '../helpers.ts';
 
@@ -102,15 +103,18 @@ export async function runSyntheticSession(): Promise<{ records: WireRecord[]; fa
     if (cap === 'memory.surfacing.check') return { ok: true, result: { valid: true, accepted_detail_refs: [SURFACE_ITEM.detail_ref] } };
     throw Error('unexpected ' + cap);
   };
-  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }), {
-    enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
-    max_packet_bytes: 24576, worker_concurrency: 2,
-  }, null);
+  // 构造签名对齐正本 (db, client, sol, cfg, log)：此前 cfg 误入 sol 位、
+  // null 入 cfg 位，首条消息即在 onUserMessageAccepted 空引用崩溃
+  const svc = new SurfacingService(db, new MariposaClient({ transport: mariposa }),
+    fakeSolJudge([{ decision: 'recall' }]).judge, {
+      enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+      delivery_deadline_ms: 2000, max_added_tokens_per_turn: 4096,
+      max_packet_bytes: 24576, worker_concurrency: 2,
+    }, null);
   const messages = new MessageService(db, bindMessageLifecycle({ surfacing: svc, activity: null }));
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
+  const windows = new WindowManager(db, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), surfaceDetailClient: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
@@ -175,7 +179,7 @@ export async function runSyntheticSession(): Promise<{ records: WireRecord[]; fa
     const hasMemoriesBlock = (full: unknown[]): boolean => full.some((m) => {
       const c = (m as { content?: unknown }).content;
       const texts = Array.isArray(c) ? c.map((b) => String((b as { text?: string }).text ?? '')) : [typeof c === 'string' ? c : ''];
-      return texts.some((t) => t.includes('{"memories":'));
+      return texts.some((t) => t.startsWith('你想起了'));
     });
     const firstMemoriesReq = log.findIndex((r) => hasMemoriesBlock(r.full));
     facts.surfacing_block_request = firstMemoriesReq + 1; // 1-based；0=未出现

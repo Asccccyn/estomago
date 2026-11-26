@@ -7,9 +7,10 @@ import type { MariposaClient } from '../integrations/mariposa/client.ts';
 
 export async function executeMemoryReadFull(
   repo: SurfacingRepository,
-  client: MariposaClient,
+  client: MariposaClient | null,
   args: { memory_ref?: unknown; cursor?: unknown; view?: 'model'; section?: 'memory' | 'relations' | 'source' },
   scope: { roomId: string; windowId: string; requestId: string },
+  recallClient?: MariposaClient | null,
 ): Promise<{ ok: true; data: Record<string, unknown> } | { ok: false; code: string; message: string }> {
   const ref = typeof args.memory_ref === 'string' ? args.memory_ref : '';
   if (!ref) return { ok: false, code: 'INVALID_ARGUMENT', message: 'memory_ref 必填' };
@@ -19,7 +20,9 @@ export async function executeMemoryReadFull(
     // 引用未实际进入本房间模型输入 → 拒绝（不猜测、不搜索）
     return { ok: false, code: 'DETAIL_REF_NOT_SEEN', message: '该记忆引用不在已交付范围内' };
   }
-  const r = await client.surfaceDetailRead({ detail_ref: mapped.detail_ref, ...(cursor ? { cursor } : {}), ...(args.view ? { view: args.view } : {}), ...(args.section ? { section: args.section } : {}) });
+  const sourceClient = mapped.origin === 'recall' ? recallClient : client;
+  if (!sourceClient) return { ok: false, code: mapped.origin === 'recall' ? 'MARIPOSA_CLIENT_UNAVAILABLE' : 'SURFACE_CLIENT_NOT_CONFIGURED', message: '对应详情客户端未装配' };
+  const r = await sourceClient.surfaceDetailRead({ detail_ref: mapped.detail_ref, ...(mapped.origin === 'recall' ? { conversation_scope: scope.roomId } : {}), ...(cursor ? { cursor } : {}), ...(args.view ? { view: args.view } : {}), ...(args.section ? { section: args.section } : {}) });
   if (!r.ok) {
     return { ok: false, code: r.code, message: '详情读取失败（结构化错误码原样返回）' };
   }

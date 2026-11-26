@@ -14,6 +14,7 @@ import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { MediaEmbedWorkerClient, MediaIndexService } from '../../apps/host/src/media/index/service.ts';
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
+import { ContentServer } from '../../apps/content/src/service.ts';
 
 // JOINT-VOICE-20261022（07）P4：图片语义索引合同（fake worker 离线）。
 // M01 候选可权限过滤/no_match；M02 namespace 不混库；M05 worker 只编码。
@@ -187,4 +188,82 @@ test('预算：media_candidates 投影 ≤4096 字节（10 条上限）', async 
     const bytes = Buffer.byteLength(JSON.stringify({ state: r.output['state'], items }), 'utf8');
     assert.ok(bytes <= 4096, `投影 ${bytes}B 超预算`);
   } finally { w.close(); f.close(); }
+});
+
+
+// ALB-13/R33：allowAssetIds 集合过滤——stickers scope 只从集合内出候选；空集合如实 no_match
+test('M11: 集合过滤——成员图可中、非成员图被排除、空集合 no_match', async () => {
+  const w = await startFakeWorker();
+  const f = fixture(w.url);
+  try {
+    const a1 = await f.uploadImage(100, 1); // 猫
+    const a2 = await f.uploadImage(200, 2); // 狗
+    f.publish('primary', a1.id, 'ms1');
+    f.publish('primary', a2.id, 'ms2');
+    await f.preIndex(a1.id, a2.id);
+    // 集合只含狗图：查"猫"也应只回狗（或 no_match）——非成员猫图被结构性排除
+    const onlyDog = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set([a2.id]));
+    if (onlyDog.state === 'candidates') {
+      assert.ok(onlyDog.items.every((i) => i.asset_ref !== `est:${a1.id}`), '非成员图不得出现在候选');
+    } else {
+      assert.equal(onlyDog.state, 'no_match');
+    }
+    // R7：集合成员未发进 other 房间也能被集合 scope 检索（分类=授权，与房间无关）
+    const stickerLike = await f.index.searchImagesByRoom('猫猫的图', 'other', 3, undefined, new Set([a1.id]));
+    assert.equal(stickerLike.state, 'candidates', '集合 scope 不要求消息附件绑定（R7）');
+    // 集合只含猫图：查"猫"命中猫
+    const onlyCat = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set([a1.id]));
+    assert.equal(onlyCat.state, 'candidates');
+    assert.equal((onlyCat as { items: Array<{ asset_ref: string }> }).items[0]!.asset_ref, `est:${a1.id}`);
+    // 空集合=无合格候选
+    const empty = await f.index.searchImagesByRoom('猫猫的图', 'primary', 3, undefined, new Set());
+    assert.equal(empty.state, 'no_match', '空表情集合如实无匹配');
+  } finally { w.close(); f.close(); }
+});
+
+// RR6（复审 2026-11-09）：stickers scope 的未索引/编码失败按真实候选集（集合成员）统计——
+// 不再伪装普通 no_match；只入集合未发聊天的资产也进统计与补齐。
+test('RR6: 表情编码失败→coverage incomplete + pending_index 按集合成员计（不再 no_match 伪装）', async () => {
+  // worker：文本编码正常、图片编码 503（复现图片编码服务故障）
+  const failWorker = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, backend: 'fake', fingerprint: FINGERPRINT })); return; }
+    if (req.method === 'POST' && req.url === '/v1/embed') {
+      let body = ''; req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const { items } = JSON.parse(body) as { items: Array<{ modality: string }> };
+        if (items.some((it) => it.modality === 'image')) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'embed down' })); return; }
+        const vectors = items.map((it) => { const v = new Float32Array(768); v[slotOf(it.modality, Buffer.from('猫猫'))] = 1; return { id: it.id, vector_b64: Buffer.from(v.buffer, v.byteOffset, v.byteLength).toString('base64'), dims: 768 }; });
+        res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ vectors, fingerprint: FINGERPRINT }));
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise<void>((resolve) => failWorker.listen(0, '127.0.0.1', resolve));
+  const wUrl = `http://127.0.0.1:${(failWorker.address() as { port: number }).port}`;
+  const port = await new Promise<number>((resolve) => { const s = http.createServer(); s.listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); }); });
+  const cRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'est-midx-rr6-'));
+  const content = new ContentServer({ stateRoot: path.join(cRoot, 'content'), port, token: 'midx-rr6' });
+  await content.start();
+  try {
+    const f = fixture(wUrl);
+    // 两个表情资产：不发布到聊天——只进 stickers 集合（旧口径完全统计不到）
+    const s1 = await f.media.saveBuffer({ bytes: f.media ? Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(40, 1)]) : Buffer.alloc(1), purpose: 'chat_sticker', operationId: 'stk-1', createdBy: 'qiaosheng', origin: 'upload' });
+    const s2 = await f.media.saveBuffer({ bytes: Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(50, 2)]), purpose: 'chat_sticker', operationId: 'stk-2', createdBy: 'qiaosheng', origin: 'upload' });
+    const { contentForward } = await import('../../apps/host/src/integrations/content/client.ts');
+    const client = { baseUrl: `http://127.0.0.1:${content.port}`, token: content.token };
+    for (const [i, aid] of [s1.id, s2.id].entries()) {
+      const r = await contentForward(client, { method: 'POST', actor: 'qiaosheng', path: '/api/v1/content/albums/stickers/entries', body: { asset_id: aid }, headers: { 'idempotency-key': `rr6-${i}` } });
+      assert.equal(r.status, 201);
+    }
+    // tools 需带 contentClient——本文件 fixture 未传，直接构造 MediaToolsService
+    const { MediaToolsService } = await import('../../apps/host/src/modules/media/service.ts');
+    const tools = new MediaToolsService({ db: f.db, contentClient: client, media: f.media, mediaIndex: f.index });
+    const r = await tools.mediaSearch({ query: '猫猫表情', scope: 'stickers' }, ctxBase);
+    assert.equal(r.ok, true, JSON.stringify(r.output));
+    assert.equal(r.output['scope'], 'stickers');
+    assert.equal(r.output['coverage'], 'incomplete', '编码失败≠正常无匹配（旧实现普通 no_match）');
+    assert.equal(r.output['pending_index'], 2, '未索引数=集合真实候选（未发进聊天的两张也在）');
+    assert.match(String(r.output['note']), /编码失败/, '失败语义如实分开');
+  } finally { await content.stop(); failWorker.close(); }
 });

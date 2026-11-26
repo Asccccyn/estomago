@@ -18,7 +18,7 @@ function setup(kind = 'openrouter', patch = {}) {
   const { db, root } = makeDb();
   const config = buildConfig({ openrouter: { api_key_env: key }, deepseek: { api_key_env: key }, ...patch });
   const capabilities = new CapabilityMatrix(config);
-  const gate = { state: 'READY', reasons: [], manifest: null };
+  const gate = { state: 'READY', reasons: [], manifest: null, observed: { probes: {} } };
   let calls = 0;
   const runnerSelection = { status: 'ok', runner: { kind, interruptSupport: 'unknown', run: async () => { calls++; throw new Error('Health must not call a model'); } } };
   const report = (extra = {}) => buildReadyReport({ config, capabilities, db, gate, runnerSelection, ...extra } as any);
@@ -116,7 +116,7 @@ test('HTTP uses the report decision: healthy 200, real failures 503, disabled se
       assert.equal(r.status,200);
       assert.deepEqual(await r.json(), { ready:true,disabled:['archive','push'],degraded:[] });
     }
-    gate = { state:'BLOCKED',reasons:['/private/secret/path'],manifest:null };
+    gate = { state:'BLOCKED',reasons:['/private/secret/path'],manifest:null,observed:{probes:{}} };
     const bad = await fetch(url+'/health/ready');
     assert.equal(bad.status,503);
     const body = await bad.text();
@@ -125,4 +125,18 @@ test('HTTP uses the report decision: healthy 200, real failures 503, disabled se
     assert.equal((await fetch(url+'/health/live')).status,200);
     assert.equal(c.calls(),0);
   } finally { server.closeAllConnections(); await new Promise<void>(r=>server.close(()=>r())); delete process.env[key];c.db.close(); }
+});
+
+
+test('SDK readiness reads the current version-bound evidence instead of an unpopulated in-memory matrix',()=>{
+  const c=setup('claude-agent-sdk');
+  try {
+    const rows=c.db.prepare('SELECT probe_key,state,sdk_version,evidence_ref FROM capability_probes').all() as any[];
+    const probes=Object.fromEntries(rows.map(row=>[row.probe_key,row]));
+    assert.equal(c.capabilities.overall(),'unknown');
+    const report=c.report({gate:{...c.gate,observed:{probes}}});
+    assert.equal(report.components.runtime.status,'ok');
+    assert.equal(c.capabilities.describe(probes).thinking_delta_observed.evidence_ref,'test-seeded');
+    assert.equal(c.calls(),0);
+  } finally {c.db.close();}
 });

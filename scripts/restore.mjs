@@ -148,11 +148,11 @@ if (fs.existsSync(metaDir)) {
   // RRA-019（2026-10-09 复审）：归档名→应用恢复名映射——备份里的
   // config.yaml 映射为 config/estomago.yaml（loadConfig 只认此名，
   // 此前原样拷 config.yaml 导致恢复后无法自动读取原配置）
-  for (const [srcName, destName] of [['config.yaml', 'estomago.yaml'], ['auth.token', 'auth.token']]) {
+  for (const [srcName, destName] of [['config.yaml', 'estomago.yaml'], ['auth.token', 'auth.token'], ['auth.web.json', 'auth.web.json']]) {
     const from = path.join(metaDir, srcName);
     if (fs.existsSync(from)) {
       fs.copyFileSync(from, path.join(cfgDest, destName));
-      if (destName === 'auth.token') fs.chmodSync(path.join(cfgDest, destName), 0o600);
+      if (destName === 'auth.token' || destName === 'auth.web.json') fs.chmodSync(path.join(cfgDest, destName), 0o600);
       console.log(`[restore] meta/${srcName} 已恢复为隔离根 config/${destName}`);
     }
   }

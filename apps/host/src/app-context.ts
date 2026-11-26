@@ -1,4 +1,6 @@
-import { supportsSurfacingTransport, SURFACE_HOST_NOTICE } from './memory-surfacing/contracts.ts';
+import { SourceBindingService } from './modules/sourcebinding/service.ts';
+import { GlmChatAdapter } from './integrations/glm/chat.ts';
+import { supportsSurfacingTransport } from './memory-surfacing/contracts.ts';
 // 组合根：把配置、DB 与各服务装配成一个可启动/可停止的 Host。
 // 测试用 createHost({ stateRoot: 临时目录, config: buildConfig({...}) }) 直接构建。
 import http from 'node:http';
@@ -16,12 +18,14 @@ import { MessageService } from './messages/service.ts';
 import { PRIMARY_CONVERSATION } from './messages/constants.ts';
 import { IdentityService } from './identity/service.ts';
 import { CapabilityMatrix } from './runtime/capabilities.ts';
-import { selectRunner, type RunnerSelection } from './runtime/runner.ts';
+import { selectRunner, type RunnerSelection, type AgentRunner } from './runtime/runner.ts';
+import { SubscriptionAccessRunner } from './runtime/subscription-access.ts';
 import { ReasoningService } from './reasoning/service.ts';
 import { UsageCollector } from './usage/collector.ts';
 import { RoutingService } from './routing/service.ts';
 import { WindowManager } from './windows/manager.ts';
-import { TurnSupervisor } from './runtime/supervisor.ts';
+import { isEnvelopeDriverKind, TurnSupervisor } from './runtime/supervisor.ts';
+import { recoveryPass, recoverSchedule } from './runtime/recovery.ts';
 import { AuthService } from './auth/tokens.ts';
 import { handleRequest, type RequestDeps } from './server/http.ts';
 import { MariposaClient } from './integrations/mariposa/client.ts';
@@ -41,7 +45,10 @@ import { runMediaBackfillTick } from './media/index/backfill.ts';
 import { BackgroundTaskService } from './runtime/background-task-service.ts';
 import { ConversationActivityService } from './runtime/wake-activity.ts';
 import { contentClientFor, contentForward } from './integrations/content/client.ts';
+import { ContentOperationCoordinator } from './integrations/content/coordinator.ts';
 import { SurfacingService } from './memory-surfacing/service.ts';
+import { SolDecisionJudge, SOL_DECISION_SCHEMA_VERSION } from './memory-surfacing/sol-provider.ts';
+import { HeartbeatRuntime, registerHeartbeatDrawCapability } from './modules/heartbeat/runtime.ts';
 
 export type HostOptions = {
   stateRoot: string;
@@ -49,6 +56,15 @@ export type HostOptions = {
   logDir: string | null;
   bind: string;
   port: number; // 0 = 随机端口（测试）
+  /** 测试接缝：仅 provider=mock 且 ESTOMAGO_TEST_MODE=1 时生效——注入闸控 runner
+   *  获得确定性派发时机。生产装配不传。 */
+  runnerOverride?: AgentRunner;
+  /** Explicit trusted, in-process candidate adapters, never registered by user/model input. */
+  heartbeatSources?: readonly import('./modules/heartbeat/sources.ts').HeartbeatSourceAdapter[];
+  /** Synthetic Sol transport for the scheduled midnight source task, only used in test mode. */
+  heartbeatDailyMemoryTransportForTest?: import('./memory-surfacing/sol-provider.ts').SolTransport;
+  /** Synthetic Sol transport for async conversation rest-intent judgment, only used in test mode. */
+  restJudgeTransportForTest?: import('./memory-surfacing/sol-provider.ts').SolTransport;
 };
 
 export class Host {
@@ -70,11 +86,28 @@ export class Host {
   readonly auth: AuthService;
   readonly alerts: SystemAlertService | null; // EXEC_V1 WP1：系统异常红点（最小装配可为 null）
   readonly scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler | null; // EXEC_V1 WP4
+  readonly restCoordinator: import('./runtime/conversation-rest-sol.ts').RestDecisionCoordinator | null;
+  private readonly heartbeat: HeartbeatRuntime | null;
   /** R8′（2026-10-23）：媒体索引后台补全——独立定时器/单飞门/批次中止（不经调度器与会话串行链） */
   private mediaBackfillTimer: ReturnType<typeof setInterval> | null = null;
   private mediaBackfillTicking = false;
   private mediaBackfillAbort: AbortController | null = null;
   private mediaIndexRef: import('./media/index/service.ts').MediaIndexService | null = null;
+  /** RR4-W2a：集合类索引来源（相册+作品）的游标拉取器——content 未装配=null（仅房间轮转）。 */
+  private mediaSourceFetch: { sources: string[]; fetchPage: import('./media/index/backfill.ts').MediaSourceFetcher } | null = null;
+  /** 相册重构 P2：M 落正待同步批次的后台一跳（单飞门；无模型执行） */
+  private mediaSyncTimer: ReturnType<typeof setInterval> | null = null;
+  private objectMetaBackfillTimer: ReturnType<typeof setInterval> | null = null;
+  private mediaSyncTicking = false;
+  // 包2 批C（BIND）：午夜来源绑定维护 tick（60s 检查是否到边界；实际批处理有界、
+  // 单飞；不进调度器模型串行链——BIND-06 不唤醒char/不触发浮现/不写聊天气泡）。
+  private sourceBindTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly sourceBindService: SourceBindingService;
+  private sourceBindTicking = false;
+  private mediaSyncStore: import('./integrations/mariposa/media-store.ts').MariposaMediaStore | null = null;
+  private mediaServiceRef: import('./media/assets.ts').MediaService | null = null;
+  /** 同步失败退避（进程内；重启归零重试一轮，与 media/index/backfill.ts 同款如实记录） */
+  private readonly mediaMSyncRetryNotBefore = new Map<string, number>();
   private oidoRef: import('./integrations/oido/adapter.ts').OidoAdapter | null = null;
   private sirenCallRef: import('./integrations/siren/adapter.ts').SirenAdapter | null = null;
   /** P03.8：oído 接入模块生命周期（删除传播重试 timer 的 start/stop 包装；行为逐字保持） */
@@ -83,6 +116,8 @@ export class Host {
   readonly archiveSync: ArchiveSyncService;
   private readonly voiceObservations: import('./modules/oido/observations.ts').VoiceObservationService | null;
   private readonly callReplyLinks: import('./modules/voice/call-links.ts').CallReplyLinkService | null;
+  /** P1（F06/F07 20261106）：内容写协调器——意图/pin/确认/恢复；浏览器、模型与启动恢复共用 */
+  private readonly contentOps: ContentOperationCoordinator | null;
   private callReconcileTimer: ReturnType<typeof setInterval> | null = null;
   private callReconcileWork: Promise<void> | null = null;
   private readonly callReconcileAbort = new AbortController();
@@ -95,8 +130,10 @@ export class Host {
     server: http.Server,
     deps: Omit<RequestDeps, 'config'>,
     archiveSync: ArchiveSyncService,
+    restCoordinator: import('./runtime/conversation-rest-sol.ts').RestDecisionCoordinator | null = null,
   ) {
     this.config = config;
+    this.sourceBindService = deps.sourceBinding!;
     this.opts = opts;
     this.paths = deps.paths;
     this.db = deps.db;
@@ -114,7 +151,11 @@ export class Host {
     this.auth = deps.auth;
     this.alerts = deps.alerts ?? null;
     this.scheduler = deps.scheduler ?? null;
+    this.restCoordinator = restCoordinator;
+    this.heartbeat = deps.heartbeat ?? null;
     this.mediaIndexRef = deps.mediaIndex ?? null; // R8′：后台补索引独立循环
+    this.mediaServiceRef = deps.media ?? null; // 相册重构 P2：M 落正待同步循环
+    this.mediaSyncStore = deps.mediaMasterStore ?? null;
     this.oidoRef = deps.oido ?? null;
     this.oidoLifecycle = createOidoDeleteRetryLifecycle(deps.db, () => this.oidoRef);
     this.surfacing = deps.surfacing ?? null;
@@ -122,6 +163,7 @@ export class Host {
     this.archiveSync = archiveSync;
     this.voiceObservations = deps.voiceObservations ?? null;
     this.callReplyLinks = deps.callReplyLinks ?? null;
+    this.contentOps = deps.contentOps ?? null;
     this.server = server;
   }
 
@@ -136,9 +178,11 @@ export class Host {
     if (applied.applied.length > 0) logger.info('db_migrated', { versions: applied.applied.join(','), schema_version: schemaVersion(db) });
 
     const events = new EventService(db);
-    // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1）：专用受限 service binding
-    // （surfacing_credential_ref，不回退聊天/归档凭据；docs/06）；enabled=false
-    // 时服务仍装配（表结构就绪）但零作业/零网络/零凭据读取。
+    // 自动浮现（SOL_RECALL_REFACTOR 2026-10-30）：M 走专用受限 service binding
+    // （surfacing_credential_ref，不回退聊天/归档凭据）；Sol 判断走独立 OpenAI
+    // Responses key（sol.api_key_env，凭据职责分离）。enabled=false 时服务仍装配
+    // （表结构就绪）但零作业/零网络/零凭据读取。缺 key 不禁用功能——作业照常
+    // 登记并以 SURFACE_SOL_NOT_CONFIGURED 收口（真实原因可诊断，不伪装 none）。
     const surfaceCfg = opts.config.memory_surfacing;
     if (surfaceCfg.enabled && !supportsSurfacingTransport(opts.config.runtime.provider)) {
       logger.warn('surface_transport_unsupported', { provider: opts.config.runtime.provider, code: 'SURFACE_PROFILE_UNSUPPORTED' });
@@ -147,26 +191,88 @@ export class Host {
       baseUrl: opts.config.integrations.mariposa.base_url ?? undefined,
       credentialEnv: surfaceCfg.surfacing_credential_ref,
     });
+    const solJudge = new SolDecisionJudge({
+      apiKeyEnv: surfaceCfg.sol.api_key_env,
+      baseUrl: surfaceCfg.sol.base_url,
+      model: surfaceCfg.sol.model,
+      reasoningEffort: surfaceCfg.sol.reasoning_effort,
+      verbosity: surfaceCfg.sol.verbosity,
+      maxOutputTokens: surfaceCfg.sol.max_output_tokens,
+      cacheTtl: surfaceCfg.sol.cache_ttl,
+      cacheKeySeed: sha256Hex(`surface-sol:${opts.stateRoot}`).slice(0, 16),
+      userDisplayName: surfaceCfg.sol.user_display_name,
+      assistantDisplayName: surfaceCfg.sol.assistant_display_name,
+      templateOverride: surfaceCfg.sol.decision_template,
+      templateRevision: SOL_DECISION_SCHEMA_VERSION,
+    });
+    // R6 精确封存：quarrel sm 集随 prepare 下推——archives 服务在本函数后段构造，
+    // 用迟绑定 ref（同 schedulerRef 先例）；未绑定=尚无存档可抑（空集+reachable+complete）。
+    // RR4-B：signal 贯穿——作业取消/剩余期限经 SurfacingService 端口传到封存分页读取。
+    let quarrelSourceRefsFn: ((conversationId: string, signal?: AbortSignal) => Promise<{ refs: Set<string>; reachable: boolean; complete: boolean }>) | null = null;
+    // 包4无seq整改（2026-11-18）：episode 锚点范围解析转发——archives 在 memory 之后装配，
+    // 经惰性引用注入同一份 DBG-04 实现（不在 memory 域复制第二套解析）。
+    let anchorRangeFn: import('./modules/archives/service.ts').ArchiveService['resolveAnchorRange'] | null = null;
     const surfacing = new SurfacingService(
       db,
       surfaceMariposaClient,
+      solJudge,
       {
         enabled: surfaceCfg.enabled && supportsSurfacingTransport(opts.config.runtime.provider),
-        transport_overhead_text: SURFACE_HOST_NOTICE,
-        policy_revision: 1,
-        prompt_prepare_revision: 'surface_prepare_v1',
+        // R9（裁定 2026-11-03）：调度身份来自配置（E 自身版本，不再是
+        // 冒充 M 的硬编码 1/surface_prepare_v2）；M 实际执行版本由
+        // prepare 响应读取落盘（surfacing_jobs.m_policy_revision 等）
+        policy_revision: surfaceCfg.job_policy_revision,
+        prompt_prepare_revision: surfaceCfg.job_prompt_revision,
         delivery_deadline_ms: surfaceCfg.delivery_deadline_ms,
         max_added_tokens_per_turn: surfaceCfg.max_added_tokens_per_turn,
         max_packet_bytes: surfaceCfg.max_packet_bytes,
         worker_concurrency: surfaceCfg.worker_concurrency,
+        recent_user_messages: surfaceCfg.recent_user_messages,
+        recent_window_bytes: surfaceCfg.recent_window_bytes,
       },
       logger,
       events,
+      (conversationId, signal) => quarrelSourceRefsFn?.(conversationId, signal) ?? Promise.resolve({ refs: new Set<string>(), reachable: true, complete: true }),
     );
+    // 保存的模板/模型/开关覆盖与配置文件合并，仍由同一服务消费。
+    surfacing.restoreSavedSettings();
     // WAKE_KEEPWARM_V1 §05：真实活动锚点投影（L/维护回执 CAS）——消息服务与
     // supervisor/调度器共用同一实例；未迁移旧库行=如实空（unknown），不猜。
     const activity = new ConversationActivityService(db);
-    const media = new MediaService(db, paths.mediaDir, opts.config);
+    const bgSettings = new BackgroundSettingsService(db, opts.config);
+    // S-06 + v2.1：心跳让位检查与消息提交后排程刷新经可变引用接线（scheduler 在后段构造）
+    let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
+    const { ConversationRestJudge, RestDecisionCoordinator } = await import('./runtime/conversation-rest-sol.ts');
+    const restFixture = process.env.ESTOMAGO_TEST_MODE === '1' ? opts.restJudgeTransportForTest : undefined;
+    const restJudge = new ConversationRestJudge({
+      apiKeyEnv: surfaceCfg.sol.api_key_env,
+      baseUrl: surfaceCfg.sol.base_url,
+      model: () => solJudge.effectiveModel(),
+      reasoningEffort: surfaceCfg.sol.reasoning_effort,
+      maxOutputTokens: surfaceCfg.sol.max_output_tokens,
+      verbosity: surfaceCfg.sol.verbosity,
+      userDisplayName: surfaceCfg.sol.user_display_name,
+      assistantDisplayName: surfaceCfg.sol.assistant_display_name,
+    }, restFixture);
+    const restCoordinator = new RestDecisionCoordinator({
+      db,
+      activity,
+      judge: restJudge,
+      sleepWindow: () => bgSettings.effective().keepwarm.sleep_window,
+      controlRevision: () => bgSettings.keepwarmControlRevision(),
+      userDisplayName: surfaceCfg.sol.user_display_name,
+      assistantDisplayName: surfaceCfg.sol.assistant_display_name,
+      onStateChanged: () => schedulerRef?.refreshKeepwarmSchedule(),
+    });
+    // 相册重构 P2（GLM_ALBUM_REFACTOR_EXECUTION 20261108）：M 媒体间落正客户端——
+    // mariposa base_url + 主凭据引用配置齐备才装配；M 未配置时保存仍走本地（同步状态如实 pending）。
+    const mediaStore = opts.config.integrations.mariposa.base_url && opts.config.integrations.mariposa.credential_ref
+      ? new (await import('./integrations/mariposa/media-store.ts')).MariposaMediaStore({
+        baseUrl: opts.config.integrations.mariposa.base_url,
+        credentialEnv: opts.config.integrations.mariposa.credential_ref,
+      })
+      : null;
+    const media = new MediaService(db, paths.mediaDir, opts.config, mediaStore);
     const oido = opts.config.integrations.oido.base_url
       ? new (await import('./integrations/oido/adapter.ts')).OidoAdapter(opts.config.integrations.oido)
       : null;
@@ -182,15 +288,25 @@ export class Host {
       archiveClient: opts.config.archive.enabled ? archiveMariposaClient : null,
       streamId: opts.config.archive.source_scope ?? 'estomago-primary-live',
       logger,
+      // P2（V01）：资格终结时取消 O 在途分析（fence 落 cancelled；取消失败不阻塞收口）
+      cancelAnalysis: (analysisId) => oido!.cancelAnalysis(analysisId),
     });
     const messages = new MessageService(db,
       // P05.3：生命周期消费者装配（浮现登记/编辑撤销 + 活动锚点保持原端口 + 语音观察登记）
       (await import('./application/message-lifecycle.ts')).bindMessageLifecycle({
-        surfacing: surfacing.enabled ? surfacing : null,
+        surfacing,
         activity,
+        restJudge: restCoordinator,
+        heartbeatContext: {
+          sleepWindow: () => bgSettings.effective().keepwarm.sleep_window,
+          controlRevision: () => bgSettings.keepwarmControlRevision(),
+        },
+        onScheduleDirty: () => schedulerRef?.refreshKeepwarmSchedule(),
         voiceObservations: {
           ensureForMessage: (messageId, revision, conversationId) => voiceObsService.ensureForMessage(messageId, revision, conversationId, voiceObsService.configured),
           wake: () => voiceObsService.wake(),
+          // RV01（复审 20261106）：修订被取代/派发前取消＝观察资格终结（abandoned）
+          abandonRevision: (messageId, revision) => voiceObsService.decideQualification({ messageId, revision }, 'abandoned'),
         },
       }),
       activity);
@@ -198,7 +314,14 @@ export class Host {
     const alerts = new SystemAlertService(db, events);
     const identity = new IdentityService(opts.config, paths);
     const capabilities = new CapabilityMatrix(opts.config);
-    const runnerSelection = await selectRunner(opts.config);
+    const settings = new RuntimeSettingsService(db);
+    const runnerSelection: RunnerSelection = opts.config.runtime.provider === 'mock'
+      ? await selectRunner(opts.config)
+      : { status: 'ok', runner: new SubscriptionAccessRunner(opts.config, settings) };
+    // 测试接缝（仅 provider=mock 且 TEST_MODE）：注入闸控 runner 以获得确定性的
+    // 派发时机（编辑/取消类用例不再与 mock 的毫秒级完成竞速）。生产不传此参数。
+    const runnerOverride = opts.config.runtime.provider === 'mock' && process.env.ESTOMAGO_TEST_MODE === '1' ? opts.runnerOverride : undefined;
+    const effectiveRunnerSelection: RunnerSelection = runnerOverride ? { status: 'ok', runner: runnerOverride } : runnerSelection;
     // EXEC_V1 02 §4.1（ALERT-07）：SDK 无 TTL 装配证据——显示面经 records.ttlVerification
     // 分离 desired/effective/verification（不得显示"已生效 1h"）。聚合告警在 WP2 核最终
     // options 时按真实证据观察（开机观测会污染事件序列，不是证据点）。
@@ -210,13 +333,9 @@ export class Host {
     const selections = new ManualSelectionService(db);
     // 2026-10-08 她裁定：运行时换模型/推理等级——override 持久正本；
     // WindowManager 经 provider 读生效视图（新窗按生效型号存指纹）
-    const settings = new RuntimeSettingsService(db);
     // WP-07（CX-09）：初始轨迹写入切换事务所需（先于 WindowManager 构造）
     const trajectory = new WindowTrajectoryService(db);
-    const windows = new WindowManager(db, events, identity, () => {
-      const effModel = settings.effectiveOrModel(opts.config.openrouter.model);
-      return effModel === opts.config.openrouter.model ? opts.config : { ...opts.config, openrouter: { ...opts.config.openrouter, model: effModel } };
-    }, selections, trajectory);
+    const windows = new WindowManager(db, identity, opts.config, selections, trajectory);
     const auth = new AuthService(paths);
     // EXEC_V1 WP3：媒体服务（同进程；文件进 paths.mediaDir——不另起服务）
     const voice = new VoiceService(db, media, opts.config);
@@ -239,15 +358,45 @@ export class Host {
     // 工具执行器需要 db（引用逐字核对/来源收据查询）与 archiveSync（被引消息缺收据时先补一发同步）
     // EXEC_V1 WP5：content 薄代理（content.enabled=true 且凭据文件存在才装配）
     const contentClient = contentClientFor(paths.stateRoot, opts.config.content.port, opts.config.content.enabled);
+    // RR4-W2a：索引覆盖来源接相册+作品（仅收藏/仅入表情/仅存作品、未发进聊天的图同链
+    // 补齐）。拉取器游标续进由 backfill 持有；本处只提供分页读取。content 未装配=null。
+    let mediaSourceFetch: { sources: string[]; fetchPage: import('./media/index/backfill.ts').MediaSourceFetcher } | null = null;
+    if (contentClient) {
+      const { contentForward } = await import('./integrations/content/client.ts');
+      mediaSourceFetch = {
+        sources: ['album:chat_screenshots', 'album:important_photos', 'album:stickers', 'creations'],
+        fetchPage: async (source: string, cursor: string | null): Promise<import('./media/index/backfill.ts').MediaSourcePage | null> => {
+          try {
+            if (source === 'creations') {
+              const res = await contentForward(contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/creations?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+              if (res.status !== 200 || res.bodyFailed) return null;
+              const b = res.body as { items?: Array<{ work_asset_id?: string | null; work_kind?: string | null; icon_asset_id?: string | null }>; next_cursor?: string | null };
+              const assets: string[] = [];
+              for (const it of b.items ?? []) {
+                if (it.work_kind === 'image' && typeof it.work_asset_id === 'string') assets.push(it.work_asset_id);
+                if (typeof it.icon_asset_id === 'string' && it.icon_asset_id !== it.work_asset_id) assets.push(it.icon_asset_id);
+              }
+              return { assets, next: b.next_cursor ?? null };
+            }
+            const kind = source.slice('album:'.length);
+            const res = await contentForward(contentClient, { method: 'GET', actor: 'jiaming', path: `/api/v1/content/albums/${kind}/entries?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}` });
+            if (res.status !== 200 || res.bodyFailed) return null;
+            const b = res.body as { items?: Array<{ asset_id?: string }>; next_cursor?: string | null };
+            return { assets: (b.items ?? []).map((i) => i.asset_id).filter((x): x is string => typeof x === 'string'), next: b.next_cursor ?? null };
+          } catch { return null; }
+        },
+      };
+    }
+    // P1（F06/F07 20261106）：内容写协调器——先解析原操作、HTTP 前持久意图+pin、
+    // 成功后按权威快照确认映射、未知结果由恢复消费者按原身份收口。同一实例装给
+    // 浏览器代理、模型写工具与 Host 启动恢复。
+    const contentOps = contentClient ? new ContentOperationCoordinator({ db, client: contentClient, media, logger }) : null;
     // 许愿星接入（她 2026-10-17 批准）：开窗临近纪念日提醒 + char全能力工具面
     const { WishstarClient } = await import('./integrations/wishstar/client.ts');
     const wishstar = opts.config.wishstar.enabled ? new WishstarClient(opts.config.wishstar) : null;
     // WAKE_KEEPWARM_V1（2026-10-22）：后台设置与预约管理正本——HTTP 管理面、
     // wake_manage 工具、调度器共用同一实例（单一正本，不另写第二套业务）。
-    const bgSettings = new BackgroundSettingsService(db, opts.config);
     const taskService = new BackgroundTaskService(db, bgSettings);
-    // S-06：心跳让位检查经可变引用接线（scheduler 在 supervisor 之后构造）
-    let schedulerRef: import('./runtime/background-scheduler.ts').BackgroundScheduler | null = null;
     // JOINT-VOICE-20261022：oído 深听适配（HTTP 叶子；base_url 未配=不装配，工具/门控如实降级）
     // JOINT-VOICE-20261022（07）：媒体语义索引（worker 未配置=null，检索能力如实不可用）
     const mediaIndex = opts.config.media_embedding.base_url
@@ -266,13 +415,20 @@ export class Host {
       attachmentsClient: opts.config.archive.enabled ? archiveMariposaClient : null,
       streamId: opts.config.archive.source_scope ?? 'estomago-primary-live',
       logger,
+      // B2（2026-11-04）：附件绑定成功→message.media.updated（复用 EventService 持久/分发/回放链）
+      events,
+      getMessage: (id: string) => messages.getMessage(id) as unknown as Record<string, unknown> | null,
     });
     // P02.6：显式能力注册表装配（非自动发现）。本批只登记 oído 已迁能力（oido_get）；
     // 未迁工具继续走 HostToolExecutor 旧路径（集合不相交），旧路径不作为新路径回退。
     const capabilityRegistry = new (await import('./capabilities/registry.ts')).CapabilityRegistry();
+    // 包4 §6.2（03_PROJECTION_MIGRATION）：模型可见说话人标签统一取身份配置
+    // 的双方真实姓名（宿主用户/char）——memory/conversation 域投影共用同一份。
+    const speakerLabels = (await import('./identity/speaker-labels.ts')).speakerLabelsFromConfig(opts.config);
     // P04.2-4：memory 域（14 工具；同一服务实例供换窗评审恢复窄委托）
     const memoryService = (await import('./modules/memory/module.ts')).registerMemoryCapabilities(capabilityRegistry, {
-      db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync,
+      db, tz: opts.config.time.business_timezone, mariposa: modelMariposaClient, surfaceDetailClient: surfaceMariposaClient, reviews, checkpoint, archiveSync, speakerLabels,
+      anchorRange: (roomId, seenMessages, start, end) => anchorRangeFn!(roomId, seenMessages, start, end),
     });
     (await import('./modules/oido/module.ts')).registerOidoCapabilities(capabilityRegistry, {
       db, oido, sources: oidoSources, audio: media, artifacts: media,
@@ -281,14 +437,58 @@ export class Host {
     tools.setCapabilityRegistry(capabilityRegistry);
     tools.setMemoryRecovery(memoryService);
     // P04.6-10：剩余域全部登记（wishstar/content/wake/media/identity/context-review）
-    (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, { wishstar });
-    (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media });
-    (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { db, taskService });
-    (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { media, mediaIndex });
+    (await import('./modules/content/module.ts')).registerContentCapabilities(capabilityRegistry, { contentClient, media, contentOps });
+    (await import('./modules/wake/module.ts')).registerWakeCapabilities(capabilityRegistry, { taskService });
+    (await import('./runtime/turn-completion.ts')).registerTurnCompletionCapability(capabilityRegistry, db);
+    const mediaTools = (await import('./modules/media/module.ts')).registerMediaCapabilities(capabilityRegistry, { db, media, mediaIndex, contentClient });
     (await import('./modules/identity/module.ts')).registerIdentityCapabilities(capabilityRegistry, { db, identity });
     (await import('./modules/context-review/module.ts')).registerContextReviewCapabilities(capabilityRegistry, { db, reviews, checkpoint });
     tools.setMemoryRecovery(memoryService);
+    // 相册重构 P3：图片生成——配置了 api_key_env 才装配适配器（Key 只在服务端环境）；
+    // 两阶段恢复由 ImageGenService 承担（生成≠入库，失败不二次付费生成）
+    const imageGenCfg = opts.config.image_generation;
+    const imageGenAdapter = imageGenCfg.api_key_env && process.env[imageGenCfg.api_key_env]
+      ? new (await import('./integrations/imagegen/adapter.ts')).ImageGenAdapter({ baseUrl: imageGenCfg.base_url, apiKeyEnv: imageGenCfg.api_key_env, model: imageGenCfg.model })
+      : null;
+    const imagegen = new (await import('./modules/imagegen/service.ts')).ImageGenService({
+      db, adapter: imageGenAdapter, media, contentClient, messages, events, archiveSync,
+      backgroundRunRemainingMs: (runId) => schedulerRef?.remainingRunMs(runId) ?? 0,
+    });
+    const { registerImageGenCapabilities } = await import('./modules/imagegen/module.ts');
+    registerImageGenCapabilities(capabilityRegistry, { imagegen });
+    // 相册重构 P4：对话存档（人类 HTTP 入口 + conversation_archive 模型工具共用同一服务）
+    // F3（复审 2026-11-09 二轮）：建档/删除经 ContentOperationCoordinator（确认事务登记
+    // M 投影 outbox，由 archiveSync 周期消费）——不再挂直接推送端口。
+    const archives = new (await import('./modules/archives/service.ts')).ArchiveService({ db, contentClient, contentOps, logger });
+    const { registerArchivesCapabilities } = await import('./modules/archives/module.ts');
+    registerArchivesCapabilities(capabilityRegistry, { archives, mariposa: modelMariposaClient ?? null });
+    quarrelSourceRefsFn = (conversationId) => archives.quarrelBlockedSourceRefs(conversationId);
+    anchorRangeFn = (roomId, seenMessages, start, end) => archives.resolveAnchorRange(roomId, seenMessages, start, end);
+    const zashideleMoments = new (await import('./integrations/zashidele/moments.ts')).ZashideleMoments(opts.config.integrations.zashidele);
+    const { livingRoomHeartbeatSource } = await import('./modules/heartbeat/living-room-source.ts');
+    const livingRoom = livingRoomHeartbeatSource(zashideleMoments, () => bgSettings.effective().keepwarm.include_living_room);
+    const { HeartbeatDailyMemory } = await import('./modules/heartbeat/daily-memory.ts');
+    const { HeartbeatSolMemorySelector } = await import('./modules/heartbeat/sol-memory-selector.ts');
+    const dailyFixture = process.env.ESTOMAGO_TEST_MODE === '1' ? opts.heartbeatDailyMemoryTransportForTest : undefined;
+    const dailySol = new HeartbeatSolMemorySelector({ apiKeyEnv:surfaceCfg.sol.api_key_env,baseUrl:surfaceCfg.sol.base_url,
+      model:surfaceCfg.sol.model,reasoningEffort:surfaceCfg.sol.reasoning_effort,maxOutputTokens:surfaceCfg.sol.max_output_tokens,verbosity:surfaceCfg.sol.verbosity },dailyFixture);
+    const dailyMemory = new HeartbeatDailyMemory(db,modelMariposaClient,dailySol,
+      () => effectiveRunnerSelection.status === 'ok' && isEnvelopeDriverKind(effectiveRunnerSelection.runner.kind)
+        && identity.evaluateGate(db,{driver:effectiveRunnerSelection.runner.kind}).state === 'READY');
+    if (process.env.ESTOMAGO_TEST_MODE !== '1' || dailyFixture) dailyMemory.install();
+    const heartbeat = new HeartbeatRuntime(db, contentClient, media, archives, messages, events, {
+      wishstar, memory: modelMariposaClient,
+      extensions: [livingRoom, ...(opts.heartbeatSources ?? [])],
+      dailyMemorySelection: dailyMemory.read,
+    });
+    contentOps?.setSourceMutationGuard((path, operation) => heartbeat.guardSourceMutation(path, operation));
+    tools.setHeartbeatCards(heartbeat.cards);
+    registerHeartbeatDrawCapability(capabilityRegistry, heartbeat);
+    (await import('./modules/wishstar/module.ts')).registerWishstarCapabilities(capabilityRegistry, {
+      wishstar, replyTarget: (ref, ctx) => heartbeat.replyTarget(ref, ctx),
+    });
     const supervisor = new TurnSupervisor({
+      mediaTools,
       wishstar,
       voiceObservations: voiceObsService,
       // JOINT-VOICE：听觉可用=配置声明（adapter 凭据就绪），不在发送关键路径探测
@@ -299,7 +499,7 @@ export class Host {
       events,
       identity,
       capabilities,
-      runnerSelection,
+      runnerSelection: effectiveRunnerSelection,
       reasoning,
       usage,
       routing,
@@ -311,23 +511,47 @@ export class Host {
       checkpoint,
       trajectory,
       selections,
+      contentClient, // 相册重构 P5：携带集合读取/消费（未启用=null=如实无携带）
+      archives, // 相册重构 P4：存档一次性通知（信封装配期投递）
       settings,
       alerts,
       media,
       activity,
+      heartbeat,
       keepwarmYieldCheck: (runId) => schedulerRef?.isYieldRequested(runId) ?? false,
+      keepwarmEnabled: () => bgSettings.effective().keepwarm.enabled,
       surfacing: surfacing.enabled ? surfacing : undefined,
-      bootstrap: modelMariposaClient,
+      // S18 口径：未接线=如实无 B。base_url 未配置（仅开发/测试态）时不装配
+      // bootstrap 端口——装一个必然抛错的客户端只会制造 BOOTSTRAP_INCOMPLETE 噪声。
+      bootstrap: opts.config.integrations.mariposa.base_url ? modelMariposaClient : null,
+      // 宿主用户 2026-11-07 裁定：开窗"运行中事项"片段随开窗包冻结（3 条、近期引用热度排序）
+      episodes: opts.config.integrations.mariposa.base_url ? { list: (a: { scopeId: string; states?: string[]; limit?: number }, signal?: AbortSignal) => modelMariposaClient.episodeList(a, signal) } : null,
       toolCatalog: capabilityRegistry,
     });
     // voice 域能力与同一消息/媒体服务装配。
     (await import('./modules/voice/module.ts')).registerVoiceCapabilities(capabilityRegistry, {
       db, sirenCall, media, messages, events,
+      // RB01（复审 20261106）：accept_call 建呼也走统一 Sol 作业失效触发
+      surfacing: surfacing.enabled ? surfacing : null,
     });
     // P04.1：conversation 域（conversation_read/chat_send_text/chat_send_attachment）
     (await import('./modules/conversation/module.ts')).registerConversationCapabilities(capabilityRegistry, {
-      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync,
+      db, tz: opts.config.time.business_timezone, messages, media, events, archiveSync, speakerLabels, archives,
     });
+
+    // 冷启动目录同步（她 2026-11-25 裁定：不换窗也要能用最新版工具）——全部能力
+    // 注册完成后、任何模型请求前，把 ACTIVE direct 窗口的冻结目录同步到当前版本。
+    // CLOSED 窗口与 legacy/deferred 协议不动（历史证据/结构差异，如实记 skipped）。
+    try {
+      const sync = (await import('./runtime/tool-discovery.ts')).syncWindowToolsetsToCurrent(db, capabilityRegistry.currentCatalog(), capabilityRegistry.currentGroups?.() ?? {});
+      if (sync.windows > 0) logger.info('window_toolsets_synced', {
+        windows: sync.windows, refreshed: sync.refreshed, skipped: sync.skipped.length,
+        replaced: [...new Set(sync.replaced)].join(',') || null,
+        added: [...new Set(sync.added)].join(',') || null,
+      });
+    } catch (err) {
+      logger.warn('window_toolsets_sync_failed', { error: String((err as Error).message ?? err).slice(0, 200) });
+    }
 
     // EXEC_V1 WP4 + WAKE_KEEPWARM_V1（2026-10-22）：后台设置+调度器（宿主内单实例）。
     // 调度器只做 SQL 到期检查与领取；模型执行经 supervisor.enqueueBackground 进入同一
@@ -335,16 +559,22 @@ export class Host {
     const scheduler: import('./runtime/background-scheduler.ts').BackgroundScheduler = new BackgroundScheduler({
       db, config: opts.config, settings: bgSettings, alerts,
       executor: (await import('./application/background-execution.ts')).createBackgroundExecution({
-        messages, events, bgSettings, supervisor,
+        db, messages, events, bgSettings, supervisor, dailyMemory,
         // 构造期 scheduler 尚未就绪——经 schedulerRef 惰性转发（调用发生在 tick 之后）
         scheduler: { recordDispatchStart: (...args: Parameters<BackgroundScheduler['recordDispatchStart']>) => schedulerRef!.recordDispatchStart(...args) },
       }),
     });
     schedulerRef = scheduler;
     const bgExecutorReady = { autonomous: true, keepwarm: true }; // 执行器已接线；付费请求另受价格门（BUDGET_ESTIMATE_UNAVAILABLE 如实挡)
-    // AUD-02 P1：注入关闭→终止回调
+    // AUD-02 P1：注入关闭→终止回调 + 心跳开关变化→即时刷新排程行
     bgSettings.onDisable = (kind) => scheduler.disableKind(kind);
+    bgSettings.onKeepwarmChange = () => scheduler.refreshKeepwarmSchedule();
+    const bindConfig = opts.config.source_binding;
+    const sourceBinding = new SourceBindingService({db, config:opts.config, mariposa:modelMariposaClient,
+      glm:new GlmChatAdapter({baseUrl:bindConfig.base_url,apiKeyEnv:bindConfig.api_key_env,model:bindConfig.model}),
+      events, log:(level,event,fields)=>logger[level](event,(fields??{}) as Record<string,string|number|boolean|null>)});
     const deps: Omit<RequestDeps, 'config'> = {
+      zashideleMoments,
       paths,
       db,
       logger,
@@ -352,7 +582,7 @@ export class Host {
       messages,
       identity,
       capabilities,
-      runnerSelection,
+      runnerSelection: effectiveRunnerSelection,
       reasoning,
       usage,
       routing,
@@ -362,11 +592,16 @@ export class Host {
       archiveSync,
       selections,
       settings,
+      sourceBinding,
+      calendarMariposa: modelMariposaClient,
       alerts,
       media,
       bgSettings,
       scheduler,
+      heartbeat,
       mediaIndex: mediaIndex ?? undefined,
+      mediaMasterStore: mediaStore ?? undefined,
+      archives,
       oido: oido ?? undefined,
       voiceObservations: voiceObsService,
       callReplyLinks,
@@ -376,6 +611,7 @@ export class Host {
       taskService,
       activity,
       contentClient,
+      contentOps,
       voice,
       surfacing,
     };
@@ -394,8 +630,14 @@ export class Host {
       });
     });
 
-    const host = new Host(opts.config, opts, server, deps, archiveSync);
+    const host = new Host(opts.config, opts, server, deps, archiveSync, restCoordinator);
+    host.wireMediaSourceFetch(mediaSourceFetch); // RR4-W2a：集合类索引来源（构造后接线，避免经路由 deps 传递）
     return host;
+  }
+
+  /** RR4-W2a：create() 装配期注入相册/作品来源拉取器（content 未装配=null=仅房间轮转）。 */
+  wireMediaSourceFetch(fetch: { sources: string[]; fetchPage: import('./media/index/backfill.ts').MediaSourceFetcher } | null): void {
+    this.mediaSourceFetch = fetch;
   }
 
   async start(): Promise<void> {
@@ -404,15 +646,18 @@ export class Host {
     });
     const addr = this.server.address();
     this.port = typeof addr === 'object' && addr !== null ? addr.port : this.opts.port;
+    // Port ownership is confirmed. Restore synchronously before the event loop
+    // can admit new input or generic orphan recovery marks the turn failed.
+    this.supervisor.recoverAcceptedCompletions(this.scheduler?.finishRecoveredCompletion.bind(this.scheduler));
     // AUD-10（2026-10-24 接线修复）：崩溃清残必须先于重派——running 悬挂 turns/attempts/
     // streaming/PREPARING 窗/孤儿票据 owner 落确定终态，waiting_route_gate 无票释放回
     // pending 后正好被下方 recoverSchedule 接管。此前 recoveryPass 仅被测试直接调用，
     // 生产启动从未执行（AUD-10 验收实际未生效——F25 同款"测试绿但未接线"模式）。
     this.voiceObservations?.start();
     this.callReplyLinks?.start();
-    const recovered = TurnSupervisor.recoveryPass(this.db, this.logger);
+    const recovered = recoveryPass(this.db, this.logger);
     // §9/§10：正式启动路径——恢复后重派 committed-but-not-dispatched（数据库是真源）
-    const sched = TurnSupervisor.recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
+    const sched = recoverSchedule({ db: this.db, config: this.config, messages: this.messages, events: this.events, identity: this.identity, capabilities: this.capabilities, runnerSelection: this.runnerSelection, reasoning: this.reasoning, usage: this.usage, routing: this.routing, windows: this.windows, supervisor: this.supervisor, logger: this.logger });
     void recovered; // 清残计数经 recovery_pass warn 日志留痕（RECOVERY_HOST_RESTART）
     // 启动恢复同步：崩溃遗留的 pending/unknown_outcome 按稳定 op 重放（未启用时 no-op）
     void this.archiveSync.drainOnce().catch((err) => {
@@ -426,13 +671,36 @@ export class Host {
     }
     // EXEC_V1 §04.9.2：调度器随宿主恢复一次（孤儿处置在 start() 内）——单一唤醒源
     this.scheduler?.start();
+    this.heartbeat?.recoverClosedRuns();
     // R8′（2026-10-23）：媒体索引后台补全——独立任务边界（不经调度器/会话串行链：
     // scheduler 的模型执行经 enqueueBackground 进 runSerialized，搬进去只是换入口排队）。
     // 有界批次（≤5 图/tick）+ 单飞门 + 每批独立 AbortController；worker 60s 请求边界不变。
     this.mediaBackfillTimer = setInterval(() => { void this.mediaBackfillTick(); }, 15_000);
     this.mediaBackfillTimer.unref?.();
+    // 相册重构 P2：M 落正待同步推进——同 backfill 的独立任务边界（单飞、有界批次、
+    // 不进调度器串行链）。指数退避按行上 attempts 计算（30s·2^min(n,5)）。
+    this.mediaSyncTimer = setInterval(() => { void this.mediaMSyncTick(); }, 15_000);
+    this.mediaSyncTimer.unref?.();
+    // 包2 批C（BIND-01/02/06）：午夜来源绑定——E 维护 tick 为唯一调度点（M 无调度设施），
+    // 状态唯一正本=source_bind_jobs；60s 检查 due，实际处理沿 Asia/Shanghai 上一 00:00 边界。
+    if (this.config.source_binding.enabled) {
+      this.sourceBindTimer = setInterval(() => { void this.sourceBindTick(); }, 60_000);
+      this.sourceBindTimer.unref?.();
+    }
+    // RR5（复审 2026-11-09）：附件对象元数据回推——存量（历史 22 项缺口）/post-ACK
+    // 未 synced/推送失败的行按同一幂等 op 键周期补齐（≤50/跳；标记防重放放大）。
+    // F3（复审 2026-11-09 二轮）：存档 M 投影（建档/撤销 observation）共用本 60s 周期
+    // 收口（同一消费者实例；不另加 timer）。
+    this.objectMetaBackfillTimer = setInterval(() => {
+      void this.archiveSync.backfillObjectMeta().catch((err) => { this.logger.warn('object_meta_backfill_failed', { code: stableErrorCode(err) }); });
+      void this.archiveSync.drainArchiveProjections().catch((err) => { this.logger.warn('archive_projection_drain_failed', { code: stableErrorCode(err) }); });
+    }, 60_000);
+    this.objectMetaBackfillTimer.unref?.();
     // R6′（P03.8 起经模块生命周期）：oído 删除传播重试——独立定时器行为不变
     this.oidoLifecycle?.start();
+    // P1（F06/F07）：内容写恢复消费者——启动清一遍崩溃遗留的 pending/unknown 意图，
+    // 运行中有界重试；不调用模型、不碰消息归档消费者。
+    this.contentOps?.start((limit) => this.heartbeat?.recoverProjections(limit) ?? Promise.resolve());
     // 自动浮现：恢复收口中断态（有界；无后台补扫历史）+ 唤醒 pending
     await this.surfacing?.start();
     this.logger.info('host_started', { bind: this.opts.bind, port: this.port, runner: this.runnerSelection.status, redispatched: sched.redispatched });
@@ -445,8 +713,45 @@ export class Host {
     if (!mediaIndex) return;
     this.mediaBackfillTicking = true;
     this.mediaBackfillAbort = new AbortController();
-    try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal); }
+    try { await runMediaBackfillTick(mediaIndex, this.mediaBackfillAbort.signal, this.mediaSourceFetch?.sources ?? [], this.mediaSourceFetch?.fetchPage); }
     finally { this.mediaBackfillTicking = false; this.mediaBackfillAbort = null; }
+  }
+
+  private async sourceBindTick(): Promise<void> {
+    if (this.sourceBindTicking) return;
+    this.sourceBindTicking = true;
+    try {
+      if (this.sourceBindService.dueNow()) await this.sourceBindService.runBatch();
+    } catch (err) {
+      this.logger.warn('source_bind_tick_failed', { error: String((err as Error).message).slice(0, 120) });
+    } finally {
+      this.sourceBindTicking = false;
+    }
+  }
+
+  /** M 媒体落正的重试退避只保存在当前进程。 */
+  private async mediaMSyncTick(): Promise<void> {
+    if (this.mediaSyncTicking) return;
+    const media = this.mediaServiceRef;
+    if (!media) return;
+    this.mediaSyncTicking = true;
+    try {
+      // A staged upload never reaches M, so its cleanup does not wait for the master store.
+      const pruned = media.pruneStagedUploads();
+      if (pruned > 0) this.logger.info('staged_uploads_pruned', { pruned });
+      if (!this.mediaSyncStore) return;
+      const now = Date.now();
+      for (const item of media.pendingMSyncBatch(5)) {
+        if ((this.mediaMSyncRetryNotBefore.get(item.id) ?? 0) > now) continue; // 退避期：跳过不占批次
+        const before = item.m_sync_attempts;
+        const synced = await media.attemptMSync(item.id);
+        if (synced) this.mediaMSyncRetryNotBefore.delete(item.id);
+        else this.mediaMSyncRetryNotBefore.set(item.id, Date.now() + 30_000 * 2 ** Math.min(before + 1, 5));
+      }
+      // ALB-01：本地缓存超预算 LRU 逐出（M 已落正者才可逐；每跳有界）
+      const ev = media.evictCacheOverBudget();
+      if (ev.evicted > 0) this.logger.info('media_cache_evicted', { evicted: ev.evicted, cache_bytes: ev.cacheBytes });
+    } finally { this.mediaSyncTicking = false; }
   }
 
   private reconcileCalls(): void {
@@ -477,17 +782,24 @@ export class Host {
       this.server.closeAllConnections?.();
     });
     if (this.mediaBackfillTimer) { clearInterval(this.mediaBackfillTimer); this.mediaBackfillTimer = null; }
+    if (this.mediaSyncTimer) { clearInterval(this.mediaSyncTimer); this.mediaSyncTimer = null; }
+    if (this.sourceBindTimer) { clearInterval(this.sourceBindTimer); this.sourceBindTimer = null; }
+    const bindingStopped = this.sourceBindService.stop();
+    if (this.objectMetaBackfillTimer) { clearInterval(this.objectMetaBackfillTimer); this.objectMetaBackfillTimer = null; }
     this.mediaBackfillAbort?.abort(); // R8′：停后台补索引（在途 encode 由 worker 60s 边界自终）
     const oidoStopped = this.oidoLifecycle?.stop(); // R6′：停删除传播重试（模块生命周期）
     if (this.callReconcileTimer) { clearInterval(this.callReconcileTimer); this.callReconcileTimer = null; }
     this.callReconcileAbort.abort();
     const observationsStopped = this.voiceObservations?.stop();
     const linksStopped = this.callReplyLinks?.stop();
+    const contentOpsStopped = this.contentOps?.stop(); // P1：停内容写恢复（在途轮收口，不再派新）
     this.scheduler?.stop(); // §04.9.2：先停领取与可取消任务，再收口模型执行
-    await this.surfacing?.stop(); // 自动浮现：停 worker（在途 M 请求不中断，只不再派新）
+    await this.restCoordinator?.stop();
+    await this.surfacing?.stop(); // 停止领取，取消并等待在途浮现
     await this.supervisor.stopAll(8000); // AUD-10：有界停止所有活动代
     await this.supervisor.waitIdle();
-    await Promise.all([serverStopped, oidoStopped, observationsStopped, linksStopped, this.callReconcileWork, this.archiveSync.stop()]);
+    await this.scheduler?.waitIdle();
+    await Promise.all([bindingStopped, serverStopped, oidoStopped, observationsStopped, linksStopped, contentOpsStopped, this.callReconcileWork, this.archiveSync.stop()]);
     this.db.close();
     this.logger.close();
   }

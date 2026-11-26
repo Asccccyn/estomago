@@ -1,245 +1,62 @@
-// 触发假设提取（docs/03 §1）：分句是检索假设不是判定事实。
-// 程序只做有限分句/日期解析；交付归 M 的事实/确定性/语义准入。短句不按长度
-// 一刀切（R09）；thinking/工具输出/旧浮现包不可作为查询原话（R46）。
-import type { EventHypothesis } from './contracts.ts';
-
-/** Hypotheses are spans, never event verdicts. Mariposa must confirm identity;
- * punctuation alone cannot authorize a memory. */
-export function extractHypotheses(text: string, maxHypotheses = 24): EventHypothesis[] {
-  const points = [...(text ?? '')];
-  if (points.join('').trim().length === 0) return [];
-  const out: EventHypothesis[] = [];
-  let start = 0;
-  let inherited: EventHypothesis['inherited_date_span'] = null;
-  const push = (end: number) => {
-    const clause = points.slice(start, end).join('');
-    if (clause.trim()) {
-      // Reuse the same date forms/word boundaries as the intent gate. A
-      // version such as v1.2 must not become an inherited January 2 date.
-      const date = [FULL_CN, FULL_NUM, MD_CN, MD_NUM]
-        .flatMap(re => [...clause.matchAll(new RegExp(re.source, re.flags))])
-        .sort((a, b) => a.index - b.index || b[0].length - a[0].length)
-        .find(match => extractExplicitDates(match[0]).length > 0);
-      const explicit = date ? { start_cp: start + [...clause.slice(0, date.index)].length,
-        end_cp: start + [...clause.slice(0, date.index + date[0].length)].length } : null;
-      out.push({ hypothesis_id: `h${out.length + 1}`, start_cp: start, end_cp: end,
-        inherited_date_span: explicit ? null : inherited });
-      if (explicit) inherited = explicit;
-    }
-    start = end;
-  };
-  for (let i = 0; i < points.length; i++) {
-    if (/[，,。！？!?\n；;]/.test(points[i])) {
-      push(i + 1);
-      // Preserve the overflow signal. The server rejects the entire request;
-      // silently truncating would misrepresent event coverage.
-      if (out.length > maxHypotheses) return out;
-    }
-  }
-  if (start < points.length) push(points.length);
-  return out;
-}
-
-/** 源语境：该用户消息 + 必要近邻真实原话（不读 thinking/工具历史，
- * 不把旧 surfacing 包回传检索；不跨房间）。 */
-export function buildRecentDialogue(
-  messages: Array<{ message_id: string; revision: number; role: 'owner' | 'assistant'; text: string; sequence: number }>,
-  limit = 6,
-): Array<{ message_id: string; revision: number; role: 'owner' | 'assistant'; text: string; sequence: number }> {
-  return messages
-    .filter((x) => x.role === 'owner' || x.role === 'assistant')
-    .slice(-limit);
-}
-
-// ———————————————————————————————————————————————————————————————————————
-// P1 回忆意图门（她 2026-10-20 裁定）：纯函数、零 I/O。普通聊天在这里直接
-// 放行（skip），不登记浮现作业、不触发 Mariposa 检索/Dense/JEV；归档 outbox
-// 是另一条路径不受影响。只有明确回忆才进入既有 surfacing 流程。
-//
-// 两段式：先以 recentState=null 调用——绝大多数消息在此得到 skip/lookup，
-// 零数据库读取；只有省略表达（"后来呢"）返回 needs_context，服务层才去读
-// 有界近期状态并二次调用。
-//
-// 规则 = 审计 B 基线（整句口径原样移植，保证不倒退）∪ 一条独立强信号
-// （按分句）：明确历史问句 := 过去指代 ∧ 疑问标记 ∧ (回忆动词 ∨ 过去事件
-// 谓词) ∧ ¬未来领句 ∧ ¬否定/玩笑/写入守卫。强信号是**组合结构**（体标记
-// +疑问），不是事件名词表——4 条漏句（那件事 / 去海边…的事 / 做成了什么）
-// 正是名词表覆盖不到的。
-//
-// 门只判"要不要查"，不判记忆真伪；可不可以交付由 Mariposa 合同决定。
-
-export type RecallGateAction = 'skip' | 'lookup' | 'needs_context';
-
-export type RecallGateReason =
-  | 'empty' | 'guard_negation' | 'no_recall_signal'
-  | 'baseline_rule' | 'explicit_history_question'
-  | 'followup_needs_context' | 'followup_bound' | 'followup_unbound';
-
-/** 服务层只在 needs_context 时装配；只含用户自己消息的身份信息，不含模型猜测。 */
-export type RecentRecallState = {
-  /** 最近 ≤2 个已接受 owner 轮里，已确定回忆对象（prepared）的作业；无则 null。 */
-  boundLookup: { sourceMessageId: string; sourceRevision: number; sourceSequence: number } | null;
+// 检索核对和来源回声检测使用的短近文，按用户消息计数。
+export type RecentMessage = {
+  message_id: string;
+  revision: number;
+  role: 'owner' | 'assistant';
+  text: string;
+  sequence: number;
+  occurred_at?: string | null;
 };
 
-export type ExplicitDate = { year: number | null; month: number; day: number };
-
-export type RecallGateResult = {
-  action: RecallGateAction;
-  reason: RecallGateReason;
-  /** 原话里的显式日期（不补年份、不解析相对日期） */
-  explicitDates: ExplicitDate[];
-  /** 命中的过去指代/事件锚点词（诊断用，不持久化） */
-  eventAnchors: string[];
-  boundContext: RecentRecallState['boundLookup'];
+export type DialogueWindowOptions = {
+  /** 当前消息之外，最多取几条先前真实用户消息（默认 3）。 */
+  priorUserMessages?: number;
+  /** 窗口总条数硬上限（含必要的助手回复；防单侧刷屏撑爆输入）。 */
+  maxMessages?: number;
+  /** 窗口字节预算（utf8；先按完整轮次移除最旧近文）。 */
+  budgetBytes?: number;
 };
-
-const CN_NUM = '〇零一二两三四五六七八九十';
-const CN_DIGIT: Record<string, number> = { 〇: 0, 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-
-function cnInt(s: string): number | null {
-  if (/^\d+$/.test(s)) return Number(s);
-  if (s.includes('十')) {
-    const [head, tail] = s.split('十');
-    if ((head && !(head in CN_DIGIT)) || (tail && !(tail in CN_DIGIT))) return null;
-    return (head ? CN_DIGIT[head] : 1) * 10 + (tail ? CN_DIGIT[tail] : 0);
-  }
-  let total = 0;
-  for (const ch of s) {
-    if (!(ch in CN_DIGIT)) return null;
-    total = total * 10 + CN_DIGIT[ch];
-  }
-  return total;
-}
-
-const FULL_CN = new RegExp(`(\\d{4}|[${CN_NUM}]{4})\\s*年\\s*(\\d{1,2}|[${CN_NUM}]{1,3})\\s*月\\s*(\\d{1,2}|[${CN_NUM}]{1,3})\\s*[日号]?`, 'g');
-const FULL_NUM = /(?<![\dA-Za-z])(\d{4})[-/.．](\d{1,2})[-/.．](\d{1,2})(?![\dA-Za-z])/g;
-const MD_CN = new RegExp(`(?<![\\d${CN_NUM}])(\\d{1,2}|[${CN_NUM}]{1,3})\\s*月\\s*(\\d{1,2}|[${CN_NUM}]{1,3})\\s*[日号]?`, 'g');
-const MD_NUM = /(?<![\dA-Za-z.．/-])(\d{1,2})[.．/](\d{1,2})(?![\dA-Za-z.．/-])/g;
-
-const plausible = (y: number | null, m: number | null, d: number | null): boolean =>
-  m !== null && d !== null && m >= 1 && m <= 12 && d >= 1 && d <= 31 && (y === null || (y >= 1900 && y <= 2200));
-
-/** 与 Mariposa facts.extract_dates 同族口径（点分形式按 月.日；字母前后缀不作日期）。 */
-export function extractExplicitDates(text: string): ExplicitDate[] {
-  const out: ExplicitDate[] = [];
-  const taken: Array<[number, number]> = [];
-  const free = (s: number, e: number) => taken.every(([a, b]) => e <= a || s >= b);
-  const scan = (re: RegExp, withYear: boolean) => {
-    re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      const s = m.index; const e = s + m[0].length;
-      const y = withYear ? cnInt(m[1]) : null;
-      const mo = cnInt(withYear ? m[2] : m[1]);
-      const d = cnInt(withYear ? m[3] : m[2]);
-      if (plausible(y, mo, d) && free(s, e)) {
-        taken.push([s, e]);
-        out.push({ year: y, month: mo as number, day: d as number });
-      }
-    }
-  };
-  scan(FULL_CN, true); scan(FULL_NUM, true); scan(MD_CN, false); scan(MD_NUM, false);
-  const seen = new Set<string>();
-  return out.filter((c) => { const k = `${c.year}-${c.month}-${c.day}`; if (seen.has(k)) return false; seen.add(k); return true; });
-}
-
-// —— 审计 B 基线（整句口径，原样移植；不改词表以保证不倒退）——
-const GUARD_NEGATION = /不用回忆|算了|忘掉过去|编的故事|记忆大师/;
-const B_HISTORY = /去年|前年|以前|上次|第一次|当时|那次|那天|那场|那件|那两|那两件|那两次/;
-const B_EVENT = /旅行|搬家|见面|项目|婚礼|吵架|礼物|约会|结婚|记忆库|纪念日|聚会|生日|看海/;
-const B_QUESTION = /吗|什么|谁|哪|怎么|为什么|发生|记录|分别|来着|回想|查一下|查查/;
-const B_DATE = /\d{1,4}[-/.年]\d{1,2}|\d{1,2}月\d{1,2}|七月九号/;
-const B_WRITE = /记下|提醒我|别忘了/;
-const B_WRITE_EXEMPT = /先查|上次.*[谁哪]/;
-const B_FUTURE = /明天|下周|下次|明年/;
-
-function baselineRule(t: string): boolean {
-  // A future planning question can contain a date/event/question too. It is
-  // not a present recall request; mixed sentences still pass the clause gate.
-  if (FUTURE_LEAD.test(t.trim()) && !t.split(CLAUSE_SPLIT).some(clause =>
-    !FUTURE_LEAD.test(clause.trim()) && B_HISTORY.test(clause))) return false;
-  const history = B_HISTORY.test(t);
-  const event = B_EVENT.test(t);
-  const question = B_QUESTION.test(t);
-  const date = B_DATE.test(t);
-  if (B_WRITE.test(t) && !B_WRITE_EXEMPT.test(t)) return false;
-  if (B_FUTURE.test(t) && !question) return false;
-  return (history && event && question) || (date && event && question) || (/还记得|回想/.test(t) && history && event);
-}
-
-// —— 强信号：明确历史问句/陈述（按分句）——
-// 2026-10-22 她反馈修正：116 条生产判定全部 no_recall_signal——"明显回忆的话也没有
-// 拿去做判断"。词表与组合放宽（组合结构不变：回忆动作 ∨ 过去指代的组合，仍非名词表）：
-//  1) 回忆动词 ∧ 过去指代即可触发（陈述式回忆"我想起上次的事"不再被疑问标记硬门误杀）；
-//  2) 词表补常用变体（那个/之前/前阵子/前不久/小时候…；说起/提到/聊到/翻到/回顾…）。
-// 守卫原样保留（写入/未来/否定），普通聊天不触发。
-const PAST_REF = /去年|前年|以前|上次|第一次|当时|那时候|那阵子|那段|那次|那天|那场|那件|那回|那两|那个|小时候|前段时间|前阵子|前几天|前不久|之前/g;
-const INTERROGATIVE = /吗|什么|啥|谁|哪|怎么|为什么|几|呢|多少/;
-const RECALL_VERB = /还记得|记得|记不记得|想起|想起来了|回想|回忆|回忆起|有没有印象|印象|说起|说到|提到|提过|聊起|聊到|聊聊|说说|讲到|讲过|翻到|翻出|回顾|回味/;
-const PAST_EVENT_PREDICATE = /[了过]\s*(什么|啥|谁|哪|几|多少)|怎么.{0,8}的|怎么样了|事情怎么样|怎么了|发生|经过|来着/;
-const FUTURE_LEAD = /^(?:你|我|我们|咱们|请|帮我|麻烦)?\s*(?:明天|后天|下周|下个月|明年|下次|以后|待会|等会|过会)/;
-const CLAUSE_SPLIT = /[。！？!?\n；;，,、]/;
-
-function isPastDate(d: ExplicitDate, now: Date): boolean {
-  if (d.year === null) return false;                       // 无年份：过去/未来不可判，不作强信号
-  const ny = now.getFullYear(); const nm = now.getMonth() + 1; const nd = now.getDate();
-  if (d.year !== ny) return d.year < ny;
-  return d.month < nm || (d.month === nm && d.day < nd);
-}
-
-function explicitHistoryQuestion(clause: string, now: Date): { hit: boolean; anchors: string[] } {
-  const c = clause.trim();
-  if (!c) return { hit: false, anchors: [] };
-  if (B_WRITE.test(c) && !B_WRITE_EXEMPT.test(c)) return { hit: false, anchors: [] };
-  if (FUTURE_LEAD.test(c)) return { hit: false, anchors: [] };
-  const anchors = c.match(PAST_REF) ?? [];
-  const pastDates = extractExplicitDates(c).filter((d) => isPastDate(d, now));
-  const pastRef = anchors.length > 0 || pastDates.length > 0;
-  if (!pastRef) return { hit: false, anchors: [] };
-  const recallVerb = RECALL_VERB.test(c);
-  // 2026-10-22 放宽：回忆动词 ∧ 过去指代即触发（陈述式也算）——
-  // 疑问标记只在"无回忆动词、靠过去事件谓词"的问句路径上仍然必需。
-  if (recallVerb) return { hit: true, anchors: [...anchors, ...pastDates.map((d) => `${d.year}-${d.month}-${d.day}`)] };
-  if (!INTERROGATIVE.test(c)) return { hit: false, anchors };
-  if (!PAST_EVENT_PREDICATE.test(c)) return { hit: false, anchors };
-  return { hit: true, anchors: [...anchors, ...pastDates.map((d) => `${d.year}-${d.month}-${d.day}`)] };
-}
-
-// —— 省略表达：只能靠近期状态解析 ——
-const FOLLOWUP = /^(?:后来呢|然后呢|后来怎么样|怎么样了|怎么了|那次呢|那天呢|那件事呢|那件事怎么样了|还有呢|为什么|在哪里|在哪|他当时怎么说|你当时怎么说|是什么时候|什么时候的事)[？?。]?$/;
 
 /**
- * 纯函数门。recentState=null 为第一段：普通聊天与明确回忆都在此定夺，只有
- * 省略表达返回 needs_context。第二段传入有界近期状态：有已确定回忆对象的
- * prepared 作业才延续（lookup），否则 skip——之前没命中、多候选悬置、换题
- * 都不自动延续。
+ * 有限近文窗口：最近 N 条先前用户消息 + 其间全部真实回复，按实际顺序；
+ * 窗口首条用户消息所依赖的紧邻上一条助手提问保留（指代消解需要）。
+ * 当前消息不在入参中（由调用方单独追加，保证只出现一次）。
+ * 超预算时从最旧一侧整轮移除（助手回复不独立计轮）；绝不改写/摘要/截断
+ * 任何一条正文。none/纠正/收束消息同样保留——它们是语义证据，不是噪音。
  */
-export function detectRecallNeed(text: string, recentState: RecentRecallState | null, now: Date): RecallGateResult {
-  const t = (text ?? '').trim();
-  const none = (reason: RecallGateReason): RecallGateResult =>
-    ({ action: 'skip', reason, explicitDates: [], eventAnchors: [], boundContext: null });
-  if (!t) return none('empty');
-  if (GUARD_NEGATION.test(t)) return none('guard_negation');
+export function buildRecentDialogue(messages: RecentMessage[], opts: DialogueWindowOptions = {}): RecentMessage[] {
+  const priorUserMessages = opts.priorUserMessages ?? 3;
+  const maxMessages = opts.maxMessages ?? 12;
+  const budgetBytes = opts.budgetBytes ?? 24576;
+  const window = messages.filter((x) => x.role === 'owner' || x.role === 'assistant');
+  if (window.length === 0) return [];
 
-  if (FOLLOWUP.test(t)) {
-    if (recentState === null) {
-      return { action: 'needs_context', reason: 'followup_needs_context', explicitDates: [], eventAnchors: [], boundContext: null };
+  // 1) 定位最近 N 条用户消息中最早一条的下标
+  let ownerSeen = 0;
+  let start = window.length;
+  for (let i = window.length - 1; i >= 0; i--) {
+    if (window[i].role === 'owner') {
+      ownerSeen++;
+      if (ownerSeen >= priorUserMessages) { start = i; break; }
     }
-    if (recentState.boundLookup) {
-      return { action: 'lookup', reason: 'followup_bound', explicitDates: [], eventAnchors: [], boundContext: recentState.boundLookup };
-    }
-    return none('followup_unbound');
   }
+  if (start === window.length) start = 0; // 用户消息不足 N 条：全取
 
-  const dates = extractExplicitDates(t);
-  if (baselineRule(t)) {
-    return { action: 'lookup', reason: 'baseline_rule', explicitDates: dates, eventAnchors: t.match(PAST_REF) ?? [], boundContext: null };
-  }
-  for (const clause of t.split(CLAUSE_SPLIT)) {
-    const r = explicitHistoryQuestion(clause, now);
-    if (r.hit) {
-      return { action: 'lookup', reason: 'explicit_history_question', explicitDates: dates, eventAnchors: r.anchors, boundContext: null };
-    }
-  }
-  return none('no_recall_signal');
+  // 2) 首条用户消息依赖的紧邻上一条助手提问（若存在则一并保留）
+  if (start > 0 && window[start - 1].role === 'assistant') start -= 1;
+
+  let slice = window.slice(start);
+
+  // 3) 预算：先按整轮移除最旧（一轮 = 一条用户消息及其后的助手回复；
+  //    开头的孤立助手提问随其所属轮一起退出）。条数上限同一规则。
+  const bytesOf = (arr: RecentMessage[]): number => arr.reduce((n, m) => n + Buffer.byteLength(String(m.text ?? ''), 'utf8'), 0);
+  const dropOldestTurn = (): void => {
+    if (slice.length <= 1) { slice = []; return; }
+    // 找到 slice 中第一条用户消息（若窗口以助手提问开头，它与其后用户消息同轮）
+    const firstOwner = slice.findIndex((m) => m.role === 'owner');
+    const cut = firstOwner <= 0 ? 1 : firstOwner + 1;
+    slice = slice.slice(Math.min(cut, slice.length));
+  };
+  while ((slice.length > maxMessages || bytesOf(slice) > budgetBytes) && slice.length > 0) dropOldestTurn();
+  return slice;
 }

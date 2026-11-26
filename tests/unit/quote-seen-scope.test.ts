@@ -91,3 +91,35 @@ test('two refs on one message resolve in order', (t) => {
   assert.equal(result[0]!.fragment, ' three.', '第 3 句（含句间空格——连续区间如实）');
   assert.equal(result[1]!.fragment, 'one.');
 });
+
+test('F02 链B：同消息同修订的分页片段合并——已交付首句不再被判未读（四仓审计 20261104）', (t) => {
+  const f = fixture(t);
+  // 一条三句长消息；模拟 conversation_read 分页回读的三个已见片段
+  const long = f.add('第一句话在开头。第二句话在中间。第三句话在结尾。');
+  const cp = (str: string) => Array.from(str).length;
+  const s1 = '第一句话在开头。';
+  const s2 = '第二句话在中间。';
+  const full = '第一句话在开头。第二句话在中间。第三句话在结尾。';
+  const fragments = [
+    { id: long.id, revision: 1, char_start: 0, char_end: cp(s1) },
+    { id: long.id, revision: 1, char_start: cp(s1), char_end: cp(s1) + cp(s2) },
+    { id: long.id, revision: 1, char_start: cp(s1) + cp(s2), char_end: cp(full) },
+  ] as never[];
+  // 引用第一句（旧实现：末片覆盖前片 → QUOTE_REF_RANGE_NOT_SEEN）
+  const r1 = f.resolve(fragments as never, [{ seq: long.seq, from: 1, to: 1 }]);
+  assert.ok(Array.isArray(r1), `首句应可引用（实际 ${JSON.stringify(r1)}）`);
+  // 引用跨片段句子同样应通过
+  const rAll = f.resolve(fragments as never, [{ seq: long.seq }]);
+  assert.ok(Array.isArray(rAll), '整条（已全部回读）应可引用');
+  // 反例：只回读了前两句时引用第三句仍应被拒（不虚放开）
+  const partial = [
+    { id: long.id, revision: 1, char_start: 0, char_end: cp(s1) + cp(s2) },
+  ] as never[];
+  const rBad = f.resolve(partial as never, [{ seq: long.seq, from: 3, to: 3 }]);
+  assert.ok(!Array.isArray(rBad) && (rBad as { error: string }).error === 'QUOTE_REF_RANGE_NOT_SEEN', '未读片段不放开');
+  // 不同修订不混拼：旧修订片段不得给新修订授权
+  const edited = f.messages.editUserMessage(long.id, full + '又加了一句。') as unknown as { current_revision: number };
+  // 新修订完整已见（无区间）→ 可引用（跨修订区间不混拼由分组保证）
+  const rCross = f.resolve([{ id: long.id, revision: edited.current_revision }] as never, [{ seq: long.seq, from: 1, to: 1 }]);
+  assert.ok(Array.isArray(rCross), '新修订完整已见可引用');
+});

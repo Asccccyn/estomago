@@ -22,6 +22,7 @@ import { classifyError, ingestOperationId, serverNormalizedBytes, type IngestMes
 export const INGEST_BATCH_MAX_MESSAGES = 50; // 契约建议初值：每请求 ≤50 条
 export const INGEST_BATCH_MAX_BYTES = 1024 * 1024; // 规范化 JSON 总计 ≤1MiB
 export const INGEST_BATCH_MAX_ATTEMPTS = 10; // 瞬时错误有界重试（F15：超限 dead，不无限循环）
+export const ARCHIVE_PROJECTION_MAX_ATTEMPTS = 20; // F3 存档投影有界重试（超限 failed 可观测）
 
 // WP-04（JFA-C07）：本地批界（会话内可收缩——服务端 SOURCE_SELECTION_
 // TOO_LARGE 时减半重切；下限 64KiB 保证单条大消息仍能单独成批尝试）
@@ -93,7 +94,7 @@ export class ArchiveSyncService {
   health(): HealthComponent {
     if (!this.enabled || !this.client.isConfigured()) return { status: 'blocked', detail: 'ARCHIVE_TRANSPORT_NOT_CONFIGURED' };
     const rows = this.db.prepare(`SELECT state, last_error, COUNT(*) n FROM outbox
-      WHERE target='mariposa.archive' AND state != 'acked' GROUP BY state,last_error`).all() as Array<{ state: string; last_error: string | null; n: number }>;
+      WHERE target IN ('mariposa.archive','mariposa.archive_projection') AND state != 'acked' GROUP BY state,last_error`).all() as Array<{ state: string; last_error: string | null; n: number }>;
     const unresolved = rows.reduce((n,r) => n + (r.state === 'failed' || r.state === 'unknown_outcome' || r.last_error !== null ? r.n : 0), 0);
     if (unresolved) return { status: 'degraded', detail: `ARCHIVE_UNRESOLVED:${unresolved}` };
     const pending = rows.reduce((n,r) => n + r.n, 0);
@@ -279,10 +280,19 @@ export class ArchiveSyncService {
         this.markDeadQuietly(row, 'LOCAL_ROW_MISSING');
         continue;
       }
-      const pred = msg.sequence > 1
-        ? (this.db.prepare('SELECT id, current_revision FROM messages WHERE conversation_id = ? AND sequence = ?').get(conversationId, msg.sequence - 1) as { id: string; current_revision: number } | undefined)
-        : undefined;
-      if (msg.sequence > 1 && !pred) {
+      const pred = this.db.prepare(`
+        SELECT id,current_revision,sequence FROM messages
+        WHERE conversation_id=? AND sequence<?
+          AND NOT (speaker='system' AND COALESCE(client_message_id,'') LIKE 'heartbeat:%')
+        ORDER BY sequence DESC LIMIT 1
+      `).get(conversationId, msg.sequence) as { id: string; current_revision: number; sequence: number } | undefined;
+      const predSequence = pred?.sequence ?? 0;
+      const missing = msg.sequence - predSequence - 1;
+      const displayRows = missing ? (this.db.prepare(`
+        SELECT COUNT(*) AS n FROM messages WHERE conversation_id=? AND sequence>? AND sequence<?
+          AND speaker='system' AND client_message_id LIKE 'heartbeat:%'
+      `).get(conversationId, predSequence, msg.sequence) as { n: number }).n : 0;
+      if (displayRows !== missing) {
         this.markDeadQuietly(row, 'LOCAL_CHAIN_MISSING');
         continue;
       }
@@ -410,13 +420,27 @@ export class ArchiveSyncService {
     if (!result.ok) {
       const cls = classifyError(result.code, result.httpStatus); // 审计 1005B：传 httpStatus——429/423/50x 按 HTTP 语义判 retry，不再依赖码名字符串匹配
       const attempts = (this.db.prepare('SELECT attempts FROM ingest_batches WHERE operation_id = ?').get(meta.operationId) as { attempts: number } | undefined)?.attempts ?? 0;
-      // WP-04（JFA-C07）：超限=服务端门比本地批界严——本批退回 pending 并
-      // 把本地批界减半（会话内记忆），下一轮按更小批重组重试（不无限：
-      // 重试上限仍计 attempts）
+      // WP-04（JFA-C07）+ G4-F10（裁定 2026-11-03）：超限=服务端门比本地
+      // 批界严的**确定性拒绝**（≠结果未知）——旧冻结批必须真正退出：
+      // 行解绑（batch_id=NULL）回 pending，下一轮按减半批界重组**新批**；
+      // 旧实现只减预算却保留绑定，冻结恢复阶段永远原样重放同一超限
+      // 载荷，缩批从不发生。未知路径（transport）不变：仍同 op 同载荷对账。
       if (result.code === 'SOURCE_SELECTION_TOO_LARGE') {
         this.batchByteBudget = Math.max(64 * 1024, Math.floor(this.batchByteBudget / 2));
         this.logger.warn('archive_sync_rebatch_shrink', { op: meta.operationId, bytes: this.batchByteBudget });
-        this.markChunk(rows, 'pending', result.code);
+        if (exhausted()) {
+          this.markChunk(rows, 'failed', 'TOO_LARGE_EXHAUSTED');
+          this.markBatchDead(meta.operationId, 'TOO_LARGE_EXHAUSTED');
+          summary.dead += rows.length;
+          return 'dead';
+        }
+        tx(this.db, () => {
+          const nowIso = new Date().toISOString();
+          this.db.prepare("UPDATE outbox SET batch_id = NULL, state = 'pending', last_error = ?, updated_at = ? WHERE batch_id = ?").run(result.code, nowIso, meta.operationId);
+          // op 是内容派生键——死行不清会让重组同键批撞 UNIQUE（重批=同内容
+          // 新身份：attempts 归零，审计经 rebatch 事件与日志留痕）
+          this.db.prepare("DELETE FROM ingest_batches WHERE operation_id = ?").run(meta.operationId);
+        });
         this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'rebatch', code: result.code, next_batch_bytes: this.batchByteBudget, attempts } });
         summary.retry_later += rows.length;
         return 'retry_later';
@@ -489,7 +513,145 @@ export class ArchiveSyncService {
     });
     this.events.publish('archive.sync', { conversationId: meta.conversationId, entityRef: meta.operationId, scope: 'private', payload: { state: 'acked', messages: ack.messages.length } });
     summary.acked += rows.length;
+    // ALB-03（相册整改，审计 2026-11-08，R07/R13/A08）：正文入库确认后，把图片/贴纸
+    // 附件的 M 对象身份（content_sha256）补同步进附属元数据——M 原文页据此渲染实际
+    // 图片而非"含 N 个附件"。payload 用 ref 键（非 asset_ref：读取面对 asset_ref 与
+    // 基础 attachments 去重，会吞掉本行）；语音不补（字节不在 M，回听走既有播放器）。
+    // 尽力而为：失败记日志不阻塞归档（幂等 operation_id 可重放；下次批次的补同步不回头）。
+    void this.syncAttachmentObjectMeta(this.streamId, ack).catch(() => undefined);
     return 'acked';
+  }
+
+  /** 图片/贴纸附件对象元数据补同步（kind=media；sha=M 对象身份，mime 供渲染）。
+   *  只对 m_sync_state='synced' 的资产补——未落正的对象 M 端打不开，如实不补。
+   *  RR5（复审 2026-11-09）：推送成功落 object_meta_synced_at 标记；失败/未 synced
+   *  的行不再只记日志——backfillObjectMeta 周期回推（幂等 op 键，存量同链补齐）。 */
+  private async syncAttachmentObjectMeta(streamId: string, ack: import('../../integrations/mariposa/client.ts').IngestAck): Promise<void> {
+    for (const m of ack.messages) {
+      const atts = this.db.prepare(
+        `SELECT ma.asset_id, ma.presentation, a.mime_type, a.m_sync_state, a.m_content_hash, a.content_sha256
+         FROM message_attachments ma JOIN media_assets a ON a.id = ma.asset_id
+         WHERE ma.message_id = ? AND ma.revision = ? AND ma.presentation IN ('image','sticker')`,
+      ).all(m.origin_message_id, m.revision) as Array<{ asset_id: string; presentation: string; mime_type: string; m_sync_state: string; m_content_hash: string | null; content_sha256: string }>;
+      for (const att of atts) {
+        if (att.m_sync_state !== 'synced') continue;
+        const sha = att.m_content_hash ?? att.content_sha256;
+        try {
+          const r = await this.client.attachmentsSync({
+            stream_id: streamId,
+            origin_message_id: m.origin_message_id,
+            revision: m.revision,
+            kind: 'media',
+            payload: { ref: `est:${att.asset_id}`, sha, mime: att.mime_type, presentation: att.presentation },
+            operation_id: `att-objmeta:${m.origin_message_id}@${m.revision}:${att.asset_id}`,
+          });
+          if (r.ok) {
+            this.db.prepare('UPDATE message_attachments SET object_meta_synced_at = ? WHERE message_id = ? AND revision = ? AND asset_id = ?')
+              .run(new Date().toISOString(), m.origin_message_id, m.revision, att.asset_id);
+          } else {
+            this.logger.warn('attachment_object_meta_rejected', { message_id: m.origin_message_id, asset_id: att.asset_id, code: r.code });
+          }
+        } catch (err) {
+          this.logger.warn('attachment_object_meta_sync_failed', { message_id: m.origin_message_id, asset_id: att.asset_id, code: String((err as Error).message).slice(0, 80) });
+        }
+      }
+    }
+  }
+
+  /** F3（复审 2026-11-09 二轮）：存档 M 投影消费者——content 权威快照确认时同事务
+   *  登记的投影意图（target=mariposa.archive_projection，coordinator 登记）在此收口：
+   *  按原身份逐条推 observation（幂等 op 键 att-arc:<archive>:<message>:<type>，与
+   *  建档/撤销两个类型互不串），全部成员 M 确认才 ack；失败/重启沿原键重试（有界
+   *  attempt，超限 failed 可观测——临时 503 类故障在预算内自动恢复）。
+   *  复用既有 60s 周期（与 backfillObjectMeta 同一定时器），不另加 timer/领取器。 */
+  async drainArchiveProjections(limit = 20): Promise<number> {
+    if (!this.enabled || this.shutdown.signal.aborted) return 0;
+    const rows = this.db.prepare(
+      "SELECT id, payload_ref, attempt FROM outbox WHERE target = 'mariposa.archive_projection' AND state IN ('pending','unknown_outcome') AND attempt <= ? ORDER BY created_at, id LIMIT ?",
+    ).all(ARCHIVE_PROJECTION_MAX_ATTEMPTS, limit) as Array<{ id: string; payload_ref: string; attempt: number }>;
+    let acked = 0;
+    for (const row of rows) {
+      let p: { archive_id: string; kind: string; type: string; by: string; count: number; refs: Array<{ message_id: string; revision: number }> };
+      try {
+        p = JSON.parse(row.payload_ref) as typeof p;
+        if (typeof p.archive_id !== 'string' || !Array.isArray(p.refs)) throw new Error('shape');
+      } catch {
+        this.markDeadQuietly(row as unknown as OutboxRow, 'PROJECTION_PAYLOAD_INVALID');
+        continue;
+      }
+      let allOk = true;
+      let lastCode = 'unknown';
+      for (const ref of p.refs) {
+        try {
+          const r = await this.client.attachmentsSync({
+            stream_id: this.streamId, origin_message_id: ref.message_id, revision: ref.revision, kind: 'observation',
+            payload: { type: p.type, archive_id: p.archive_id, archive_kind: p.kind, count: p.count, by: p.by },
+            operation_id: `att-arc:${p.archive_id}:${ref.message_id}:${p.type}`,
+          });
+          if (!r.ok) { allOk = false; lastCode = r.code ?? 'rejected'; break; }
+        } catch (err) {
+          allOk = false;
+          lastCode = String((err as Error)?.message ?? err).slice(0, 80);
+          break;
+        }
+      }
+      const nowIso = new Date().toISOString();
+      if (allOk) {
+        tx(this.db, () => {
+          this.db.prepare("UPDATE outbox SET state = 'acked', last_error = NULL, attempt = attempt + 1, updated_at = ? WHERE id = ?").run(nowIso, row.id);
+        });
+        acked += 1;
+      } else {
+        const attempts = row.attempt + 1;
+        tx(this.db, () => {
+          this.db.prepare("UPDATE outbox SET state = ?, attempt = ?, last_error = ?, updated_at = ? WHERE id = ?")
+            .run(attempts > ARCHIVE_PROJECTION_MAX_ATTEMPTS ? 'failed' : 'pending', attempts, lastCode.slice(0, 200), nowIso, row.id);
+        });
+        this.logger.warn('archive_projection_retry', { archive_id: p.archive_id, code: lastCode.slice(0, 60) });
+      }
+    }
+    return acked;
+  }
+
+  /** RR5：对象元数据回推消费者——覆盖三类缺口：①存量（本机制上线前的历史行）
+   *  ②post-ACK 时资产未 synced（落正由 mediaMSync 稍后推进）③post-ACK 推送失败。
+   *  候选=有正式收据的 (message,revision) + 图片/贴纸附件 + 资产已 synced + 未标记；
+   *  有界批次（≤50/跳）+ 幂等 op 键（M 侧重放无副作用），标记防无限重放放大。
+   *  content 未启用时 no-op。 */
+  async backfillObjectMeta(limit = 50): Promise<number> {
+    if (!this.enabled) return 0;
+    const rows = this.db.prepare(
+      `SELECT ma.message_id, ma.revision, ma.asset_id, ma.presentation, a.mime_type, a.m_content_hash, a.content_sha256
+       FROM message_attachments ma
+       JOIN media_assets a ON a.id = ma.asset_id
+       WHERE ma.presentation IN ('image','sticker') AND ma.object_meta_synced_at IS NULL AND a.m_sync_state = 'synced'
+         AND EXISTS (SELECT 1 FROM source_sync_receipts r WHERE r.origin_message_id = ma.message_id AND r.revision = ma.revision AND r.source_message_id IS NOT NULL)
+       ORDER BY ma.created_at, ma.message_id LIMIT ?`,
+    ).all(limit) as Array<{ message_id: string; revision: number; asset_id: string; presentation: string; mime_type: string; m_content_hash: string | null; content_sha256: string }>;
+    let pushed = 0;
+    for (const row of rows) {
+      const sha = row.m_content_hash ?? row.content_sha256;
+      try {
+        const r = await this.client.attachmentsSync({
+          stream_id: this.streamId,
+          origin_message_id: row.message_id,
+          revision: row.revision,
+          kind: 'media',
+          payload: { ref: `est:${row.asset_id}`, sha, mime: row.mime_type, presentation: row.presentation },
+          operation_id: `att-objmeta:${row.message_id}@${row.revision}:${row.asset_id}`,
+        });
+        if (r.ok) {
+          this.db.prepare('UPDATE message_attachments SET object_meta_synced_at = ? WHERE message_id = ? AND revision = ? AND asset_id = ?')
+            .run(new Date().toISOString(), row.message_id, row.revision, row.asset_id);
+          pushed += 1;
+        } else {
+          this.logger.warn('attachment_object_meta_backfill_rejected', { message_id: row.message_id, asset_id: row.asset_id, code: r.code });
+        }
+      } catch (err) {
+        this.logger.warn('attachment_object_meta_backfill_failed', { message_id: row.message_id, asset_id: row.asset_id, code: String((err as Error).message).slice(0, 80) });
+      }
+    }
+    return pushed;
   }
 
   private messageIdOf(row: OutboxRow): string | null {

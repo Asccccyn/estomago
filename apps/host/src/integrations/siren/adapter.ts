@@ -41,7 +41,10 @@ function parseCallAudio(data: unknown, callId: string): SirenCallAudio {
 export class SirenTranscriptionError extends Error {
   readonly code: string;
   readonly uncertain: boolean;
-  constructor(code: string, uncertain = false) { super(code); this.code = code; this.uncertain = uncertain; }
+  /** P6 §10.2：Siren 安全错误分类（响应体 {error, message} 的白名单 token）——
+   *  稳定 code 之外保留排障线索，不再只剩 SIREN_SYNTHESIS_FAILED。 */
+  readonly detail?: string;
+  constructor(code: string, uncertain = false, detail?: string) { super(code); this.code = code; this.uncertain = uncertain; this.detail = detail; }
 }
 
 export class SirenAdapter {
@@ -230,7 +233,20 @@ export class SirenAdapter {
     if (!res.ok) {
       // 409=同操作键但关键输入与已持久资产不一致：不是可重试失败，需换新操作意图
       if (res.status === 409) throw new SirenTranscriptionError('SIREN_OPERATION_CONFLICT');
-      throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED');
+      // P6 §10.2：保留 Siren 的安全错误分类（provider_unavailable/tts_failed/…
+      //  白名单 token + 短 message），稳定 code 不变，排障不再只剩 SYNTHESIS_FAILED
+      let detail = `http_${res.status}`;
+      try {
+        const body = await res.json() as { error?: unknown; message?: unknown; details?: unknown };
+        if (typeof body.error === 'string') detail = body.error.slice(0, 40);
+        if (typeof body.message === 'string' && body.message) detail += ':' + body.message.slice(0, 60);
+        // zod 校验失败：指认字段路径（如 emotion）——排障直达
+        if (Array.isArray(body.details)) {
+          const paths = body.details.map((d) => typeof (d as { path?: unknown })?.path === 'object' && Array.isArray((d as { path: unknown[] }).path) ? (d as { path: unknown[] }).path.join('.') : String((d as { path?: unknown })?.path ?? '')).filter(Boolean).slice(0, 3).join(',');
+          if (paths) detail += `（字段：${paths}）`;
+        }
+      } catch { /* body 不可读=只留 http 码 */ }
+      throw new SirenTranscriptionError(res.status === 401 || res.status === 403 ? 'SIREN_AUTH_REJECTED' : 'SIREN_SYNTHESIS_FAILED', false, `siren:${detail}`);
     }
     let bytes: Uint8Array;
     try {
@@ -268,7 +284,7 @@ export class SirenAdapter {
    *  db_status 来自 Siren 持久正本（ended=已收口），session_active=WS 会话仍在；
    *  est 启动对账据此纠正 voice_calls 投影。404=正本无此通话（返回 null 之外的
    *  三态由调用方区分：throw=不可达）。 */
-  async callStatus(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ dbStatus: 'active' | 'ended'; sessionActive: boolean } | 'not_found' | null> {
+  async callStatus(callId: string, opts: { signal?: AbortSignal } = {}): Promise<{ dbStatus: 'active' | 'ended'; sessionActive: boolean; startedAt: number | null } | 'not_found' | null> {
     if (this.status === 'not_configured') return null;
     let res: Response;
     try {
@@ -279,10 +295,12 @@ export class SirenAdapter {
     } catch { throw new SirenTranscriptionError('SIREN_OUTCOME_UNKNOWN', true); }
     if (res.status === 404) return 'not_found';
     if (!res.ok) throw new SirenTranscriptionError('SIREN_CALL_STATUS_FAILED');
-    const data = await res.json() as { db_status?: unknown; session_active?: unknown };
+    const data = await res.json() as { db_status?: unknown; session_active?: unknown; started_at?: unknown };
     return {
       dbStatus: data.db_status === 'ended' ? 'ended' : 'active',
       sessionActive: data.session_active === true,
+      // 生命周期重构（20261104）：S 权威"会话真实建立过"事实；旧 Siren 不回传=null（未知，不当证据）
+      startedAt: typeof data.started_at === 'number' ? data.started_at : null,
     };
   }
 

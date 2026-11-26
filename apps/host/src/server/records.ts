@@ -5,6 +5,9 @@ import type { Config } from '../config/schema.ts';
 import type { WindowManager } from '../windows/manager.ts';
 import { lastCacheEvidence, keepwarmTargetAtMs } from '../runtime/cache-observation.ts';
 import type { RunnerSelection } from '../runtime/runner.ts';
+import { SubscriptionAccessRunner } from '../runtime/subscription-access.ts';
+import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
+import { UsageCollector } from '../usage/collector.ts';
 
 export type RecordSnapshot = {
   roomId: string;
@@ -12,6 +15,8 @@ export type RecordSnapshot = {
   epochId: string | null;
   driver: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' | 'unknown';
   exactModel: string | null;
+  requestExecution: { requestId: string; entry: string; requestedModel: string; responseModel: string | null; provider: string | null } | null;
+  sdkEstimates: ReturnType<UsageCollector['sdkCostEstimates']>;
   context: { estimatedInput: number | null; lastActualInput: number | null; effectiveSoft: number | null; hardCapacity: number | null; estimateQuality: string; uiReference: number };
   cache: { requestedTtl: '1h' | 'auto'; lastRead: number | null; lastWrite: number | null; lastNoncached: number | null; lastCostUsd: number | null; observedAt: string | null; estimatedExpiresAt: string | null; keeperEnabled: false; ttlVerification: { desired: '1h' | 'auto'; effective: string | null; verification: 'requested' | 'sdk_unverified' | 'auto_observed' | 'unknown' }; cacheEvidenceState: 'dispatch_started_at' | 'legacy_observed_at' | 'no_evidence'; nextKeepwarmEstimateAt: string | null };
   review: { id: string; status: string; decision: string | null; holdCount: number | null; rangeCount: number | null; windowId: string; isCurrentWindow: boolean } | null;
@@ -31,14 +36,26 @@ export function buildRecordSnapshot(d: {
   config: Config;
   windows: WindowManager;
   runnerSelection: RunnerSelection;
+  settings?: { effectiveOrModel: (m: string | null) => string | null; effectiveSdkModel?: (m: string | null) => string | null } | null;
   rawSyncState?: { pending: number; unknown_outcome: number; failed: number; acked: number; enabled: boolean } | null;
 }, conversationId: string, lastEventSequence: number | null): RecordSnapshot {
   const win = d.windows.activeWindow(conversationId);
-  const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok' ? (d.runnerSelection.runner.kind as RecordSnapshot['driver']) : 'unknown';
+  const requestExecution = win ? d.db.prepare(`SELECT id AS requestId,
+    json_extract(payload_json,'$.execution.entry') AS entry,
+    json_extract(payload_json,'$.execution.requestedModel') AS requestedModel,
+    json_extract(payload_json,'$.execution.responseModel') AS responseModel,
+    json_extract(payload_json,'$.execution.provider') AS provider
+    FROM provider_requests WHERE window_id=? AND dispatch_started_at IS NOT NULL
+      AND json_type(payload_json,'$.execution')='object'
+    ORDER BY dispatch_started_at DESC,rowid DESC LIMIT 1`).get(win.id) as RecordSnapshot['requestExecution'] | undefined : null;
+  const driver: RecordSnapshot['driver'] = d.runnerSelection.status === 'ok'
+    ? (requestExecution?.entry as RecordSnapshot['driver'] | undefined) ?? (d.runnerSelection.runner instanceof SubscriptionAccessRunner ? d.runnerSelection.runner.status().actual_entry ?? d.runnerSelection.runner.kind : d.runnerSelection.runner.kind)
+    : 'unknown';
   // WP-05（B14）：exactModel 经注入的 runtime settings 取生效值（与设置页
   //  同源——override 后不再显示配置默认型号）；无注入回落 config
   const orEff = (d as { settings?: { effectiveOrModel: (m: string | null) => string | null } | null }).settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
-  const exactModel = driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : d.config.runtime.model;
+  const exactModel = requestExecution?.responseModel ?? requestExecution?.requestedModel
+    ?? (driver === 'openrouter' ? orEff : driver === 'deepseek' ? d.config.deepseek.model : (d.settings?.effectiveSdkModel?.(d.config.runtime.model) ?? d.config.runtime.model));
   // §11.1：本地粗估 + 实际 usage 校准；粗估系数按驱动（DS 默认 1.5——中文场景；OR 默认 2.5），精度分级如实
   const charsPerToken = driver === 'deepseek' ? d.config.deepseek.estimate_chars_per_token : driver === 'openrouter' ? d.config.openrouter.estimate_chars_per_token : 2.5;
 
@@ -55,16 +72,10 @@ export function buildRecordSnapshot(d: {
     estimated = Math.ceil(chars / charsPerToken);
     quality = 'rough';
   }
-  const lastUsage = win
-    ? (d.db.prepare(
-        `SELECT u.input_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens, u.observed_at
-         FROM usage_observations u LEFT JOIN attempts a ON a.id = u.attempt_id
-         WHERE (u.window_id = ? OR a.window_id = ?) AND u.source IN ('or_stream','ds_stream') AND u.completeness = 'complete' AND u.input_tokens IS NOT NULL
-         ORDER BY u.observed_at DESC LIMIT 1`,
-      ).get(win.id, win.id) as { input_tokens: number; cache_read_input_tokens: number | null; cache_creation_input_tokens: number | null; observed_at: string } | undefined)
-    : undefined;
-  if (lastUsage) {
-    estimated = Math.max(estimated ?? 0, lastUsage.input_tokens);
+  const lastUsage = win ? lastRequestUsageForWindow(d.db, win.id) : null;
+  const lastInput = lastUsage ? providerInputTotal(lastUsage) : null;
+  if (lastInput !== null) {
+    estimated = Math.max(estimated ?? 0, lastInput);
     quality = 'calibrated_rough';
   }
   const w = d.config.windows;
@@ -115,7 +126,7 @@ export function buildRecordSnapshot(d: {
     FROM usage_observations u
     LEFT JOIN provider_requests pr ON pr.id = u.request_id
     LEFT JOIN attempts a ON a.id = u.attempt_id
-    WHERE u.observed_at >= ? AND (a.id IS NULL OR a.turn_id IN (SELECT id FROM turns WHERE conversation_id = ?))
+    WHERE u.scope != 'cumulative' AND u.observed_at >= ? AND (a.id IS NULL OR a.turn_id IN (SELECT id FROM turns WHERE conversation_id = ?))
     GROUP BY COALESCE(pr.purpose, 'unknown')
   `).all(usageDayStartUtcIso, conversationId) as Array<{ purpose: string; n: number; known_cost: number | null; unknown_n: number }>;
   return {
@@ -124,7 +135,9 @@ export function buildRecordSnapshot(d: {
     epochId: win?.id ?? null,
     driver,
     exactModel,
-    context: { estimatedInput: estimated, lastActualInput: lastUsage?.input_tokens ?? null, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
+    requestExecution: requestExecution ?? null,
+    sdkEstimates: win ? new UsageCollector(d.db).sdkCostEstimates('window', win.id) : [],
+    context: { estimatedInput: estimated, lastActualInput: lastInput, effectiveSoft, hardCapacity, estimateQuality: quality, uiReference: d.config.windows.ui_reference_tokens },
     cache: {
       // DS 直连=自动上下文缓存（无显式 TTL 参数，命中看 lastRead 观测）；OR=显式 1h（§7）
       requestedTtl: driver === 'deepseek' ? 'auto' : '1h',
@@ -136,13 +149,13 @@ export function buildRecordSnapshot(d: {
         : driver === 'openrouter'
           ? { desired: '1h', effective: null, verification: 'requested' }
           : driver === 'claude-agent-sdk'
-            ? { desired: '1h', effective: null, verification: 'sdk_unverified' }
+            ? { desired: '1h', effective: null, verification: 'requested' }
             : { desired: driver === 'mock' ? '1h' : 'auto', effective: null, verification: 'unknown' },
       lastRead: lastUsage?.cache_read_input_tokens ?? null,
       lastWrite: lastUsage?.cache_creation_input_tokens ?? null,
-      lastNoncached: lastUsage && lastUsage.input_tokens !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null
-        ? lastUsage.input_tokens - lastUsage.cache_read_input_tokens - lastUsage.cache_creation_input_tokens
-        : null,
+      lastNoncached: lastUsage?.source.startsWith('sdk') ? lastUsage.input_tokens
+        : lastUsage && lastInput !== null && lastUsage.cache_read_input_tokens !== null && lastUsage.cache_creation_input_tokens !== null
+          ? lastInput - lastUsage.cache_read_input_tokens - lastUsage.cache_creation_input_tokens : null,
       lastCostUsd: costRow?.cost_usd ?? null, // F19：已返回的实际费用（未返回时不编数）
       observedAt,
       // §7.3：OR 1h 从**缓存证据请求**开始估计（始终是估计——路由黏性/上游空闲过期独立存在）；
@@ -169,7 +182,7 @@ export function buildRecordSnapshot(d: {
       : driver === 'deepseek'
         ? { driver, backgroundEligible: false, reason: 'AUTO_CACHE_NO_FIXED_TTL' }
         : driver === 'claude-agent-sdk'
-          ? { driver, backgroundEligible: false, reason: 'SDK_BACKGROUND_POLICY_UNVERIFIED' }
+          ? { driver, backgroundEligible: true, reason: 'SDK_SUBSCRIPTION_PREFLIGHT_REQUIRED' }
           : { driver: String(driver), backgroundEligible: false, reason: 'UNKNOWN_DRIVER' },
     usageByPurpose: purposeCost.map((r) => ({
       purpose: r.purpose, count: r.n,
@@ -189,19 +202,19 @@ export function buildRecordSnapshot(d: {
 }
 
 // 记录事件白名单（§11.2 契约 kind 集合中实际存在的；元数据 payload，不含正文类事件）
-const RECORD_EVENT_KINDS = new Set(['archive.sync', 'context.warning', 'review.sent', 'review.failed', 'window.rotated']);
+const RECORD_EVENT_KINDS = new Set(['archive.sync', 'context.warning', 'review.sent', 'review.failed', 'window.rotated', 'system.notice']);
 
 export type RecordEventItem = { eventId: string; sequence: number; roomId: string; occurredAt: string; kind: string; payload: unknown };
 export type RecordEventsPage = { events: RecordEventItem[]; nextCursor: string | null; prevCursor: string | null };
 
-const RECORD_EVENT_SQL_WHERE = `conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')`;
+const RECORD_EVENT_SQL_WHERE = `conversation_id = ? AND sequence > ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated','system.notice')`;
 
 /** forward：游标向后翻页（历史分页）。recent（F21）：返回最新 limit 条（升序）+ prevCursor 向更早翻页。 */
 export function listRecordEvents(db: Db, conversationId: string, after: number, limit: number, mode: 'forward' | 'recent' | 'older' = 'forward', before: number | null = null): RecordEventsPage {
   if (mode === 'recent') {
     const rows = db.prepare(
       `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
-       WHERE conversation_id = ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+       WHERE conversation_id = ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated','system.notice')
        ORDER BY sequence DESC LIMIT ?`,
     ).all(conversationId, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
     const events = rows.slice().reverse().map(rowToEvent(conversationId));
@@ -212,7 +225,7 @@ export function listRecordEvents(db: Db, conversationId: string, after: number, 
     // 审计 F26：向更早翻页=严格小于游标序号（旧实现 > cursor 会原样重发当前页）
     const rows = db.prepare(
       `SELECT sequence, event_id, occurred_at, kind, payload_ref FROM runtime_stream_events
-       WHERE conversation_id = ? AND sequence < ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated')
+       WHERE conversation_id = ? AND sequence < ? AND kind IN ('archive.sync','context.warning','review.sent','review.failed','window.rotated','system.notice')
        ORDER BY sequence DESC LIMIT ?`,
     ).all(conversationId, before, limit) as Array<{ sequence: number; event_id: string; occurred_at: string; kind: string; payload_ref: string | null }>;
     const events = rows.slice().reverse().map(rowToEvent(conversationId));

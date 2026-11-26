@@ -10,6 +10,8 @@ import { test } from 'node:test';
 import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
+import { freezeWindowTools } from '../../apps/host/src/runtime/tool-discovery.ts';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
 import { migrate } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
@@ -67,6 +69,10 @@ test('WP2：memory_recall 关闭模式首页——pagination/judge 字段穿透�
   assert.equal(o.judgement_status, undefined);
   assert.equal((o.pagination as any).result_set_id, 'rps_wp2');
   assert.equal((o.pagination as any).next_cursor, 'pgc_next1');
+  const reread = await tools.execute('memory_recall', { query: '找搬家', reread: true }, CTX);
+  assert.deepEqual(reread.output.next, { tool: 'memory_recall_next', arguments: {
+    result_set_id: 'rps_wp2', cursor: 'pgc_next1', session_id: 'rs_wp2', reread: true,
+  } });
   // 开启请求携带 room scope（页面请求与 session 绑定一致）
   assert.equal(calls[0]!.payload.conversation_scope, 'c1');
   db.close();
@@ -138,4 +144,29 @@ test('WP2：参数门与白名单——缺 result_set_id 拒；游标/续查引�
   const mixed = validateToolArgs('memory_recall_next', { result_set_id: 'rps', refine_continue_ref: 'cont_x' });
   assert.ok(!mixed.ok, 'refine 引用与分页游标分槽——next 不接受 refine 参数');
   db.close();
+});
+
+
+test('旧冻结目录可用 pagination 坐标直接读取固定下一页', async () => {
+  const calls: string[] = [];
+  const { tools, db } = makeTools(async cap => {
+    calls.push(cap);
+    return { ok: true, result: cap === 'memory.recall.start' ? offFirstPage : offSecondPage };
+  });
+  try {
+    db.prepare("INSERT INTO conversations(id,created_at) VALUES('c1','now')").run();
+    db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES('w1','c1','ACTIVE','now','now')").run();
+    const old = JSON.parse(fs.readFileSync(new URL('../fixtures/window-tools-before-autonomy.json', import.meta.url), 'utf8'));
+    freezeWindowTools(db, 'w1', old.catalog, 'legacy');
+    const first = await tools.execute('memory_recall', { query: '找搬家' }, CTX);
+    const pagination = first.output.pagination as { result_set_id: string; next_cursor: string };
+    const args = { result_set_id: pagination.result_set_id, cursor: pagination.next_cursor };
+    const spec = old.catalog.find((entry: any) => entry.function.name === 'memory_recall_next');
+    assert.equal(validateToolArgs('memory_recall_next', { ...args, reread: true }, spec).ok, false);
+    assert.equal(validateToolArgs('memory_recall_next', args, spec).ok, true);
+    const page = await tools.execute('memory_recall_next', args, CTX);
+    assert.equal(page.ok, true);
+    assert.deepEqual(page.output.candidates, [{ resource_ref: 'memory:0010', text: '候选10' }]);
+    assert.deepEqual(calls, ['memory.recall.start', 'memory.recall.page']);
+  } finally { db.close(); }
 });

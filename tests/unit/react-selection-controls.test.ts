@@ -1,5 +1,5 @@
 // 多选（人工选集）UI——她 2026-10-18：交互参照微信（左缘圆圈/整条可点/底部操作栏）、
-// 视觉与现有前端一致、多选只带文本。渲染真组件（transpile + renderToStaticMarkup），非源码 grep。
+// 视觉与现有前端一致。渲染真组件（transpile + renderToStaticMarkup），非源码 grep。2026-11-08 开窗包新裁定：图片随选集真实携带。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -42,7 +42,7 @@ test('底部操作栏：零选=确认禁用；有选=计数与可访问名称如
 test('媒体占位：图片与语音只显示文本占位行，不渲染 img/播放控件', () => {
   const image = render(exports.SelectionMediaText, { kind: 'image', text: '' });
   assert.match(image, /\[图片\]/);
-  assert.match(image, /只带文本，不随多选带入新窗/, '空文本图片要有不带图说明');
+  assert.match(image, /图片随所选换窗真实携带/, '空文本图片要有携带说明（2026-11-08 开窗包新裁定）');
   assert.doesNotMatch(image, /<img/, '多选列表不渲染图片');
   const voice = render(exports.SelectionMediaText, { kind: 'voice', text: '转写的内容' });
   assert.match(voice, /\[语音\] 转写的内容/);

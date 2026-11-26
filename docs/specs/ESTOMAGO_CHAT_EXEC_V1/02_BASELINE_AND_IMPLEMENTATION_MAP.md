@@ -1,5 +1,7 @@
 # 02 · 源码基线与施工落点
 
+> 本文件保留 2026-10-11 施工前的源码核查快照，表中的缺口不是当前状态。当前分支、提交、部署和验收入口见 [README](../../../README.md) 与 [2026-11-04 实施记录](../../reports/MEMORY_AUTONOMOUS_TOOLS_20261104.md)。
+
 核查时间：2026-10-11 Asia/Shanghai。
 仓库：https://github.com/Asccccyn/estomago.git
 分支：main

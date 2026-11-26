@@ -68,6 +68,9 @@ export function fixedSystemCount(messages: OrMessage[]): number {
     const firstText = typeof message.content === 'string' ? message.content
       : Array.isArray(message.content) ? (message.content[0] as { text?: string })?.text ?? '' : '';
     if (firstText.startsWith('[回忆浮现]\n') || firstText.startsWith('回忆浮现：') || firstText.startsWith('这是你们') || firstText.startsWith('—— 原文片段 ——')) break;
+    // 运行中事项片段（宿主用户 2026-11-07 裁定）：独立导航块，不属于 A/B 身份段——
+    // 无 B 时消息列为 A/episode/user，此处跳过避免它被计入 B 缓存点（Codex 审计 P1）
+    if (firstText.startsWith('[运行中事项')) break;
     count++;
   }
   return count;

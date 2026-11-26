@@ -4,9 +4,11 @@
 // 后端定时器不受页面隐藏/关闭影响；本组件只读状态与发起管理操作，不在 mount 时创建任务。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { EstomagoClient } from './chat-client'
-import { appendBackgroundPage, backgroundInputTime, backgroundInputToIso, backgroundTaskStatus } from './background-controls-model'
+import { appendBackgroundPage, backgroundInputTime, backgroundInputToIso, backgroundTaskStatus, keepwarmStatusText } from './background-controls-model'
 
 type Json = Record<string, any>
+type Control = 'autonomous' | 'keepwarm' | 'free_activity'
+const controlLabels: Record<Control,string> = {autonomous:'预约唤醒',keepwarm:'心跳保温',free_activity:'自由活动'}
 
 const fmtTime = (iso: string | null | undefined): string => {
   if (!iso) return '—'
@@ -25,14 +27,11 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
   const [runCursor, setRunCursor] = useState<string | null>(null)
   const [detail, setDetail] = useState<Json | null>(null)
   const [busy, setBusy] = useState(false)
-  const [wakeNote, setWakeNote] = useState('')
-  const [wakeAt, setWakeAt] = useState('')
   const [editNote, setEditNote] = useState('')
   const [editAt, setEditAt] = useState('')
-  const [budgets, setBudgets] = useState({ autonomous: '', keepwarm: '' })
+  const [budgets, setBudgets] = useState({ autonomous: '', keepwarm: '', free_activity: '' })
   const refreshGeneration = useRef(0)
   const detailGeneration = useRef(0)
-  const pendingCreate = useRef<{ key: string; body: { note: string; at: string } } | null>(null)
 
   const refresh = useCallback(async (preserveError = false) => {
     const generation = ++refreshGeneration.current
@@ -42,7 +41,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
       if (generation !== refreshGeneration.current) return
       setSettings(s); setTasks(t.tasks ?? []); setRuns(r.runs ?? [])
       setTaskCursor(t.next_cursor ?? null); setRunCursor(r.next_cursor ?? null)
-      setBudgets({ autonomous: String(s.autonomous?.daily_cost_cap_usd ?? ''), keepwarm: String(s.keepwarm?.daily_cost_cap_usd ?? '') })
+      setBudgets({ autonomous: String(s.autonomous?.daily_cost_cap_usd ?? ''), keepwarm: String(s.keepwarm?.daily_cost_cap_usd ?? ''), free_activity: String(s.free_activity?.daily_cost_cap_usd ?? '') })
     } catch (e) {
       if (generation !== refreshGeneration.current) return
       setError((e as Error).message || '加载失败')
@@ -59,7 +58,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
     return () => { document.removeEventListener('visibilitychange', onVisible) }
   }, [refresh, loading])
 
-  const toggle = async (section: 'autonomous' | 'keepwarm'): Promise<void> => {
+  const toggle = async (section: Control): Promise<void> => {
     if (!settings || busy) return
     const current = settings[section]?.enabled === true
     const optimistic = { ...settings, [section]: { ...settings[section], enabled: !current } }
@@ -74,27 +73,6 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
       const err = e as Error & { code?: string }
       setError(err.code === 'revision_conflict' ? '设置已被其他设备修改，正在刷新——请重试' : (err.message || '切换失败'))
       if (err.code === 'revision_conflict') void refresh(true)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const createWake = async (): Promise<void> => {
-    if (busy) return
-    if (!wakeNote.trim()) { setError('预约内容不能为空'); return }
-    if (!wakeAt) { setError('请选择未来的时间'); return }
-    setBusy(true); setError(null)
-    try {
-      const body = { note: wakeNote, at: backgroundInputToIso(wakeAt) }
-      if (pendingCreate.current && JSON.stringify(pendingCreate.current.body) !== JSON.stringify(body)) throw new Error('上次预约结果尚未确认，请先按原内容和时间重试。')
-      pendingCreate.current ??= { key: `ui-wake-${crypto.randomUUID()}`, body }
-      await client.backgroundCreateWake(pendingCreate.current.body, pendingCreate.current.key)
-      pendingCreate.current = null
-      setWakeNote(''); setWakeAt('')
-      void refresh(true)
-    } catch (e) {
-      if ((e as { status?: number }).status && (e as { status: number }).status < 500) pendingCreate.current = null
-      setError((e as Error).message || '创建失败')
     } finally {
       setBusy(false)
     }
@@ -141,10 +119,10 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
     } finally { setBusy(false) }
   }
 
-  const saveBudget = async (section: 'autonomous' | 'keepwarm'): Promise<void> => {
+  const saveBudget = async (section: Control): Promise<void> => {
     if (busy || !settings) return
-    const cap = Number(budgets[section])
-    if (!budgets[section].trim() || !Number.isFinite(cap) || cap <= 0) { setError('日费用上限必须是有效正数（美元）'); return }
+    const cap = budgets[section] === 'unlimited' ? 'unlimited' : Number(budgets[section])
+    if (cap !== 'unlimited' && (!budgets[section].trim() || !Number.isFinite(cap) || cap <= 0)) { setError('请填写正数金额，或选择无日上限'); return }
     setBusy(true); setError(null)
     try {
       await client.backgroundPutSettings(settings.revision, { [section]: { daily_cost_cap_usd: cap } }, `ui-budget-${crypto.randomUUID()}`)
@@ -185,9 +163,9 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
 
   return (
     <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/25" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label="自主预约与心跳保温" className="max-h-[82vh] w-full overflow-y-auto rounded-t-3xl bg-[#faf9f5] p-5 text-[14px]" onClick={(e) => { e.stopPropagation() }}>
+      <div role="dialog" aria-modal="true" aria-label="唤醒、保温与自由活动" className="max-h-[82vh] w-full overflow-y-auto rounded-t-3xl bg-[#faf9f5] p-5 text-[14px]" onClick={(e) => { e.stopPropagation() }}>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[16px] font-medium">自主预约与心跳保温</h2>
+          <h2 className="text-[16px] font-medium">唤醒、保温与自由活动</h2>
           <div className="flex items-center gap-2">
             <button className="text-[12px] text-[#8a8780]" onClick={() => void refresh()}>刷新</button>
             <button aria-label="关闭" onClick={onClose}>×</button>
@@ -209,26 +187,33 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 <span>
                   <span className="block">心跳保温</span>
                   <span className="block text-[11.5px] text-[#8a8780]">
-                    {kw.blocked_reason === 'KEEPWARM_SLEEP_WINDOW' ? `睡眠时段暂停（${settings.keepwarm.sleep_window.start}–${settings.keepwarm.sleep_window.end}，${settings.keepwarm.sleep_window.timezone}）` : kw.blocked_reason === 'KEEPWARM_SLEEP_CONFIG_INVALID' ? '睡眠时段配置无效，心跳已暂停' : kw.scheduled ? `下次 ${fmtTime(kw.next_keepwarm_at)}（${kw.next_keepwarm_basis === 'maintenance' ? '按上次维护' : '按最后消息'}）` : '暂无排程（无真实活动或未开启）'}
+                    {keepwarmStatusText(kw, settings.keepwarm?.sleep_window, fmtTime)}
                   </span>
                 </span>
                 <input type="checkbox" checked={settings.keepwarm?.enabled === true} disabled={busy} onChange={() => void toggle('keepwarm')} />
               </label>
+              <label className="flex items-center justify-between rounded-2xl border border-black/5 bg-white px-3 py-2.5">
+                <span><span className="block">自由活动</span><span className="block text-[11.5px] text-[#8a8780]">非预约的额外自主任务；预约与心跳单独控制</span></span>
+                <input type="checkbox" checked={settings.free_activity?.enabled === true} disabled={busy} onChange={() => void toggle('free_activity')} />
+              </label>
             </div>
             <div className="mt-3 space-y-2 rounded-2xl border border-black/5 bg-white p-3">
               <h3 className="text-[13px] font-medium">每日费用上限（美元）</h3>
-              {(['autonomous', 'keepwarm'] as const).map((section) => <label key={section} className="flex items-center gap-2 text-[12px]">
-                <span className="w-20">{section === 'autonomous' ? '自主唤醒' : '心跳保温'}</span>
-                <input aria-label={`${section === 'autonomous' ? '自主唤醒' : '心跳保温'}日费用上限`} type="number" min="0.01" step="0.01" className="min-w-0 flex-1 rounded-lg border border-black/10 p-2" placeholder="未配置" value={budgets[section]} onChange={(e) => setBudgets((old) => ({ ...old, [section]: e.target.value }))} />
+              {(['autonomous','keepwarm','free_activity'] as const).map((section) => <div key={section} className="flex flex-wrap items-center gap-2 text-[12px]">
+                <span className="w-20">{controlLabels[section]}</span>
+                <select aria-label={`${controlLabels[section]}预算方式`} value={budgets[section] === 'unlimited' ? 'unlimited' : 'limited'} onChange={e => setBudgets(old => ({...old,[section]:e.target.value === 'unlimited' ? 'unlimited' : ''}))} className="rounded-lg border border-black/10 p-2">
+                  <option value="limited">填写金额</option><option value="unlimited">无日上限</option>
+                </select>
+                {budgets[section] !== 'unlimited' && <input aria-label={`${controlLabels[section]}日费用上限`} type="number" min="0.01" step="0.01" className="min-w-0 flex-1 rounded-lg border border-black/10 p-2" placeholder="未配置" value={budgets[section]} onChange={(e) => setBudgets((old) => ({ ...old, [section]: e.target.value }))} />}
                 <button disabled={busy} onClick={() => void saveBudget(section)}>保存</button>
-              </label>)}
-              <p className="text-[11px] text-[#8a8780]">先保存费用上限，再开启对应开关。保存预算不会自动开启。</p>
+              </div>)}
+              <p className="text-[11px] text-[#8a8780]">先填写金额或明确选择无日上限，再开启对应开关。未配置与无日上限不同；午夜记忆日选使用同一心跳日预算。保存预算不会自动开启。</p>
             </div>
             {settings.current_window?.requires_normal_rotation && <p role="status" className="mt-3 text-[12px] text-[#a4552f]">当前聊天窗口尚不能使用预约工具，下次正常换窗后生效。这里仍可管理预约。</p>}
             {settings.current_window?.wake_manage_available === true && <p className="mt-2 text-[12px] text-[#8a8780]">当前聊天窗口可使用自主预约工具。</p>}
             {openRun && (
               <div className="mt-3 flex items-center justify-between rounded-2xl bg-[#f3f1ea] px-3 py-2 text-[12.5px]">
-                <span>当前运行：{openRun.kind === 'keepwarm' ? '心跳保温' : '自主唤醒'} · {String(openRun.state)}</span>
+                <span>当前运行：{openRun.keepwarm_source === 'morning_wake' ? '晨间唤醒' : openRun.kind === 'heartbeat_memory' ? '午夜记忆日选' : openRun.kind === 'keepwarm' ? '心跳保温' : '自主唤醒'} · {String(openRun.state)}</span>
                 <button className="text-[#a4552f]" disabled={busy} onClick={() => void stopRun(openRun.id)}>停止</button>
               </div>
             )}
@@ -238,23 +223,17 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                 {(tasks ?? []).map((t) => (
                   <button key={t.task_id} className="block w-full rounded-2xl border border-black/5 bg-white px-3 py-2 text-left" onClick={() => void openDetail(t.task_id)}>
                     <span className="flex items-center justify-between">
-                      <span className="truncate text-[13px]">{t.note_preview || '（预约）'}</span>
-                      <span className="ml-2 shrink-0 text-[11px] text-[#8a8780]">{t.status === 'scheduled' ? fmtTime(t.scheduled_at) : backgroundTaskStatus[t.status] ?? t.status}</span>
+                      <span className="truncate text-[13px]">{t.kind === 'heartbeat_memory' ? '系统 · 午夜记忆日选' : t.note_preview || '（预约）'}{t.origin === 'self_schedule' && t.created_by !== 'jiaming' ? ' · 历史代设' : ''}</span>
+                      <span className="ml-2 shrink-0 text-[11px] text-[#8a8780]">{t.status === 'scheduled' ? fmtTime(t.kind==='heartbeat_memory'?t.next_due_at:t.scheduled_at) : backgroundTaskStatus[t.status] ?? t.status}</span>
                     </span>
                   </button>
                 ))}
-                {(tasks ?? []).length === 0 && <p className="px-1 text-[12.5px] text-[#8a8780]">暂无预约。char可用 wake_manage 工具自己预约；这里也可代为创建。</p>}
+                {(tasks ?? []).length === 0 && <p className="px-1 text-[12.5px] text-[#8a8780]">暂无预约。char可用 wake_manage 工具自行预约。</p>}
               </div>
               {taskCursor && <button className="mt-2 text-[12px] text-[#a4552f]" disabled={busy} onClick={() => void loadMore('tasks')}>加载更多预约</button>}
             </div>
             <div className="mt-4 rounded-2xl border border-black/5 bg-white p-3">
-              <h3 className="mb-2 text-[13px] font-medium text-[#8a8780]">替他预约（北京时间）</h3>
-              <textarea className="mb-2 w-full rounded-xl border border-black/10 p-2 text-[13px]" rows={2} placeholder="要转告他的话（到期原样递给他自己）" value={wakeNote} onChange={(e) => setWakeNote(e.target.value)} />
-              <div className="flex items-center gap-2">
-                <input aria-label="预约时间（北京时间）" type="datetime-local" className="min-w-0 flex-1 rounded-xl border border-black/10 p-2 text-[13px]" value={wakeAt} onChange={(e) => setWakeAt(e.target.value)} />
-                <button className="rounded-xl bg-[#c96442] px-3 py-2 text-[13px] text-white disabled:opacity-50" disabled={busy || settings.autonomous?.enabled !== true} onClick={() => void createWake()}>预约</button>
-              </div>
-              {settings.autonomous?.enabled !== true && <p className="mt-1.5 text-[11.5px] text-[#a4552f]">自主预约唤醒未开启——先开上面的开关。</p>}
+              <p className="text-[13px] text-[#8a8780]">自主唤醒由char自己安排。想给他留话，可在 <a className="text-[#a4552f] underline" href="/home/heartbeat">心跳页面</a> 管理预留留言。</p>
             </div>
             {detail && (
               <div className="mt-3 rounded-2xl border border-black/10 bg-white p-3">
@@ -263,11 +242,13 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
                   <button aria-label="关闭详情" onClick={() => setDetail(null)}>×</button>
                 </div>
                 <p className="mt-1 whitespace-pre-wrap text-[13px]">{String(detail.note ?? '')}</p>
-                <p className="mt-1 text-[11.5px] text-[#8a8780]">北京时间 {fmtTime(detail.scheduled_at)} · {backgroundTaskStatus[detail.status] ?? String(detail.status)}</p>
+                <p className="mt-1 text-[11.5px] text-[#8a8780]">北京时间 {fmtTime(detail.scheduled_at)} · {backgroundTaskStatus[detail.status] ?? String(detail.status)}{detail.origin === 'self_schedule' ? (detail.created_by === 'jiaming' ? ' · char自设' : ` · 历史代设（${String(detail.created_by ?? '未知操作者')}）`) : ''}</p>
                 {detail.kind === 'autonomous' && ['scheduled', 'needs_review'].includes(detail.status) && <div className="mt-3 space-y-2">
-                  <textarea aria-label="修改预约内容" className="w-full rounded-xl border border-black/10 p-2 text-[13px]" rows={3} value={editNote} onChange={(e) => setEditNote(e.target.value)} />
-                  <input aria-label="修改预约时间（北京时间）" type="datetime-local" className="w-full rounded-xl border border-black/10 p-2 text-[13px]" value={editAt} onChange={(e) => setEditAt(e.target.value)} />
-                  <div className="flex gap-4 text-[12.5px] text-[#a4552f]"><button disabled={busy || settings.autonomous?.enabled !== true} onClick={() => void updateTask()}>保存修改</button><button disabled={busy} onClick={() => void cancelTask(detail)}>取消预约</button></div>
+                  {detail.origin !== 'self_schedule' && <>
+                    <textarea aria-label="修改预约内容" className="w-full rounded-xl border border-black/10 p-2 text-[13px]" rows={3} value={editNote} onChange={(e) => setEditNote(e.target.value)} />
+                    <input aria-label="修改预约时间（北京时间）" type="datetime-local" className="w-full rounded-xl border border-black/10 p-2 text-[13px]" value={editAt} onChange={(e) => setEditAt(e.target.value)} />
+                  </>}
+                  <div className="flex gap-4 text-[12.5px] text-[#a4552f]">{detail.origin !== 'self_schedule' && <button disabled={busy || settings.free_activity?.enabled !== true} onClick={() => void updateTask()}>保存修改</button>}<button disabled={busy} onClick={() => void cancelTask(detail)}>取消预约</button></div>
                 </div>}
               </div>
             )}
@@ -276,7 +257,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
               <div className="space-y-1">
                 {(runs ?? []).map((r) => (
                   <p key={String(r.id)} className="flex items-center justify-between text-[12px] text-[#8a8780]">
-                    <span>{r.trigger_origin === 'self_wake' ? '自主唤醒' : r.trigger_origin === 'keepwarm' ? '心跳' : '提醒'} · {String(r.state)}{r.retention === 'ephemeral_ack' ? '（纯维护回执）' : ''}</span>
+                    <span>{r.keepwarm_source === 'morning_wake' ? '晨间唤醒' : r.trigger_origin === 'heartbeat_memory' ? '午夜记忆日选' : r.trigger_origin === 'self_wake' ? (r.created_by === 'jiaming' ? '自主唤醒' : '历史代设唤醒') : r.trigger_origin === 'keepwarm' ? '心跳' : r.trigger_origin === 'free_activity' ? '自由活动' : '提醒'} · {String(r.state)}{r.retention === 'ephemeral_ack' ? '（纯维护回执）' : ''}</span>
                     <span>{fmtTime(r.first_dispatch_started_at ?? r.created_at)}{r.known_cost_micro_usd ? ` · $${(r.known_cost_micro_usd / 1e6).toFixed(4)}` : ''}{Number(r.unknown_cost_count) > 0 ? ` · ${r.unknown_cost_count} 笔待核实` : ''}</span>
                   </p>
                 ))}
@@ -284,7 +265,7 @@ export function BackgroundControls({ client, onClose }: { client: EstomagoClient
               </div>
               {runCursor && <button className="mt-2 text-[12px] text-[#a4552f]" disabled={busy} onClick={() => void loadMore('runs')}>加载更多运行</button>}
             </div>
-            <p className="mt-4 text-[11px] leading-relaxed text-[#8a8780]">心跳的纯“1”维护回执不进入聊天与记忆。他正式发出的消息会保存到聊天；工具记录与内部回复不会自动当作发给你的消息。</p>
+            <p className="mt-4 text-[11px] leading-relaxed text-[#8a8780]">当天十张牌都实际交付后，下一次心跳的实际回复“1”会显示在聊天里。</p>
           </>
         )}
       </div>

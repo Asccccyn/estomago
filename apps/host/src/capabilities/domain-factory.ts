@@ -8,10 +8,13 @@ import { quoteBackgroundTool } from '../runtime/background-tool-cost.ts';
 import { validateArgsAgainstSchema } from './validation.ts';
 import type { Db } from '../db/connection.ts';
 import type { BackgroundToolQuote, CapabilityOutcome, HostToolSpec, ToolExecContext, ToolExecResult } from './contracts.ts';
-import type { CapabilityDescriptor } from './registry.ts';
+import type { CapabilityDescriptor, HeartbeatActionPolicy } from './registry.ts';
 
 export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   id: string;
+  group?: import('./registry.ts').ToolGroup;
+  legacyOnly?: boolean;
+  replacedBy?: string;
   baselineOrder: number;
   /** 定义或定义工厂（唯一来源；动态词表传工厂）。 */
   definition: HostToolSpec | (() => HostToolSpec);
@@ -20,12 +23,13 @@ export type SimpleToolCapability<I extends Record<string, unknown>, O> = {
   memoryOnlyAllowed: boolean;
   label: string;
   silent?: boolean;
+  heartbeatAction?: HeartbeatActionPolicy<I>;
   run: (input: I, ctx: ToolExecContext) => Promise<CapabilityOutcome<O> | ToolExecResult> | CapabilityOutcome<O> | ToolExecResult;
   /** 唯一模型投影（owner 拥有；输入=内部成功结果，与旧外层 modelResult(effectiveName,args,output) 同输入）。 */
   toModel: (value: O, input: I) => Record<string, unknown>;
   /** 免费资格声明（模块所有；仅现有已核免费事实，不按名字/只读/本地猜）。 */
   free?: boolean;
-  quote?: (db: Db) => BackgroundToolQuote;
+  quote?: (db: Db, input?: I) => BackgroundToolQuote;
 };
 
 function isCapabilityOutcome<O>(r: CapabilityOutcome<O> | ToolExecResult): r is CapabilityOutcome<O> {
@@ -40,11 +44,15 @@ export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleTo
   return {
     id: o.id,
     owner: o.owner,
+    group: o.group ?? 'C',
+    legacyOnly: o.legacyOnly ?? false,
+    replacedBy: o.replacedBy,
     baselineOrder: o.baselineOrder,
     definition: defFactory,
     memoryOnlyAllowed: o.memoryOnlyAllowed,
     label: o.label,
     silent: o.silent ?? false,
+    heartbeatAction: o.heartbeatAction,
     quote: o.free
       ? (() => ({ toolName: o.id, maxCostMicroUsd: 0, verifiedFree: true }))
       : (o.quote ?? ((db) => quoteBackgroundTool(db, o.id))),
@@ -53,8 +61,10 @@ export function toolCapability<I extends Record<string, unknown>, O>(o: SimpleTo
       const r = await o.run(input, ctx);
       if (isCapabilityOutcome<O>(r)) return r;
       // 旧 ToolExecResult 形状适配（逐字搬迁体；失败投影由执行外壳统一做）
-      if (r.ok) return { ok: true, value: r.output as O, ...(r.seenAdditions !== undefined ? { seenAdditions: r.seenAdditions } : {}), ...(r.imageRefs !== undefined ? { imageRefs: r.imageRefs } : {}) };
-      return { ok: false, error: r.output };
+      if (r.ok) return { ok: true, value: r.output as O, ...(r.heartbeatReceipt ? { heartbeatReceipt: r.heartbeatReceipt } : {}), ...(r.seenAdditions !== undefined ? { seenAdditions: r.seenAdditions } : {}), ...(r.coverageAdditions ? { coverageAdditions: r.coverageAdditions } : {}),
+        ...(r.coverageProjection ? { coverageProjection: r.coverageProjection } : {}),
+        ...(r.imageRefs !== undefined ? { imageRefs: r.imageRefs } : {}) };
+      return { ok: false, error: r.output, ...(r.heartbeatReceipt ? { heartbeatReceipt: r.heartbeatReceipt } : {}) };
     },
     toModel: o.toModel,
   };

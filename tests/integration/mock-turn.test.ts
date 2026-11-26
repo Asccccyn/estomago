@@ -9,6 +9,8 @@ import {tempRoot, writeApprovedIdentity, readyRuntimePatch, pollUntil } from '..
 import { Host } from '../../apps/host/src/app-context.ts';
 import { buildConfig } from '../../apps/host/src/config/schema.ts';
 import { FIXTURE_TEXTS } from '../../packages/test-fixtures/src/sdk-stream.ts';
+import { MockRunner } from '../../apps/host/src/runtime/runner-mock.ts';
+import type { AgentRunner } from '../../apps/host/src/runtime/runner.ts';
 
 const root = tempRoot('estomago-int-');
 writeApprovedIdentity(root);
@@ -17,12 +19,25 @@ const config = buildConfig({
   deployment: { port: 0 },
 });
 
+// R2（2026-11-07）：mock 已并入信封管线，回合毫秒级完成——编辑类用例注入闸控
+// runner 获得确定性派发时机（不再与完成竞速）。观测口（lastResumeRequest）读 inner。
+const innerMock = new MockRunner();
+let gateOpen = true;
+let gateWaiters: Array<() => void> = [];
+const gatedRunner: AgentRunner = {
+  kind: 'mock', interruptSupport: 'claimed',
+  async run(req) {
+    if (!gateOpen) await new Promise<void>((resolve) => gateWaiters.push(resolve));
+    return innerMock.run(req);
+  },
+};
+
 let host: Host;
 let base = '';
 let token = '';
 
 test.before(async () => {
-  host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0 });
+  host = await Host.create({ stateRoot: root, config, logDir: null, bind: '127.0.0.1', port: 0, runnerOverride: gatedRunner });
   await host.start();
   base = `http://127.0.0.1:${host.port}`;
   token = fs.readFileSync(path.join(root, 'config', 'auth.token'), 'utf8').trim();
@@ -155,8 +170,7 @@ test('路由 approve：接受→新 attempt 续用原 session→turn 完成；�
   assert.ok(decision, '应产生待决票据');
   // 续跑切正常回复场景；观测 mock runner 的 resume 请求（会话连续性）
   process.env.ESTOMAGO_MOCK_SCENARIO = 'consistent';
-  const mock = (host.runnerSelection as { runner: { lastResumeRequest: string | null } }).runner;
-  mock.lastResumeRequest = null;
+  innerMock.lastResumeRequest = null;
   const approve = await api('POST', `/api/v1/route-decisions/${decision!.id}`, { choice: 'approve' });
   assert.equal(approve.status, 200);
   const data = (await approve.json()) as { resolved: string; attempt_id: string };
@@ -164,7 +178,7 @@ test('路由 approve：接受→新 attempt 续用原 session→turn 完成；�
   assert.ok(data.attempt_id, '响应携带新 attempt 供跨端跟踪');
   await pollUntil(async () => (await turnState(turn_id)).state === 'completed', 10000);
   // ① 会话续用：续跑请求 resume 首轮绑定的窗口 session（fresh_session=0；与 edit 的全新开跑相对）
-  assert.ok(mock.lastResumeRequest, 'approve 续跑 resume 原 session（工具继续态不重放）');
+  assert.ok(innerMock.lastResumeRequest, 'approve 续跑 resume 原 session（工具继续态不重放）');
   // ② 半截回答保留为真实消息；未断行尾巴与信号后迟到内容都不入库（不冒充完整回答）
   const partial = (host.db.prepare("SELECT COUNT(*) n FROM message_revisions WHERE content LIKE '%路由信号前正文%'").get() as { n: number }).n;
   assert.ok(partial >= 1, '信号前已发布正文保留');
@@ -206,17 +220,37 @@ test('幽灵房间 POST → 404 conversation_not_found（不静默建房）', as
   assert.equal(body.error.code, 'conversation_not_found');
 });
 
-test('停止：fence 当前代 → interrupted；未发布缓冲不发布', async () => {
+// 她 2026-11-15 裁定：停止只在模型请求派发前有效（生成中跑完不打断）。
+// 闸控 runner 挡在派发前 → 停止 200，回合 interrupted（未生成任何内容，SDK 锚保留）。
+test('停止（派发前）：fence 当前代 → interrupted；未发布缓冲不发布', async () => {
+  gateOpen = false;
+  let turnId = '';
+  try {
+    const submitted = await submit('停止场景', 'int-stop-1');
+    turnId = submitted.turn_id;
+    await pollUntil(async () => host.db.prepare("SELECT 1 FROM attempts WHERE turn_id = ? AND state = 'running'").get(turnId) != null, 8000);
+    const stop = await api('POST', `/api/v1/turns/${turnId}/stop`, {});
+    assert.equal(stop.status, 200);
+  } finally {
+    gateOpen = true;
+    for (const w of gateWaiters.splice(0)) w();
+  }
+  await pollUntil(async () => (await turnState(turnId)).state === 'interrupted', 8000);
+});
+
+// 她 2026-11-15 裁定：模型请求已派发（回复开始生成）→ 停止不再受理（409），本轮跑完。
+// slow 场景流式输出中即已派发（onBeforeDispatch 落 dispatch_started_at）。
+test('停止闸门：已派发生成中 → 409 generation_in_flight，回合跑完不中断', async () => {
   process.env.ESTOMAGO_MOCK_SCENARIO = 'slow';
-  const { turn_id } = await submit('停止场景', 'int-stop-1');
-  await new Promise((r) => setTimeout(r, 80));
+  const { turn_id } = await submit('闸门场景', 'int-stop-gate-1');
+  await pollUntil(async () => host.db.prepare('SELECT 1 FROM provider_requests WHERE turn_id = ? AND dispatch_started_at IS NOT NULL').get(turn_id) != null, 8000);
   const stop = await api('POST', `/api/v1/turns/${turn_id}/stop`, {});
-  assert.equal(stop.status, 200);
-  await pollUntil(async () => (await turnState(turn_id)).state === 'interrupted', 8000);
-  const reasoning = (await (await api('GET', `/api/v1/turns/${turn_id}/reasoning`)).json()) as {
-    blocks: Array<{ state: string; visibility: string }>;
-  };
-  assert.ok(reasoning.blocks.some((b) => b.state === 'interrupted'), '已展示片段保留并标 interrupted');
+  assert.equal(stop.status, 409);
+  const body = (await stop.json()) as { stopped: boolean; error: { code: string } };
+  assert.equal(body.stopped, false);
+  assert.equal(body.error.code, 'generation_in_flight');
+  delete process.env.ESTOMAGO_MOCK_SCENARIO;
+  await pollUntil(async () => (await turnState(turn_id)).state === 'completed', 8000);
 });
 
 test('鉴权：无 token 401；错 token 401；对 Origin 校验不误伤本地脚本', async () => {
@@ -295,7 +329,9 @@ test('F-J-44：坏 JSON=400、超限=413（客户端错误不再一律 500）', 
 });
 
 test('F-J-08/F-J-48：用户消息编辑修订（PUT）+ before 反向翻页', async () => {
-  // 编辑：修订+1、旧修订可查、正文更新
+  // 编辑：修订+1、旧修订可查、正文更新。
+  // R2：信封 mock 回合毫秒级完成——持闸压住派发，编辑窗口才是确定性的（放开后回合照常完成）
+  gateOpen = false;
   const post1 = await fetch(`${base}/api/v1/conversations/primary/messages`, {
     method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', origin: base, 'Idempotency-Key': `ed-${Date.now()}` },
     body: JSON.stringify({ content: '编辑前的原话' }),
@@ -315,6 +351,10 @@ test('F-J-08/F-J-48：用户消息编辑修订（PUT）+ before 反向翻页', a
     body: JSON.stringify({ content: '   ' }),
   });
   assert.equal(putBlank.status, 422);
+  // 放闸：被压住的旧输入轮因修订被 INPUT_REVISION_SUPERSEDED 如实收口（终态即可，不伪装完成）
+  gateOpen = true;
+  for (const w of gateWaiters.splice(0)) w();
+  await pollUntil(async () => ['completed', 'failed', 'interrupted'].includes((host.db.prepare("SELECT state FROM turns WHERE input_message_id=?").get(msg1.id) as { state: string }).state), 10000);
   // 反向翻页：before=该消息 sequence 之前应取到更早的消息且升序返回
   const listAll = await fetch(`${base}/api/v1/conversations/primary/messages?limit=1000`, { headers: { authorization: `Bearer ${token}` } });
   const all = ((await listAll.json()) as { messages: Array<{ sequence: number }> }).messages;

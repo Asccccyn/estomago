@@ -113,16 +113,12 @@ test('找话④：words 通道禁用=如实"不可用"，不包装成"没有找�
 test('找话⑤：M 的 round2_raw 提示不被压扁成"改问题续查"', async () => {
   const mariposa: MariposaTransport = async () => ({
     ok: true,
-    result: { ...wordsPage, continuation: { available: true, action: 'round2_raw', via: 'memory.recall.round2', continue_request_ref: 'cont_r2' } },
+    result: { ...wordsPage, continuation: { available: true, query: '看海原话', reason: 'EVIDENCE_INSUFFICIENT', action: 'round2_raw', via: 'memory.recall.round2', continue_request_ref: 'cont_r2' } },
   });
   const { tools, db } = makeTools(mariposa);
   const out = await tools.execute('memory_recall', { query: '看海原话', channel: 'words' }, CTX);
   assert.equal(out.ok, true);
-  const note = String(out.output.continuation_note ?? '');
-  assert.ok(note.includes('原话证据不足'), '如实传达 M 的证据不足提示');
-  // 找话二批后：提示指向 E 层真实入口（deep_search 参数），不再引 M 能力名
-  assert.ok(note.includes('deep_search=true'), '指明深搜的真实调用参数');
-  assert.ok(!note.startsWith('续查（同一召回会话内收窄/换角度）'), '不得压扁成普通续查提示');
+  assert.deepEqual(out.output.next, { tool:'memory_recall', arguments:{query:'看海原话',deep_search:true,refine_session_id:'rs_w',deep_reason:'EVIDENCE_INSUFFICIENT'} });
   db.close();
 });
 
@@ -174,21 +170,8 @@ test('深搜③：S13 门拒绝如实上抛（含指引），不冒充空结果'
   const out = await tools.execute('memory_recall', { query: 'x', deep_search: true, refine_session_id: 'rs_w', deep_reason: 'EVIDENCE_INSUFFICIENT' }, CTX);
   assert.equal(out.ok, false);
   assert.equal(out.output.error_code, 'RECALL_ROUND2_GATE_DENIED');
-  assert.ok(String(out.output.message ?? '').includes('门未满足'), '如实告知门核验失败');
+  assert.ok(String(out.output.message ?? '').includes('被服务端拒绝'), '如实告知门核验失败');
   db.close();
 });
 
-test('深搜④：round2_raw 提示现在指向真实入口（deep_search 参数）', async () => {
-  const mariposa: MariposaTransport = async () => ({
-    ok: true,
-    result: { ...wordsPage, continuation: { available: true, action: 'round2_raw', via: 'memory.recall.round2', continue_request_ref: 'cont_r2' } },
-  });
-  const { tools, db } = makeTools(mariposa);
-  const out = await tools.execute('memory_recall', { query: '看海原话', channel: 'words' }, CTX);
-  assert.equal(out.ok, true);
-  const note = String(out.output.continuation_note ?? '');
-  assert.ok(note.includes('deep_search=true'), '指引真实参数');
-  assert.ok(note.includes('EVIDENCE_INSUFFICIENT'));
-  assert.ok(!note.includes('暂未接入'), '不再是暂未接入');
-  db.close();
-});
+// 原深搜④与找话⑤重复的固定文案断言已合并；可执行 next 在跨仓测试原样调用。

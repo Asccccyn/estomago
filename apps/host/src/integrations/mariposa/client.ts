@@ -5,12 +5,19 @@
 //  - 错误码沿用生命周期包 §"必须表达的错误类别"；未识别 code 不吞成成功。
 import { sha256Hex } from '../../util/id.ts';
 import { validateAbsoluteIso } from '../../util/time.ts';
+import { coveredRangesForMariposa } from '../../memory-surfacing/window-coverage.ts';
+import type { CoverageRange } from '../../capabilities/contracts.ts';
 
 export type MariposaCallResult =
   | { ok: true; result: Record<string, unknown> }
-  | { ok: false; code: string; httpStatus: number };
+  // 2026-11-08 林石见裁定：错误体 detail（如 PLAN_NOT_FOUND 的 invalid_ids）
+  // 随码透传——上层薄转译要用，不再只读 code 丢详情
+  | { ok: false; code: string; httpStatus: number; detail?: Record<string, unknown> };
 
-export type MariposaTransport = (capability: string, payload: Record<string, unknown>, signal?: AbortSignal) => Promise<MariposaCallResult>;
+// G2-F07（裁定 2026-11-03）：可选信封扩展——与 arguments 平级的顶层
+// 字段（如 idempotency_key），由 M 端 HTTP 入口读取驱动通用传输幂等
+// （claim/终态重放/崩溃恢复；见 mariposa app.py 的 idempotency_key）。
+export type MariposaTransport = (capability: string, payload: Record<string, unknown>, signal?: AbortSignal, envelope?: Record<string, unknown>) => Promise<MariposaCallResult>;
 
 export type BootstrapSection = 'memory_days' | 'plans' | 'plan_content' | 'i' | 'memory_item';
 /** Text offsets are Unicode code points, not JavaScript UTF-16 indices. */
@@ -108,7 +115,10 @@ export type HoldReceipt = {
   memory_id: string;
   version: number;
   binding_ids: string[];
-  committed_at: string | null;
+  plan_ids?: string[];
+  committed_at: string;
+  /** Durable M observation after a successful commit, an upper bound on its time. */
+  commit_observed_at?: string;
 };
 
 function defaultTransport(baseUrl: string, credentialEnv: string | null): MariposaTransport {
@@ -116,7 +126,7 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
   //  /api/capability/X（无 v1 前缀）、请求 {arguments:{...}} 信封、成功响应
   //  {ok,data} 取 data、错误读 error.code。离线 fake transport 不经过此处；
   //  端到端仍待真实凭据与联调授权。
-  return async (capability, payload, signal) => {
+  return async (capability, payload, signal, envelope) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (credentialEnv) {
       const v = process.env[credentialEnv];
@@ -127,18 +137,18 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/api/capability/${capability}`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ arguments: payload }),
+      body: JSON.stringify({ arguments: payload, ...(envelope ?? {}) }),
       ...(signal ? { signal } : {}),
     });
     if (res.status >= 200 && res.status < 300) {
       const body = (await res.json().catch(() => ({}))) as {
         ok?: boolean;
         data?: Record<string, unknown>;
-        error?: { code?: string };
+        error?: { code?: string; detail?: unknown };
       };
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('RESPONSE_SHAPE_INVALID');
       if (body.ok === false) {
-        return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+        return { ok: false, code: typeof body.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status, ...errDetail(body.error) };
       }
       if (body.ok !== true || !body.data || typeof body.data !== 'object' || Array.isArray(body.data)) {
         // A 2xx with no verifiable receipt has unknown outcome. The existing
@@ -147,12 +157,17 @@ function defaultTransport(baseUrl: string, credentialEnv: string | null): Maripo
       }
       return { ok: true, result: body.data };
     }
-    const body = (await res.json().catch(() => ({}))) as { error?: { code?: string } };
+    const body = (await res.json().catch(() => ({}))) as { error?: { code?: string; detail?: unknown } };
     // D22（审计 3655d60）：5xx 不论响应体是否带结构化错误码，都按传输层状态分类为 HTTP_5xx——
     // 调用方（hold/archive）将 5xx 归"结果不明 unknown"并有界核实，不当确定失败。
     if (res.status >= 500) return { ok: false, code: `HTTP_${res.status}`, httpStatus: res.status };
-    return { ok: false, code: typeof body?.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status };
+    return { ok: false, code: typeof body?.error?.code === 'string' ? body.error.code : `HTTP_${res.status}`, httpStatus: res.status, ...errDetail(body?.error) };
   };
+}
+
+/** 错误体的 detail 仅在为 JSON 对象时透传（M 端 MariposaError.detail）；其余形状不带。 */
+function errDetail(e: { detail?: unknown } | undefined): { detail?: Record<string, unknown> } {
+  return typeof e?.detail === 'object' && e.detail !== null && !Array.isArray(e.detail) ? { detail: e.detail as Record<string, unknown> } : {};
 }
 
 /** D17（审计 3655d60）：hold 回执完整形状校验——非空 operation_id/memory_id、正整数 version、
@@ -164,12 +179,16 @@ function parseHoldReceiptShape(r0: Partial<HoldReceipt>): HoldReceipt | null {
   if (typeof r0.version !== 'number' || !Number.isSafeInteger(r0.version) || r0.version < 1) return null;
   if (typeof r0.committed_at !== 'string' || !validateAbsoluteIso(r0.committed_at).ok) return null;
   if (r0.binding_ids !== undefined && !Array.isArray(r0.binding_ids)) return null;
+  if (r0.plan_ids !== undefined && (!Array.isArray(r0.plan_ids) || r0.plan_ids.some(id => typeof id !== 'string' || !id))) return null;
+  const observed = validateAbsoluteIso(r0.commit_observed_at);
   return {
     operation_id: r0.operation_id,
     memory_id: r0.memory_id,
     version: r0.version,
     binding_ids: Array.isArray(r0.binding_ids) ? r0.binding_ids.filter((x): x is string => typeof x === 'string') : [],
+    ...(r0.plan_ids?.length ? { plan_ids: r0.plan_ids } : {}),
     committed_at: r0.committed_at,
+    ...(observed.ok && Date.parse(observed.iso) >= Date.parse(r0.committed_at) ? { commit_observed_at: observed.iso } : {}),
   };
 }
 
@@ -208,6 +227,19 @@ export class MariposaClient {
 
   /** Configuration evidence only; no network request and no credential disclosure. */
   isConfigured(): boolean { return this.configured(); }
+
+  /** R13/F16（裁定 2026-11-03）：把宿主取消信号绑定到本视图的后续调用。
+   * 取消只停止本地等待（socket 中断），不撤销已提交的远端写入——
+   * 写操作结果仍以回执/对账为准（unknown 路径同 op 同载荷恢复）。 */
+  withSignal(signal?: AbortSignal): MariposaClient {
+    if (!signal) return this;
+    const base = this.transport;
+    const bound: MariposaTransport = async (cap, payload, _ignored, envelope) => {
+      signal.throwIfAborted();
+      return base(cap, payload, signal, envelope);
+    };
+    return new MariposaClient({ transport: bound });
+  }
 
   async sourceIngest(req: IngestRequest, signal?: AbortSignal): Promise<MariposaCallResult & { ack?: IngestAck }> {
     const r = await this.transport('source.ingest', req as unknown as Record<string, unknown>, signal);
@@ -262,8 +294,12 @@ export class MariposaClient {
 
   /** 2026-10-18 她裁定：修改入口（就地改+我们的话新增/修改）——话语只存
    *  原文，说话人由服务端按出处推导。expected_version CAS 先 memoryGet 取。 */
-  async memoryGet(memoryId: string): Promise<MariposaCallResult> {
-    return this.transport('memory.get', { memory_id: memoryId });
+  async memoryGet(memoryId: string, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.get', { memory_id: memoryId }, signal);
+  }
+
+  async memoryListForHeartbeat(cursor: { memory_date: string | null; memory_id: string } | null, signal: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('memory.list', { limit: 100, ...(cursor ? { cursor } : {}) }, signal);
   }
 
   async memoryUpdate(args: Record<string, unknown>): Promise<MariposaCallResult> {
@@ -288,13 +324,13 @@ export class MariposaClient {
 
   /** episode（她批 2026-10-07"做吧"）：scope 内分页读取事件状态。
    *  蓝图 §6.3：注入/查询取少量状态+证据引用，不给全库未完故事。 */
-  async episodeList(args: { scopeId: string; states?: string[]; limit?: number; cursor?: Record<string, unknown> }): Promise<MariposaCallResult> {
+  async episodeList(args: { scopeId: string; states?: string[]; limit?: number; cursor?: Record<string, unknown> }, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('episode.list', {
       scope_id: args.scopeId,
       ...(args.states ? { states: args.states } : {}),
       ...(args.limit !== undefined ? { limit: args.limit } : {}),
       ...(args.cursor ? { cursor: args.cursor } : {}),
-    });
+    }, signal);
   }
 
   /** episode.get：按 ID 读取事件当前状态与证据引用（无正文展开）。 */
@@ -316,11 +352,13 @@ export class MariposaClient {
    *  顶层 continue_request_ref 才是新 burst 许可（M budget.try_new_burst）；
    *  顶层 conversation_scope 供 M require_owned_session 归属核验
    *  （session 绑定 scope 时省略=SCOPE_REQUIRED）。 */
-  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallRefine(args: { sessionId: string; continueRef: string; query: string; channels: string[]; eventDate?: { from: string; to: string }; conversationScope?: string; excludedSourceIds?: string[]; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.refine', {
       session_id: args.sessionId,
       continue_request_ref: args.continueRef,
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
       query_plan: {
         original_request: args.query,
         semantic_query: args.query,
@@ -330,6 +368,9 @@ export class MariposaClient {
         channels: args.channels,
         request_ref: args.continueRef,
         ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
+        // RECALL_SOURCE_BOUNDARY（2026-11-01）：来源资格排除随会话全程
+        // 一致（round2 不丢约束，C3）；M 侧 validate_query_plan 归一化。
+        ...(args.excludedSourceIds && args.excludedSourceIds.length > 0 ? { excluded_source_ids: args.excludedSourceIds } : {}),
       },
     });
   }
@@ -352,12 +393,15 @@ export class MariposaClient {
   /** 找话第二批（2026-10-10）：Round2 原文深搜——M 的独立入口
    *  （S13 门服务端核验：reason 闭集+Round1 完成回执+政策纪元一致）。
    *  operationId 由宿主派生（同 tool_call 重试同幂等身份）。 */
-  async recallRound2(args: { sessionId: string; reason: string; operationId: string; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallRound2(args: { sessionId: string; reason: string; operationId: string; conversationScope?: string; continuationToken?: string; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.round2', {
+      ...(args.continuationToken ? { continuation_token: args.continuationToken } : {}),
       session_id: args.sessionId,
       reason: args.reason,
       operation_id: args.operationId,
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
     });
   }
 
@@ -382,29 +426,44 @@ export class MariposaClient {
     if (Array.isArray(states) && states.length > 0) args.states = states;
     return this.transport('plan.list', args);
   }
-  async planGet(planId: string): Promise<MariposaCallResult> {
-    return this.transport('plan.get', { plan_id: planId });
+  async planGet(planId: string, includeLinks?: boolean): Promise<MariposaCallResult> {
+    return this.transport('plan.get', { plan_id: planId, ...(includeLinks === true ? { include_links: true } : {}) });
   }
 
   /** I/计划写入批（2026-10-10）：M 的 i.item.create/revise/restore 与
    *  plan.create/update/complete/cancel（complete/cancel 为薄实现入口）。
    *  M 侧按 jiaming 主体权限与 CAS（expected_revision/version）核验。 */
-  async iItemCreate(args: { content: string; changeReason?: string; relations?: unknown[] }): Promise<MariposaCallResult> {
+  async iItemCreate(args: { content: string; changeReason?: string; relations?: unknown[]; operationId?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { content: args.content };
     if (args.changeReason) payload.change_reason = args.changeReason;
     if (Array.isArray(args.relations)) payload.relations = args.relations;
+    // P4（四仓审计 20261106，G2-F07 同款）：operation_id 同时作信封级 idempotency_key，
+    // M 端领域事务同提交回执——提交丢响应重试同 key 重放，不重复建 I
+    if (args.operationId) {
+      payload.operation_id = args.operationId;
+      return this.transport('i.item.create', payload, undefined, { idempotency_key: args.operationId });
+    }
     return this.transport('i.item.create', payload);
   }
-  async iItemRevise(args: { itemId: string; content: string; expectedRevision: number; changeReason?: string; informedByRevision?: number; relations?: unknown[] }): Promise<MariposaCallResult> {
+  async iItemRevise(args: { itemId: string; content: string; expectedRevision: number; changeReason?: string; informedByRevision?: number; relations?: unknown[]; operationId?: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { item_id: args.itemId, content: args.content, expected_revision: args.expectedRevision };
     if (args.changeReason) payload.change_reason = args.changeReason;
     if (typeof args.informedByRevision === 'number') payload.informed_by_revision = args.informedByRevision;
     if (Array.isArray(args.relations)) payload.relations = args.relations;
+    if (args.operationId) {
+      payload.operation_id = args.operationId;
+      return this.transport('i.item.revise', payload, undefined, { idempotency_key: args.operationId });
+    }
     return this.transport('i.item.revise', payload);
   }
-  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string }): Promise<MariposaCallResult> {
-    const payload: Record<string, unknown> = { item_id: args.itemId, restore_revision: args.restoreRevision, expected_revision: args.expectedRevision };
+  async iItemRestore(args: { itemId: string; restoreRevision: number; expectedRevision: number; changeReason?: string; relations?: unknown[]; operationId?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { item_id: args.itemId, restore_revision: args.restoreRevision,
+      ...(args.relations !== undefined ? { relations: args.relations } : {}), expected_revision: args.expectedRevision };
     if (args.changeReason) payload.change_reason = args.changeReason;
+    if (args.operationId) {
+      payload.operation_id = args.operationId;
+      return this.transport('i.item.restore', payload, undefined, { idempotency_key: args.operationId });
+    }
     return this.transport('i.item.restore', payload);
   }
   async planCreate(args: { title: string; content?: string; state?: string; startsAt?: string; dueAt?: string; operationId: string }): Promise<MariposaCallResult> {
@@ -413,7 +472,10 @@ export class MariposaClient {
     if (typeof args.state === 'string') payload.state = args.state;
     if (typeof args.startsAt === 'string') payload.starts_at = args.startsAt;
     if (typeof args.dueAt === 'string') payload.due_at = args.dueAt;
-    return this.transport('plan.create', payload);
+    // G2-F07（2026-11-03）：operation_id 同时作信封级 idempotency_key——
+    // 同一工具调用的传输重试同 key（opId 由 turn+toolCall 派生），M 端
+    // 通用传输幂等承担 claim/终态重放/崩溃恢复；不是只收字段不执行
+    return this.transport('plan.create', payload, undefined, { idempotency_key: args.operationId });
   }
   async planUpdate(args: { planId: string; expectedVersion: number; title?: string; content?: string; state?: string; startsAt?: string; dueAt?: string; operationId: string }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = { plan_id: args.planId, expected_version: args.expectedVersion, operation_id: args.operationId };
@@ -422,7 +484,7 @@ export class MariposaClient {
     if (typeof args.state === 'string') payload.state = args.state;
     if (typeof args.startsAt === 'string') payload.starts_at = args.startsAt;
     if (typeof args.dueAt === 'string') payload.due_at = args.dueAt;
-    return this.transport('plan.update', payload);
+    return this.transport('plan.update', payload, undefined, { idempotency_key: args.operationId });
   }
   async planSetState(cap: 'plan.complete' | 'plan.cancel', planId: string, expectedVersion: number): Promise<MariposaCallResult> {
     return this.transport(cap, { plan_id: planId, expected_version: expectedVersion });
@@ -477,11 +539,47 @@ export class MariposaClient {
     if (args.replacement) payload.replacement = args.replacement;
     return this.transport('memory.our_words.source.correct', payload);
   }
-  async sourceBindingCorrect(args: { bindingId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
-    const payload: Record<string, unknown> = { binding_id: args.bindingId, correction_action: args.correctionAction, operation_id: args.operationId };
+  /** P1-3（Codex 审计 2026-11-16）：按会话列既有来源绑定（M source.bindings.of_conversation，
+   *  只读）——BIND 自动路径在付费判断前检查该记忆是否已有非本任务建立的绑定。 */
+  async sourceBindingsOfConversation(conversationId: string): Promise<MariposaCallResult> {
+    return this.transport('source.bindings.of_conversation', { conversation_id: conversationId });
+  }
+
+  /** 返修 P1-2（2026-11-17）：按**记忆**列全部有效来源绑定（M source.bindings.of_memory，
+   *  只读）——会话方向查询看不到跨会话的人工绑定，按记忆核对才能防自动追加。 */
+  async sourceBindingsOfMemory(memoryId: string, operationId?: string): Promise<MariposaCallResult> {
+    return this.transport('source.bindings.of_memory', { memory_id: memoryId, ...(operationId ? {operation_id:operationId} : {}) });
+  }
+
+  async sourceBindingDecision(memoryId: string, version: number, existing: string[], ranges: HoldSourceSelection[], operationId: string) {
+    return this.transport('source.binding.bind', {memory_id:memoryId, expected_memory_version:version,
+      expected_binding_ids:existing, event_source_ranges:ranges, operation_id:operationId});
+  }
+
+  async memoryCalendar(period: string, after?: string, limit?: number) {
+    return this.transport('memory.calendar', {period, ...(after ? {after} : {}), ...(limit ? {limit} : {})});
+  }
+
+  // 包4（2026-11-18）：sourceBindingBind / sourceBindingCorrect 随模型面手工绑定退役移除——
+  // 午夜后台绑定走 sourceBindingDecision（同能力批量决策形状，见上），本人管理走 M HTTP/UI。
+  /** 2026-11-03 她裁补的四个映射缺口（原只存在于 M，E 无消费者） */
+  async planMemoryCorrect(args: { linkId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { link_id: args.linkId, correction_action: args.correctionAction, operation_id: args.operationId };
     if (args.replacement) payload.replacement = args.replacement;
     if (args.note) payload.note = args.note;
-    return this.transport('source.binding.correct', payload);
+    return this.transport('plan.memory.correct', payload, undefined, { idempotency_key: args.operationId });
+  }
+  async iItemRelationsCorrect(args: { relationId: string; correctionAction: string; operationId: string; replacement?: Record<string, unknown>; note?: string }): Promise<MariposaCallResult> {
+    const payload: Record<string, unknown> = { relation_id: args.relationId, correction_action: args.correctionAction, operation_id: args.operationId };
+    if (args.replacement) payload.replacement = args.replacement;
+    if (args.note) payload.note = args.note;
+    return this.transport('i.item.relations.correct', payload, undefined, { idempotency_key: args.operationId });
+  }
+  async memoryRelationsTrace(args: { memoryId: string; maxDepth?: number }): Promise<MariposaCallResult> {
+    return this.transport('memory.relations.trace', { memory_id: args.memoryId, ...(typeof args.maxDepth === 'number' ? { max_depth: args.maxDepth } : {}) });
+  }
+  async emotionContextGet(): Promise<MariposaCallResult> {
+    return this.transport('emotion.context.get', {});
   }
   async correctionsList(args: { endpoint?: string; instanceId?: string; domain?: string; limit?: number }): Promise<MariposaCallResult> {
     const payload: Record<string, unknown> = {};
@@ -508,7 +606,8 @@ export class MariposaClient {
 
   /** G-J-01（2026-10-06）：召回启动（模型按需查询）。request_ref 由调用方
    *  派生（幂等身份）；返回含 recall_session_id/candidates/continuation。 */
-  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string } }): Promise<MariposaCallResult> {
+  async recallStart(args: { requestRef: string; query: string; conversationScope?: string; lexicalTerms?: string[]; channels?: string[]; eventDate?: { from: string; to: string }; excludedSourceIds?: string[]; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.start', {
       query_plan: {
         original_request: args.query,
@@ -523,8 +622,13 @@ export class MariposaClient {
         // 2026-10-17（她报障修复）：明确日期段直取桶池（memory_date 收窄）——
         // 语义近邻对"日期主导"查询不可靠（9.25-9.27 曾 0 命中而桶实际存在）
         ...(args.eventDate ? { explicit_constraints: { event_date: { from: args.eventDate.from, to: args.eventDate.to } } } : {}),
+        // RECALL_SOURCE_BOUNDARY（2026-11-01）：历史证据资格排除（当前
+        // 请求的 sm id）——刚发出的检索请求不能自证"以前说过"；
+        // M 侧 validate_query_plan 归一化并随 session 全程一致（C3）。
+        ...(args.excludedSourceIds && args.excludedSourceIds.length > 0 ? { excluded_source_ids: args.excludedSourceIds } : {}),
       },
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
       request_ref: args.requestRef,
     });
   }
@@ -533,12 +637,14 @@ export class MariposaClient {
    *  冻结结果集续页——只消费既有 result_set（零检索/零判断/零 COUNT）；
    *  不修改查询（refine 才改查询）。政策切换后服务端返回
    *  RECALL_POLICY_CHANGED，如实上抛。 */
-  async recallPage(args: { resultSetId: string; sessionId?: string; cursor?: string; conversationScope?: string }): Promise<MariposaCallResult> {
+  async recallPage(args: { resultSetId: string; sessionId?: string; cursor?: string; conversationScope?: string; coveredRanges?: readonly CoverageRange[] }): Promise<MariposaCallResult> {
+    const covered = coveredRangesForMariposa(args.coveredRanges ?? []);
     return this.transport('memory.recall.page', {
       result_set_id: args.resultSetId,
       ...(args.sessionId ? { session_id: args.sessionId } : {}),
       ...(args.cursor ? { cursor: args.cursor } : {}),
       ...(args.conversationScope ? { conversation_scope: args.conversationScope } : {}),
+      ...(covered.length > 0 ? { covered_ranges: covered } : {}),
     });
   }
 
@@ -547,7 +653,7 @@ export class MariposaClient {
   // 不回退聊天凭据，不借归档凭据。
 
   async surfacePrepare(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
-    return this.transport('memory.surfacing.prepare', payload, signal);
+    return this.transport('memory.surfacing.prepare', { ...payload, ...(payload.covered_ranges === undefined ? {} : { covered_ranges: coveredRangesForMariposa(payload.covered_ranges as readonly CoverageRange[]) }) }, signal);
   }
 
   async surfaceValidate(payload: Record<string, unknown>, signal?: AbortSignal): Promise<MariposaCallResult> {
@@ -564,6 +670,11 @@ export class MariposaClient {
 
   /** GLM_VOICE_UNIFICATION（02§4/§5.2，F03）：Source 附属信息补同步——晚到的
    *  观察/媒体关联追加到已归档修订（M 端幂等；正文不可变）。 */
+  /** ALB-13/R35：原文专项检索（source 层 FTS/BM25；include_ids 限定候选集——存档检索用）。 */
+  async sourceSearch(args: { query?: string; date_from?: string; date_to?: string; include_ids?: string[]; limit?: number; conversation_id?: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
+    return this.transport('source.search', { ...args, limit: args.limit ?? 10 }, signal);
+  }
+
   async attachmentsSync(args: { stream_id: string; origin_message_id: string; revision: number; kind: 'media' | 'call' | 'observation'; payload: Record<string, unknown>; operation_id: string }, signal?: AbortSignal): Promise<MariposaCallResult> {
     return this.transport('source.attachments.sync', args, signal);
   }

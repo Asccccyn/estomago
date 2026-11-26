@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { openDatabase } from '../../apps/host/src/db/connection.ts';
-import { migrate, SUPPORTED_SCHEMA_VERSION } from '../../apps/host/src/db/migrations.ts';
+import { migrate, MIGRATIONS } from '../../apps/host/src/db/migrations.ts';
 import { sha256Hex } from '../../apps/host/src/util/id.ts';
 import {tempRoot } from '../helpers.ts';
 
@@ -34,7 +34,7 @@ test('v20：v19 旧库升级后三表被 DROP（升级=fresh 同码收敛）', (
   assert.equal(has(db, 'wakeups'), true, 'v19 历史库仍有 wakeups');
   assert.equal(has(db, 'members'), true, 'v19 历史库仍有 members');
   const r = migrate(db, sha256Hex);
-  assert.deepEqual(r.applied, [20, ...Array.from({ length: (SUPPORTED_SCHEMA_VERSION ?? 20) - 20 }, (_, i) => 21 + i)], 'v20 起补齐至当前链尾');
+  assert.deepEqual(r.applied, MIGRATIONS.map((m) => m.version).filter((v) => v >= 20), 'v20 起补齐至当前链尾（R3-M01 后序列含 61 跳号，从 MIGRATIONS 派生）');
   assert.equal(has(db, 'wakeups'), false);
   assert.equal(has(db, 'effects'), false);
   assert.equal(has(db, 'members'), false);

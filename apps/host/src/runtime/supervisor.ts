@@ -1,7 +1,10 @@
+import { isCallActivityActive, isVoiceCallActive } from '../modules/voice/call-service.ts';
 import { selectionGuides } from '../context/selection-projection.ts';
 import type { RotationCause } from '../context/manual-selection.ts';
 import { supportsSurfacingTransport, surfaceTransportMessage } from '../context/contribution-transport.ts';
 import { oidoHearingAvailable as voiceHearingPort } from '../application/voice-hearing-port.ts';
+// P2 §6.6：聊天语音观察的准备预算（独立于自动浮现 300s；只等已在途的分析，超时冻结"尚未就绪"）
+const VOICE_OBSERVATION_PREP_BUDGET_MS = 4000;
 // Turn Supervisor v0.2.2（AUD-03/05/10/25 修复版）：
 //  - 会话级路由 gate：任一 pending 票据冻结整个房间的模型执行（输入仍可持久化排队）。
 //  - route signal 到达：一个控制序列内完成 持久票据→generation fence→标记 attempt→abort→
@@ -19,7 +22,10 @@ import type { MessageService } from '../messages/service.ts';
 import type { EventService } from '../events/service.ts';
 import type { IdentityService } from '../identity/service.ts';
 import type { CapabilityMatrix } from './capabilities.ts';
-import { buildSdkOptions } from './build-options.ts';
+import { subscriptionSdkOptions } from './build-options.ts';
+import { SubscriptionAccessRunner } from './subscription-access.ts';
+import { SDK_MODEL_OPTIONS } from './runtime-settings.ts';
+import { lastRequestUsageForWindow, providerInputTotal } from '../usage/attribution.ts';
 import type { RunnerSelection } from './runner.ts';
 import type { ReasoningService } from '../reasoning/service.ts';
 import type { UsageCollector } from '../usage/collector.ts';
@@ -29,7 +35,9 @@ import type { Logger } from '../observability/logging.ts';
 import { buildTimeContext, modelTimeContextText } from '../time/context.ts';
 import { contextFingerprint } from '../identity/service.ts';
 import { assembleContext } from '../context/assembler.ts';
-import { FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
+import { HOST_BOUNDARY_RULES } from '../context/fixed-runtime.ts';
+import { estimateRotationWorkingSet, systemFragmentChars } from './rotation-estimate.ts';
+import { selectionEstimateContext, selectionCutoffSequence, selectionPendingInputChars } from '../context/selection-estimate.ts';
 import { buildPreRotateReviewMessage } from '../context/review-prompts.ts';
 import { rotationPlan, selectReviewRange, rawKey, type ManifestEntry } from '../context/review-policy.ts';
 import type { RotationReviewService } from '../context/rotation-review.ts';
@@ -38,31 +46,45 @@ import { orSessionId } from './runner-openrouter.ts';
 import { dsSessionId, buildDeepSeekPayload } from './runner-deepseek.ts';
 import { buildOrPayload, withoutCacheMarkers, type OrMessage } from './or-payload.ts';
 import { planBoundaries, tailBoundaryOf, fixedSystemCount } from './cache-plan.ts';
-import { contextFingerprintJson } from './context-fingerprint.ts';
+import { contextFingerprintJson, contextFingerprintOf } from './context-fingerprint.ts';
 import type { WindowTrajectoryService } from './window-trajectory.ts';
-import { buildDeferredTools, freezeWindowTools, effectiveToolName } from './tool-discovery.ts';
+import type { HostToolSpec } from '../capabilities/contracts.ts';
+import { buildDeferredTools, buildDirectTools, freezeWindowTools, effectiveToolName, toolsetForTask } from './tool-discovery.ts';
+import { compactUnsentToolResults } from './tool-result-retention.ts';
+import { recordToolContext, taskDefinitionContext } from './tool-discovery.ts';
+import { readTurnCompletion, TURN_COMPLETION_TOOL } from './turn-completion.ts';
+import { appendCompletionToolReceipt, stageTurnCompletion, stageHeartbeatCheckpoint, markHeartbeatToolStarted } from './turn-completion-checkpoint.ts';
+import { recoverAcceptedCompletions, recoverInterruptedHeartbeats } from './completion-recovery.ts';
 import type { ModelToolBridge } from '../capabilities/model-bridge.ts';
 import type { CatalogProvider } from '../capabilities/registry.ts';
 // P01.1：叶类型正本在 capabilities/contracts.ts（宿主可信上下文随叶合同走）。
-import type { ToolExecContext, ToolExecResult, BackgroundToolQuote } from '../capabilities/contracts.ts';
+import type { ToolExecContext, ToolExecResult, BackgroundToolQuote, CoverageRange, SeenRef } from '../capabilities/contracts.ts';
 import type { OrRequestEnvelope, RunnerPurpose } from './runner.ts';
 import type { MatchedCompleteBlock } from '../../../../packages/contracts/src/sdk-events.ts';
 import { TextSegmenter } from '../output/segments.ts';
 import { sha256Hex, genId } from '../util/id.ts';
-import { bootstrapCall, completeBootstrapPages, BootstrapPagingError, globalBootstrapFailure, retryableBootstrapFailure, type BootstrapGap } from '../integrations/mariposa/bootstrap-pages.ts';
+import { WindowBootstrapMachine, BOOTSTRAP_DEADLINE_MS } from './window-bootstrap.ts';
 // P09：wishstar 依赖收窄为结构面（仅开窗临近纪念日提醒所需 upcoming）
 import { buildPaths, resolveStateRoot } from '../config/paths.ts';
 import { observeCacheUsage } from './cache-observation.ts';
-import { lastCacheEvidence } from './cache-observation.ts';
-import { renderInitialVisibleText } from './tool-initial-visible.ts';
+import { renderToolContext, resolveToolGroups } from './tool-initial-visible.ts';
+import { isMorningWakeRun, shanghaiDateOfMs } from './wake-activity.ts';
 import { ConversationActivityService } from './wake-activity.ts';
-import { keepwarmSleepState } from './keepwarm-sleep.ts';
-import { settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
+import { effectiveSleepState } from './keepwarm-sleep.ts';
+import { keepwarmDispatchGate } from './background-keepwarm-gate.ts';
+import { classifyBackgroundOutcome } from './background-outcome.ts';
+import { HEARTBEAT_BLOCKED_BEFORE_SEND, settleBackgroundDispatch, settleBackgroundRun } from './background-ledger.ts';
 import { estimateModelRequestCostMicroUsd } from './model-request-cost.ts';
-import { ContractError } from './or-contract.ts';
-import { projectRevisionBlocks, materializeEnvelope, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
-import { storedToolset } from './tool-discovery.ts';
+import { ContractError, ToolNotDispatched } from './or-contract.ts';
+import { projectRevisionBlocks, materializeEnvelope, toolResultContent, redactImageBlocksForStorage, visionSupportCached, refreshVisionSupport } from '../media/model-input.ts';
+import { planCarryImages, buildCarryFragment, countCarryImageBlocks } from '../context/carry-images.ts';
+import { CARRY_IMAGE_LIMIT, type CarrySetItem } from '../../../../packages/contracts/src/content.ts';
+import { contentForward } from '../integrations/content/client.ts';
+import { modelToolsAfterBindingRetirement, storedToolset } from './tool-discovery.ts';
+import { catalogUsesLegacySequenceMarkers, stripLegacySequenceMarker } from './legacy-sequence-markers.ts';
 import { missedCallOpportunityIsCurrent } from '../integrations/siren/missed-calls.ts';
+import { HEARTBEAT_DRAW_TOOL, type HeartbeatRuntime } from '../modules/heartbeat/runtime.ts';
+import type { HeartbeatMode, HeartbeatSpeechHold } from '../modules/heartbeat/service.ts';
 
 export type SupervisorDeps = {
   db: Db;
@@ -85,22 +107,30 @@ export type SupervisorDeps = {
   trajectory?: WindowTrajectoryService; // §2.2/§7：每窗 append-only 协议轨迹（缓存断点 G 与跨轮断言依据）
   supervisor?: TurnSupervisor; // 启动恢复重派用（recoverSchedule 静态方法无 this；实例注入后才可 enqueue）
   selections?: import('../context/manual-selection.ts').ManualSelectionService; // WP3（2026-10-08）：人工历史选集——新窗历史携带的唯一来源
+  contentClient?: import('../integrations/content/client.ts').ContentClient | null; // 相册重构 P5：携带集合读取/消费（未装配=无携带注入，如实降级不阻塞聊天）
+  archives?: import('../modules/archives/service.ts').ArchiveService; // 相册重构 P4：存档一次性通知（装配期投递）
   // P04.5：开窗资料窄端口（BootstrapPort=三个 bootstrap 读原语的结构子集）——
   // supervisor 不再从 tools 拉原始 Mariposa client；装配根绑定同一受控客户端。
   bootstrap?: import('../context/contributions.ts').BootstrapPort | null;
+  /** 宿主用户 2026-11-07 裁定：开窗运行中事项片段取数端口（app-context 装配；缺省=null 不取） */
+  episodes?: import('./window-bootstrap.ts').EpisodeListPort | null;
   // S17b 批次3：窄 catalog 接口——Supervisor 经同一 Registry 消费目录（唯一来源）
   toolCatalog?: CatalogProvider;
   // WP5（2026-10-08）：DS 昨天日结整链退役（digest 依赖已删；历史证据不篡改）
   settings?: import('./runtime-settings.ts').RuntimeSettingsService; // 2026-10-08 她裁定：聊天窗换模型/推理等级（override 持久正本）
   alerts?: import('../observability/system-alerts.ts').SystemAlertService; // EXEC_V1 WP2：缓存观测/压缩异常告警（未注入则观测静默跳过）
+  mediaTools?: Pick<import('../modules/media/service.ts').MediaToolsService, 'readImage'>;
   media?: import('../media/assets.ts').MediaService; // EXEC_V1 WP3：媒体投影/物化（未注入=纯文本路径零变化）
   // JOINT-VOICE-20261022（04）：oído 听觉可用（=配置声明：integrations.oido 已配凭据）。
   // true 时当前输入无转写语音以结构化引用进入模型（可调 oido_analyze）；未注入/false 保持阻断语义。
   oidoHearing?: boolean;
   // WAKE_KEEPWARM_V1（2026-10-22）：真实活动锚点投影（L/维护回执 CAS）。
   activity?: ConversationActivityService;
+  heartbeat?: HeartbeatRuntime;
   // WAKE_KEEPWARM_V1：后台派发让位检查（用户消息到来→心跳在安全边界让位，S-06）
   keepwarmYieldCheck?: (runId: string) => boolean;
+  /** 心跳总开关的当下值（发布前即时停止条件之一；未注入=不按开关拦）。 */
+  keepwarmEnabled?: () => boolean;
   /** WAKE_KEEPWARM_V1：可注入时钟（后台执行位重检/迟到判定用；测试虚拟推进）。 */
   now?: () => number;
   // 自动浮现（EST_MARIPOSA_AUTO_SURFACING_V1 · WP5）：装配期有界复核+冻结注入块。
@@ -109,7 +139,8 @@ export type SupervisorDeps = {
   // 策略全在 memory-surfacing/service.ts（装配实现该叶接口）。
   surfacing?: import('../context/contributions.ts').BeforeTurnContributor;
   // RR-04：观察「已用于本轮」的真实派发边界回填（observations.markDispatched）。
-  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection'> | null;
+  // RV01（复审 20261106）：+decideQualification——轮次取消/停止时终结输入修订观察资格。
+  voiceObservations?: Pick<import('../modules/oido/observations.ts').VoiceObservationService, 'snapshotsForRevision' | 'commitProjection' | 'awaitReadyForDispatch' | 'decideQualification'> | null;
 };
 
 /** JOINT-VOICE（自审修复）：听觉可用=配置声明 AND 本窗冻结工具目录含 oido_analyze。
@@ -118,16 +149,36 @@ export type SupervisorDeps = {
  *  无冻结记录的新窗=当前目录（buildHostTools 含 oido_analyze）。 */
 
 const RUNNER_GRACE_MS = 5000; // §11：不合作 runner 的强制终态宽限
-const MAX_TOOL_ROUNDS = 8; // §8.2：工具续请求有界（防循环收费；超限按错误收口，允许恢复）
+// §8.2 工具续请求上限已按宿主用户裁定撤销（2026-11-09"根治一下，调成无上限"：
+// 一回合连写多条记忆+自纠会撞 8 轮上限，6 条已提交的副作用令整轮不可重放，
+// 尾部记忆与正文回复双双丢失——保护误伤大于循环风险）。循环退出=模型自然
+// 不再发起工具调用；模型死循环时由用户停止回合兜底（abort 信号全程贯通）。
 // §3.3 有界恢复（2026-10-05 审计 P2-1）：同窗评审失败达上限后不再自动付费评审——
 // 恢复路径=评审成功换新窗（新窗计数重置）或人工处理后手动换窗；防"模型永不调用 complete"时每条消息都付费评审。
 const MAX_WINDOW_REVIEW_ATTEMPTS = 3;
-// R10（复审 2026-10-07）：bootstrap 受控截止时间——准备阶段不无限挂起
-const BOOTSTRAP_DEADLINE_MS = 8000;
 
-/** 信封驱动（OR / DS 直连共用消息轨迹与工具循环管线；SDK/mock 走 prompt 路径） */
-export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' =>
-  kind === 'openrouter' || kind === 'deepseek';
+/** 信封驱动：四类驱动共用消息轨迹与工具循环管线。R2（2026-11-07）起 mock 测试替身
+ *  同走信封（消费 OrRunRequest、driver='mock'），旧 SDK 单请求 prompt 分支已退役。 */
+export const isEnvelopeDriverKind = (kind: string): kind is 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock' =>
+  kind === 'openrouter' || kind === 'deepseek' || kind === 'claude-agent-sdk' || kind === 'mock';
+
+type ModelRequestContext = {
+  requestId: string | null;
+  entry: 'claude-agent-sdk' | 'openrouter' | 'deepseek';
+  requestedModel: string;
+  responseModel: string | null;
+  provider: string | null;
+};
+
+// Request execution facts live with the existing request projection. Policy
+// selection remains independent; upstream provider is unknown until observed.
+function recordRequestExecution(db: Db, context: ModelRequestContext, backgroundRunId?: string): void {
+  const { requestId, ...execution } = context;
+  db.prepare("UPDATE provider_requests SET payload_json=json_set(payload_json,'$.execution',json(?)) WHERE id=?")
+    .run(JSON.stringify(execution), requestId);
+  if (backgroundRunId) db.prepare('UPDATE background_runs SET driver=?,model=? WHERE id=?')
+    .run(context.entry, context.responseModel ?? context.requestedModel, backgroundRunId);
+}
 
 type ActiveRun = {
   token: { cancelled: boolean };
@@ -137,34 +188,36 @@ type ActiveRun = {
 
 export class TurnSupervisor {
   private d: SupervisorDeps;
+  /** 相册重构 P5：rotation 准备期（pending 键，窗 id 未落地）暂存携带计划；窗口落地后
+   *  迁入 window_carry_plans 表；换窗失败即弃（设置保留、不消费）。 */
+  private pendingCarryPlans = new Map<string, { plan: ReturnType<typeof planCarryImages>; conversationId: string; createdAt: string }>();
   private chains = new Map<string, Promise<unknown>>(); // F-J-31：runSerialized 链尾 Promise<T|void> 存迹，只 await 不读值
   private active = new Map<string, ActiveRun>(); // key = turnId
   // F-J-09（联合审计 2026-10-06）：工具 schema/顺序按 epoch（窗口）冻结——
   // 同窗续请求 tools 恒定（§7.1）；词表刷新只影响新窗快照。进程内缓存；
   // 重启后同窗首发的快照重建（跨重启的前缀漂移只影响缓存命中，不影
   // 响正确性——新窗在换窗时取新快照）。
-  private frozenToolsByWindow = new Map<string, import('./or-payload.ts').OrTool[]>();
   // D2（她批准 2026-10-06）：本窗 Mariposa 开窗资料快照（缓存点 B）——
   // 首个信封前取一次并冻结（§5.2/§7.1：B 只冻结这一窗的输入快照，权限
   // 撤销/关键身份更正例外走既有安全换窗）。取不到=如实降级不带 B（事件
   // 记录），不阻塞聊天、不伪造"记忆已恢复"。
-  private bootstrapByWindow = new Map<string, string>();
+  private readonly bootstrapMachine: WindowBootstrapMachine;
+
+  recoverAcceptedCompletions(finishBackground?: Parameters<typeof recoverAcceptedCompletions>[1]): void {
+    recoverAcceptedCompletions(this.d, finishBackground);
+    recoverInterruptedHeartbeats(this.d, finishBackground, (messages,sentCount,tools,maxTokens) =>
+      this.compactBlockedResults(messages,sentCount,tools,maxTokens));
+  }
 
   constructor(d: SupervisorDeps) {
     this.d = d;
+    this.bootstrapMachine = new WindowBootstrapMachine(d);
   }
 
   enqueue(turnId: string): void {
     const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
     if (!conv) return;
     this.runSerialized(conv.conversation_id, async () => {
-      if (this.cancelledBeforeRun.delete(turnId)) {
-        // RE-03：排队期已 stop——不派发，落确定终态（订阅者可见失败收口）
-        this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
-        this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
-        this.voiceTaps.delete(turnId);
-        return;
-      }
       try {
         await this.runTurn(turnId);
       } catch (err) {
@@ -176,7 +229,12 @@ export class TurnSupervisor {
         this.d.logger.error('turn_crashed', { turn_id: turnId, code: stableCode(err), raw: String((err as Error).message ?? err).slice(0,180), ...(contractCode ? { contract_code: contractCode } : {}) });
         this.failTurnQuietly(turnId, contractCode ?? 'RUNNER_CRASHED');
       } finally {
+        this.d.surfacing?.finishTurn?.(turnId);
         this.voiceTaps.delete(turnId); // RE-02：回合收口即撤抽头（完成/失败/中断同规则）
+        // An ordinary turn that drew closes here, the same way whether it completed, failed or was interrupted.
+        // Its turn is already final; a failing Moments entry must not take the serialized chain down with it.
+        try { this.d.heartbeat?.closeChatRound(turnId); }
+        catch (error) { this.d.logger.error('chat_draw_round_close_failed', { turn_id: turnId, code: stableCode(error) }); }
       }
     });
   }
@@ -211,7 +269,9 @@ export class TurnSupervisor {
    *  前序任务失败不阻断后续（fn 总被执行），返回值/异常原样传给调用方。 */
   private runSerialized<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(conversationId) ?? Promise.resolve();
-    const result = prev.then(fn, fn);
+    const run = () => this.d.runnerSelection.status === 'ok' && this.d.runnerSelection.runner instanceof SubscriptionAccessRunner
+      ? this.d.runnerSelection.runner.atSafeTurn(fn) : fn();
+    const result = prev.then(run, run);
     const next = result.catch(() => {}).finally(() => {
       if (this.chains.get(conversationId) === next) this.chains.delete(conversationId);
     });
@@ -223,34 +283,71 @@ export class TurnSupervisor {
     await Promise.all([...this.chains.values()]);
   }
 
-  /** RE-03（2026-10-24 返修）：排队取消登记——尚未获得串行链的 turn 被 stop 时记录，
-   *  链到达时不再派发（上轮反例：断开的排队电话轮在前序释放后仍派发模型） */
-  private cancelledBeforeRun = new Set<string>();
-
   /** RE-02（2026-10-24 返修）：语音正文抽头——同一生成流（publishText 的真实新增 tail，
    *  与聊天落库同源）逐段供给 voice ingress；不经公共事件总线（不进 SSE/UI 面）。
    *  取消后代际内不再供给（与 publishSegments 同一 fence）。 */
-  private voiceTaps = new Map<string, (text: string) => void>();
-  registerVoiceTap(turnId: string, onTap: (text: string) => void): () => void {
+  private voiceTaps = new Map<string, (text: string, legacySequenceMarkers: boolean) => void>();
+  registerVoiceTap(turnId: string, onTap: (text: string, legacySequenceMarkers: boolean) => void): () => void {
     this.voiceTaps.set(turnId, onTap);
     return () => { this.voiceTaps.delete(turnId); };
   }
 
-  stop(turnId: string): { stopped: boolean; generation: number | null } {
+  /** 相册重构 P4（03 §3.1）：停止会话当前仍在跑/排队的回合（用户"不吵了"）。只停
+   *  目标会话的最新未终态回合（不挂通话、不动其他会话）；返回被停回合或 null。 */
+  stopActiveForConversation(conversationId: string, exceptTurnId: string | null = null): { stoppedTurnId: string } | null {
+    // ALB-12（审计 2026-11-08）：目标是"正在继续的那次输出"——优先 running；仅当没有
+    // running 时才处理最新排队输入（旧实现按 created_at 倒序，running+排队并存时停错
+    // 排队者，正在输出的回合继续跑完）。
+    const row = this.d.db.prepare(
+      `SELECT id FROM turns WHERE conversation_id = ? AND state IN ('pending','running','route_owner_pending') AND id != ?
+       ORDER BY CASE state WHEN 'running' THEN 0 WHEN 'route_owner_pending' THEN 1 ELSE 2 END, created_at DESC, rowid DESC LIMIT 1`,
+    ).get(conversationId, exceptTurnId ?? '') as { id: string } | undefined;
+    if (!row) return null;
+    const r = this.stop(row.id);
+    return r.stopped ? { stoppedTurnId: row.id } : null;
+  }
+
+  stop(turnId: string): { stopped: boolean; generation: number | null; reason?: 'GENERATION_IN_FLIGHT' } {
     const run = this.active.get(turnId);
     if (!run) {
-      // 排队中（无活动代）：登记取消；链到达即拒发。若 turn 已完成/从未入队，无害空集。
+      // 排队中（无活动代）。F01（四仓审计 20261104，P1）：停止确认**直接持久落终态**
+      // （RE-03 同语义：CANCELLED_BEFORE_DISPATCH）——旧实现只写内存 Set，进程在队列
+      // 释放前退出则 Set 丢失，重启 recoverSchedule 按 pending 重新派发，已停止的输入
+      // 复活并产生模型/工具费用（审计隔离复现：redispatched=1、模型调用=1）。
+      // 持久终态使队列与恢复只消费数据库事实；在途链到达时 claim（只认 pending attempt）
+      // 失败即早退，无需 Set 配合。若 turn 已终态/从未入队，failTurnQuietly 的条件
+      // UPDATE 不生效，无害。
       const queued = this.d.db.prepare("SELECT 1 FROM turns WHERE id = ? AND state IN ('queued','running','pending')").get(turnId);
       if (queued) {
-        this.cancelledBeforeRun.add(turnId);
+        const conv = this.d.db.prepare('SELECT conversation_id FROM turns WHERE id = ?').get(turnId) as { conversation_id: string } | undefined;
+        if (conv) {
+          this.d.events.publish('turn.status', { conversationId: conv.conversation_id, turnId, scope: 'private', payload: { state: 'failed', reason: 'CANCELLED_BEFORE_DISPATCH' } });
+          this.failTurnQuietly(turnId, 'CANCELLED_BEFORE_DISPATCH');
+          this.abandonObservationsForTurn(turnId);
+          this.voiceTaps.delete(turnId);
+        }
         return { stopped: true, generation: null };
       }
       return { stopped: false, generation: null };
     }
+    // 她 2026-11-15 裁定：模型请求已派发（回复开始生成）后不再可打断——本轮跑完，
+    // 保住 SDK 会话锚与缓存；打断只在派发前有效（无任何产出，锚由 runner 保留）。
+    const inFlight = this.d.db.prepare(
+      "SELECT 1 FROM attempts a JOIN provider_requests pr ON pr.attempt_id = a.id WHERE a.turn_id = ? AND a.state = 'running' AND pr.dispatch_started_at IS NOT NULL LIMIT 1",
+    ).get(turnId);
+    if (inFlight) return { stopped: false, generation: run.generation, reason: 'GENERATION_IN_FLIGHT' };
     this.d.surfacing?.cancelForTurn?.(turnId);
+    this.abandonObservationsForTurn(turnId);
     run.token.cancelled = true; // generation fence：迟到 chunk 一律丢弃
     run.controller.abort(); // 同时触发 await 处的 grace 计时（§11：不合作 runner 的有界终止）
     return { stopped: true, generation: run.generation };
+  }
+
+  /** RV01（复审 20261106）：轮次停止/取消＝该轮输入修订的观察资格终结（abandoned）——
+   *  取消在途 O 分析、迟到 ID 归属同一操作、消费面挡住；正文照常无分析继续。 */
+  private abandonObservationsForTurn(turnId: string): void {
+    const row = this.d.db.prepare('SELECT t.input_message_id, m.current_revision FROM turns t JOIN messages m ON m.id = t.input_message_id WHERE t.id = ?').get(turnId) as { input_message_id: string; current_revision: number } | undefined;
+    if (row) this.d.voiceObservations?.decideQualification({ messageId: row.input_message_id, revision: row.current_revision }, 'abandoned', { turnId });
   }
 
   async stopAll(timeoutMs = 8000): Promise<void> {
@@ -271,40 +368,6 @@ export class TurnSupervisor {
       this.d.db.prepare("INSERT INTO attempts(id, turn_id, attempt_no, input_revision, state) VALUES (?,?,?,?,'pending')").run(attemptId, turnId, (row.m ?? 0) + 1, inputRevision);
     });
     return attemptId;
-  }
-
-  // AUD-10/38（§10）+ D03（审计 3655d60）：启动恢复——孤儿 running/streaming/PREPARING/无票据 waiting 全部落确定状态，不重跑模型；
-  //   active 评审无执行者（宿主重启即失主）→ failed（下次换窗按上限内有界重开评审，先做 unknown 写恢复）；
-  //   running 写操作 → hold 记 unknown（可按 operation_id 恢复探测），本地类（review_complete 等）→ failed_resolved。
-  static recoveryPass(db: Db, logger: Pick<Logger, 'warn'>): { turns: number; attempts: number; blocks: number; staleWindows: number; releasedWaiting: number; failedOwners: number; staleReviews: number; orphanEffects: number } {
-    const now = new Date().toISOString();
-    const turns = tx(db, () => Number(db.prepare("UPDATE turns SET state = 'failed', completed_at = ? WHERE state IN ('running') AND completed_at IS NULL").run(now).changes));
-    const attempts = tx(db, () => Number(db.prepare("UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_HOST_RESTART', completed_at = ? WHERE state IN ('running')").run(now).changes));
-    const blocks = tx(db, () => Number(db.prepare("UPDATE reasoning_blocks SET state = 'failed', updated_at = ? WHERE state = 'streaming'").run(now).changes));
-    // 孤儿 candidate 窗口（AUD-38）：PREPARING 悬挂 → 终态 BLOCKED
-    const staleWindows = tx(db, () => Number(db.prepare("UPDATE windows SET status = 'BLOCKED', blocked_reason = 'RECOVERY_ORPHAN_CANDIDATE', updated_at = ? WHERE status = 'PREPARING'").run(now).changes));
-    // waiting_route_gate 但房间已无 pending 票据 → 释放回 pending（可被调度恢复接管）
-    const releasedWaiting = tx(db, () => Number(db.prepare(
-      `UPDATE attempts SET state = 'pending', blocked_reason = NULL
-       WHERE state = 'waiting_route_gate'
-         AND turn_id IN (SELECT t.id FROM turns t WHERE NOT EXISTS (
-           SELECT 1 FROM route_decisions rd WHERE rd.conversation_id = t.conversation_id AND rd.state = 'pending'))`,
-    ).run().changes));
-    // route_owner_pending 但票据已消失（被并发消费后崩溃等）→ failed（防悬挂 owner）
-    const failedOwners = tx(db, () => Number(db.prepare(
-      `UPDATE attempts SET state = 'failed', blocked_reason = 'RECOVERY_ORPHAN_ROUTE_OWNER', completed_at = ?
-       WHERE state = 'route_owner_pending'
-         AND NOT EXISTS (SELECT 1 FROM route_decisions rd WHERE rd.attempt_id = attempts.id AND rd.state = 'pending')`,
-    ).run(now).changes));
-    // D03a：无执行者的 active 评审 → failed（重启后没有任何协程会收口它；不伪造完成凭证）
-    const staleReviews = tx(db, () => Number(db.prepare("UPDATE rotation_reviews SET status = 'failed', updated_at = ? WHERE status = 'active'").run(now).changes));
-    // D03b：崩溃遗留 running 写操作——hold 类结果不明（可按 operation_id 探测恢复），本地类可判未提交
-    const orphanEffects = tx(db, () => Number(db.prepare(
-      "UPDATE tool_side_effects SET state = CASE WHEN kind = 'hold' THEN 'unknown' ELSE 'failed_resolved' END, updated_at = ? WHERE state = 'running'",
-    ).run(now).changes));
-    const total = turns + attempts + blocks + staleWindows + releasedWaiting + failedOwners + staleReviews + orphanEffects;
-    if (total > 0) logger.warn('recovery_pass', { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects, code: 'RECOVERY_HOST_RESTART' });
-    return { turns, attempts, blocks, staleWindows, releasedWaiting, failedOwners, staleReviews, orphanEffects };
   }
 
   /**
@@ -332,26 +395,30 @@ export class TurnSupervisor {
    */
   async runBackgroundTurn(opts: {
     kind: 'autonomous' | 'keepwarm';
+    /** RB2-03（复审 20261106 第二轮）：用户返回让位资格——与预算同一控制类型分类
+     *  （keepwarm/free_activity 让位；预约唤醒按普通回合规则继续）。缺省=仅 keepwarm。 */
+    yieldEligible?: boolean;
     runId: string;
     conversationId: string;
     payload: Record<string, unknown>;
     isCancelRequested: () => boolean;
     registerAbort: (c: AbortController) => void;
     recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number; capabilityName?: string }) => { allowed: boolean; dispatchId: string; code?: string };
-    maxModelRequests: number;
+    maxModelRequests: number; // 后台回合模型请求预算（§B 账本），与已撤销的 §8.2 工具轮上限无关
   }): Promise<{ outcome: 'completed' | 'noop' | 'failed' | 'unknown'; result_code?: string; detail?: string }> {
     const d = this.d;
     const dv = this.drv();
     if (dv === null) return { outcome: 'failed', result_code: 'SDK_BACKGROUND_POLICY_UNVERIFIED', detail: '当前驱动不支持后台回合（SDK 背景策略未验证）' };
     if (opts.kind === 'keepwarm') {
-      const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
+      const earlyResumedDate = d.activity?.get(opts.conversationId)?.early_resumed_date;
+      const sleep = effectiveSleepState(d.config.background.keepwarm.sleep_window, this.nowMs(), earlyResumedDate);
       if (sleep.blocked) return { outcome: 'noop', result_code: sleep.code!, detail: '睡眠时段暂停心跳——排队任务零派发' };
     }
     // —— 执行位内重检（03：领取≠执行；开关/任务 revision/取消只在 15 秒 tick 查一次不算数）——
-    const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null } | undefined;
+    const runRow = d.db.prepare('SELECT state, task_id, task_revision, input_activity_revision, input_user_appearance_revision FROM background_runs WHERE id = ?').get(opts.runId) as { state: string; task_id: string; task_revision: number; input_activity_revision: number | null; input_user_appearance_revision: number | null } | undefined;
     if (!runRow) return { outcome: 'failed', result_code: 'RUN_NOT_FOUND' };
     if (runRow.state !== 'claimed' && runRow.state !== 'running') return { outcome: 'noop', result_code: `CANCELLED_${runRow.state.toUpperCase()}` };
-    const taskRow = d.db.prepare('SELECT revision, enabled, control_reason, payload_json FROM background_tasks WHERE id = ?').get(runRow.task_id) as { revision: number; enabled: number; control_reason: string | null; payload_json: string } | undefined;
+    const taskRow = d.db.prepare('SELECT revision, enabled, control_reason, payload_json, origin FROM background_tasks WHERE id = ?').get(runRow.task_id) as { revision: number; enabled: number; control_reason: string | null; payload_json: string; origin: string } | undefined;
     if (!taskRow) return { outcome: 'failed', result_code: 'TASK_NOT_FOUND' };
     if (taskRow.revision !== runRow.task_revision) return { outcome: 'noop', result_code: 'TASK_SUPERSEDED', detail: '任务已修改/取消——旧 revision 零派发' };
     if (taskRow.enabled !== 1) return { outcome: 'noop', result_code: 'TASK_CANCELLED', detail: '任务已禁用——零派发' };
@@ -366,48 +433,93 @@ export class TurnSupervisor {
     if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_BEFORE_START' };
 
     const nowIso0 = new Date().toISOString();
+    const controller = new AbortController();
+    opts.registerAbort(controller);
     let capturedActivityRevision: number | null = null;
-    // —— 心跳专属派发门（05 §派发门与异常；执行位内重算，不用 tick 快照）——
+    let heartbeatMode: HeartbeatMode | null = null;
+    let heartbeatHostText: string | null = null;
+    const morningWake = opts.kind === 'keepwarm' && isMorningWakeRun(d.db, opts.runId);
+    // —— 心跳专属派发门（R4a 迁 runtime/background-keepwarm-gate.ts；05 §派发门与异常）——
     if (opts.kind === 'keepwarm') {
-      const act = d.activity?.get(opts.conversationId) ?? null;
-      if (!act || act.last_real_activity_at === null) return { outcome: 'noop', result_code: 'KEEPWARM_NO_REAL_ACTIVITY' };
-      if (runRow.input_activity_revision !== null && runRow.input_activity_revision !== act.activity_revision) {
-        return { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '新真实消息已使本维护候选失效' };
-      }
-      const target = d.activity!.nextKeepwarmTarget({ conversationId: opts.conversationId, windowId: window.id });
-      if (target.scheduled && this.nowMs() < target.dueAtMs) return { outcome: 'noop', result_code: 'KEEPWARM_SUPERSEDED', detail: '目标已被新证据推后' };
-      const evidence = lastCacheEvidence(d.db, window.id);
-      if (evidence === null) return { outcome: 'noop', result_code: 'KEEPWARM_CACHE_EVIDENCE_UNKNOWN', detail: '无已确认缓存证据——保温不冷启动' };
-      if (this.nowMs() - Date.parse(evidence.startedAt) >= 3_600_000) return { outcome: 'noop', result_code: 'KEEPWARM_CACHE_ALREADY_COLD', detail: '缓存估计已冷——不补冷写' };
-      // 05 satisfied_by_request：同机会内一次真实请求已实际刷新有效缓存（自主唤醒/普通
-      // 聊天）→ 本维护机会记技术回执进入后继，不重复付费。
-      const prq = d.db.prepare('SELECT purpose FROM provider_requests WHERE id = ?').get(evidence.requestId) as { purpose: string } | undefined;
-      const L = Date.parse(act.last_real_activity_at);
-      const refreshedByOther = prq && prq.purpose !== 'cache_keepalive' && Date.parse(evidence.startedAt) >= L && (this.nowMs() - Date.parse(evidence.startedAt)) < 3_000_000;
-      if (refreshedByOther) {
-        d.activity!.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision: act.activity_revision, requestId: evidence.requestId, windowId: window.id, dispatchStartedAtIso: evidence.startedAt });
-        return { outcome: 'noop', result_code: 'satisfied_by_request', detail: '同机会缓存已由真实请求刷新——本维护机会不重复付费' };
-      }
-      capturedActivityRevision = act.activity_revision;
+      const gate = keepwarmDispatchGate({
+        db: d.db, activity: d.activity, conversationId: opts.conversationId, windowId: window.id,
+        inputActivityRevision: runRow.input_activity_revision, nowMs: this.nowMs(),
+        sleepWindow: d.config.background.keepwarm.sleep_window,
+        morningWake: morningWake ? { sleepWindow: d.config.background.keepwarm.sleep_window } : null,
+      });
+      if (gate.decision === 'noop') return { outcome: 'noop', result_code: gate.resultCode, detail: gate.detail };
+      capturedActivityRevision = gate.capturedActivityRevision;
     }
+    const capturedUserAppearanceRevision = runRow.input_user_appearance_revision ?? (d.activity?.get(opts.conversationId)?.user_appearance_revision ?? 0);
+    const yieldEligible = opts.yieldEligible ?? opts.kind === 'keepwarm';
+    const yieldRequested = () => Boolean(yieldEligible && d.keepwarmYieldCheck?.(opts.runId))
+      // Telephone turns and foreground chat advance user_appearance_revision;
+      // yield on live call or newly accepted owner message without self-yielding on own chat_send_text.
+      || (opts.kind === 'keepwarm' && (
+        (d.activity?.get(opts.conversationId)?.user_appearance_revision ?? 0) !== capturedUserAppearanceRevision
+        || isCallActivityActive(d.db, opts.conversationId, this.nowMs())
+      ));
+    if (opts.kind === 'keepwarm' && yieldRequested()) return { outcome: 'noop', result_code: 'KEEPWARM_YIELDED' };
+    const baseTools = this.windowTools(window.id);
+    const toolset = storedToolset(d.db, window.id)!;
 
     // —— 尾部 host 事件（05/04：宿主事件口径，不伪造用户消息；一次冻结，续轮不重生成）——
     let tailNote: string;
     if (opts.kind === 'keepwarm') {
-      tailNote = 'Cache keepalive (host event, not Qiaosheng). Reply 1 by default; you may choose otherwise and use available tools.';
+      if (!d.heartbeat) return { outcome: 'failed', result_code: 'HEARTBEAT_RUNTIME_UNAVAILABLE' };
+      const offered = toolset.protocol === 'deferred' || toolset.onDemand ? toolset.catalog : toolset.tools;
+      const supportsDraw = offered.some(tool => tool.function.name === HEARTBEAT_DRAW_TOOL)
+        && offered.some(tool => tool.function.name === TURN_COMPLETION_TOOL);
+      if (!supportsDraw && !morningWake && d.heartbeat.status(opts.conversationId).mode !== 'exhausted_keepwarm') {
+        return { outcome: 'failed', result_code: 'HEARTBEAT_TOOL_WINDOW_UNAVAILABLE' };
+      }
+      const prepared = await d.heartbeat.begin({
+        runId: opts.runId, conversationId: opts.conversationId, signal: controller.signal, now: () => new Date(this.nowMs()),
+        morningWake, allowDraw: supportsDraw,
+      });
+      if (controller.signal.aborted || opts.isCancelRequested()) {
+        return { outcome: 'noop', result_code: 'HEARTBEAT_CANCELLED_BEFORE_DISPATCH' };
+      }
+      if (yieldRequested()) return { outcome: 'noop', result_code: 'KEEPWARM_YIELDED' };
+      heartbeatMode = prepared.mode;
+      if (!morningWake && (heartbeatMode === 'unprepared' || heartbeatMode === 'source_unavailable')) {
+        return { outcome: 'failed', result_code: heartbeatMode === 'unprepared'
+          ? 'HEARTBEAT_DECK_UNPREPARED' : 'HEARTBEAT_SOURCE_UNAVAILABLE',
+          ...(prepared.unavailable?.length ? { detail: '读取不可用的来源：' + prepared.unavailable.join(',') } : {}) };
+      }
+      heartbeatHostText = tailNote = prepared.hostText;
     } else {
       const mergedPayload = { ...JSON.parse(taskRow.payload_json) as Record<string, unknown>, ...opts.payload };
       const note = typeof mergedPayload.note === 'string' ? mergedPayload.note : '';
-      const scheduledFor = typeof mergedPayload.scheduled_for === 'string' ? mergedPayload.scheduled_for : null;
+      // C07（四仓审计 20261106）：包装时间从**冻结 task/run** 一次取得并原样携带——
+      // 设置时间（task 创建）、原 due（task.scheduled_at，相对时间首受理解析的冻结值）、
+      // 实际递交；续轮/恢复复用同一冻结文本，迟到只标注不重算 due、不改 system。
+      const taskFrozen = d.db.prepare('SELECT created_at, scheduled_at, created_by_actor_id FROM background_tasks WHERE id = ?').get(runRow.task_id) as { created_at: string; scheduled_at: string; created_by_actor_id: string } | undefined;
+      const scheduledFor = taskFrozen?.scheduled_at ?? (typeof mergedPayload.scheduled_for === 'string' ? mergedPayload.scheduled_for : null);
       if (note.length > 8000) return { outcome: 'failed', result_code: 'WAKE_NOTE_INVALID', detail: '预约正文超长——报错不静默截断' };
-      const lines = ['[Host self-wake; not a message from Qiaosheng]'];
+      const historicalDelegate = taskRow.origin === 'self_schedule' && taskFrozen && taskFrozen.created_by_actor_id !== 'jiaming';
+      const lines = [historicalDelegate ? '[Host historical delegated wake; not a new message or a self-created appointment]' : '[Host self-wake; not a message from Qiaosheng]'];
+      if (historicalDelegate) lines.push(`Set by: ${taskFrozen.created_by_actor_id}`);
+      if (taskFrozen) lines.push(`Set at: ${taskFrozen.created_at}`);
       if (scheduledFor) lines.push(`Scheduled for: ${scheduledFor}`);
-      lines.push(`Your note: ${note.length > 0 ? note : '(none)'}`);
-      if (scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs()) {
-        lines.push(`Actual delivery: ${nowIso0} (late)`);
-      }
-      lines.push('You may use available tools and choose whether to speak.');
+      lines.push(`${historicalDelegate ? 'Original recorded note' : 'Your note'}: ${note.length > 0 ? note : '(none)'}`);
+      lines.push(`Actual delivery: ${nowIso0}${scheduledFor && Date.parse(scheduledFor) + 60_000 < this.nowMs() ? ' (late)' : ''}`);
       tailNote = lines.join('\n');
+    }
+    // Keepwarm must send exactly the same tools as chat for this window.
+    const scopedTaskTools = toolset.protocol === 'direct' && opts.kind === 'autonomous'
+      && toolset.groups[TURN_COMPLETION_TOOL] === 'T';
+    const tools = scopedTaskTools ? modelToolsAfterBindingRetirement(toolsetForTask(toolset, TURN_COMPLETION_TOOL)) : baseTools;
+    if (opts.kind === 'autonomous' && taskRow.origin === 'self_schedule') {
+      tailNote += '\n结束前，把要告诉乔乔的话发到聊天；有后续就自行安排。';
+    }
+    const taskDefinition = (heartbeatMode === 'exhausted_keepwarm' && !morningWake) || (toolset.protocol === 'direct' && !scopedTaskTools)
+      ? null
+      : taskDefinitionContext(toolset, 'background_complete', opts.runId);
+    if (taskDefinition) tailNote += '\n' + taskDefinition;
+    if (heartbeatMode === 'draw' && toolset.protocol === 'deferred') {
+      const drawDefinition = taskDefinitionContext(toolset, HEARTBEAT_DRAW_TOOL, opts.runId);
+      if (drawDefinition) tailNote += '\n' + drawDefinition;
     }
     // 请求基底=轨迹正本（system 段沿用窗冻结前缀）；host 事件尾部追加一次。
     const baseMessages: OrMessage[] = [
@@ -419,7 +531,7 @@ export class TurnSupervisor {
       model: dv.model,
       sessionId: dv.sessionId(opts.conversationId),
       messages: baseMessages,
-      tools: this.windowTools(window.id), // 同一冻结快照（06 §4：心跳不换 tools）
+      tools,
       boundaries,
       maxTokens: dv.maxTokens, // 主会话有效输出上限（09：不用旧 128 封锁）
       reasoning: dv.reasoning,
@@ -439,98 +551,57 @@ export class TurnSupervisor {
     d.db.prepare("UPDATE turns SET state='running',started_at=? WHERE id=?").run(nowIso,turnId);
     d.db.prepare('UPDATE background_runs SET state = \'running\', window_id = ?, driver = ?, model = ?, turn_id = ?, input_activity_revision = COALESCE(?, input_activity_revision), updated_at = ? WHERE id = ?').run(window.id, dv.kind, dv.model, turnId, capturedActivityRevision, nowIso, opts.runId);
 
-    const controller = new AbortController();
-    opts.registerAbort(controller);
     let toolCallsObserved = 0;
     const loop = await this.runOrToolLoop({
       envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
       conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, controller,
-      onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => {
+      onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext) => {
         // 后台回合不发聊天气泡/思考流；用量照常入账（§05.6：后台无 handleEvent，此处最小挂钩）
         if (ev.kind === 'usage') {
-          d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: dv.model, source: ev.source, completeness: ev.completeness });
+          d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? dv.model, source: ev.source, completeness: ev.completeness });
         }
       },
       // B12 修复：已见视野从轨迹 manifest 派生（不再恒空）；续轮工具片段由循环内部并入
       seenSequence: traj.manifest && traj.manifest.length > 0 ? Math.max(...traj.manifest.map((m) => m.seq)) : 0,
       seenMessages: (traj.manifest ?? []).map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })),
       previousEnvelope,
+      scopedTaskTools,
+      heartbeatMode: heartbeatMode ?? undefined,
+      heartbeatHostText: heartbeatHostText ?? undefined,
+      morningWake,
       background: {
         runId: opts.runId, kind: opts.kind, maxModelRequests: opts.maxModelRequests, recordDispatch: opts.recordDispatch, isCancelRequested: opts.isCancelRequested,
         observeToolCall: () => { toolCallsObserved++; },
-        yieldRequested: opts.kind === 'keepwarm' && d.keepwarmYieldCheck ? () => d.keepwarmYieldCheck!(opts.runId) : null,
+        yieldRequested,
       },
     });
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.
     settleBackgroundRun(d.db, opts.runId);
-    const sleepPaused = loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') === true;
-    const finishedState = loop.result.outcome === 'completed' || sleepPaused ? 'completed' : 'failed';
-    d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run(finishedState, new Date().toISOString(), turnId);
-    d.db.prepare('UPDATE attempts SET state=?,blocked_reason=?,completed_at=? WHERE id=?').run(finishedState,loop.result.errorCode,new Date().toISOString(),attemptId);
-
-    // —— 结果分类（06 §2：一条执行路径、两种提交结果；判定按整轮不是最后字符串）——
-    const finalText = loop.finalMessages !== null && loop.finalMessages.length > 0
-      ? (() => { const last = loop.finalMessages![loop.finalMessages!.length - 1]!; const c = last.content; return typeof c === 'string' ? c : Array.isArray(c) ? c.filter((b) => (b as { type?: string }).type === 'text').map((b) => (b as { text?: string }).text ?? '').join('') : ''; })()
-      : '';
-    const publishedCount = Number((d.db.prepare("SELECT COUNT(*) n FROM messages WHERE turn_id = ? AND speaker = 'assistant'").get(turnId) as { n: number }).n);
-    const pureAck = loop.result.outcome === 'completed' && !loop.result.errorCode && toolCallsObserved === 0 && publishedCount === 0 && finalText.trim() === '1';
-    d.db.prepare('UPDATE background_runs SET tool_calls_observed = ?, published_message_count = ?, retention = ?, updated_at = ? WHERE id = ?')
-      .run(toolCallsObserved, publishedCount, pureAck ? 'ephemeral_ack' : 'retained', new Date().toISOString(), opts.runId);
-
-    if (!pureAck) {
-      // SUBSTANTIVE（06 §2）：提交最初事件与整个必要协议链——工具调用/结果/续轮/最终文本；
-      // 正式发言已在工具执行时入消息库与归档 outbox；已见清单并入轨迹 manifest（B11/C-09）。
-      if (d.trajectory && loop.finalMessages !== null) {
-        const baseManifest = traj.manifest ?? [];
-        const publishedEntries = (d.db.prepare("SELECT id, sequence FROM messages WHERE turn_id = ? AND speaker = 'assistant' ORDER BY sequence").all(turnId) as Array<{ id: string; sequence: number }>)
-          .map((m) => ({ id: m.id, revision: 1, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
-        d.trajectory.replace(window.id, loop.finalMessages, tailBoundaryOf(loop.lastSentMessages ?? loop.finalMessages), [...baseManifest, ...publishedEntries, ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
-        d.db.prepare('UPDATE background_runs SET trajectory_committed_at = ?, updated_at = ? WHERE id = ?').run(new Date().toISOString(), new Date().toISOString(), opts.runId);
-      }
-      if (loop.result.outcome !== 'completed') {
-        if (loop.result.errorCode === 'TOOL_EXECUTION_OUTCOME_UNKNOWN') return { outcome: 'unknown', result_code: loop.result.errorCode };
-        if (opts.isCancelRequested()) return { outcome: 'completed', result_code: 'CANCELLED_MID_RUN' };
-        if (sleepPaused) return { outcome: 'noop', result_code: loop.result.errorCode! };
-        return { outcome: 'failed', result_code: loop.result.errorCode ?? (opts.kind === 'keepwarm' ? 'KEEPWARM_FAILED' : 'AUTONOMOUS_FAILED') };
-      }
-
-      const runCode = d.db.prepare('SELECT result_code FROM background_runs WHERE id = ?').get(opts.runId) as { result_code: string | null };
-      const completion = runCode?.result_code?.startsWith('complete:') === true ? runCode.result_code.slice('complete:'.length) : null;
-      // 非1最终文本默认内部可见（E03）：保存于轨迹与运行详情，不自动推送；发言走既有发送工具。
-      return { outcome: completion === 'noop' ? 'noop' : 'completed', result_code: loop.result.errorCode?.startsWith('KEEPWARM_SLEEP_') ? loop.result.errorCode : completion === 'noop' ? 'complete:noop' : 'complete:done' };
-    }
-
-    // PURE_ACK（05）：完整成功且整轮恰为"1"——维护回执；不进聊天原文与主轨迹。
-    // A retained tool result from an earlier interrupted run may have entered
-    // the model in this pure maintenance request. Promote only that source
-    // evidence; the canonical messages and cache boundary remain untouched.
-    if (d.trajectory && loop.toolSeen.length > 0) {
-      d.trajectory.replaceManifest(window.id, [...(traj.manifest ?? []), ...loop.toolSeen, ...loop.pendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }))]);
-    }
-    if (opts.kind === 'keepwarm' && d.activity && capturedActivityRevision !== null) {
-      // 缓存证据以本 run 的模型请求 usage 为准（K-13：无证据=回执可记、缓存 unknown，
-      // 不写"保温成功"，同活动版本不重试）
-      const evRow = d.db.prepare(
-        `SELECT pr.id AS rid, pr.dispatch_started_at AS started FROM provider_requests pr
-         JOIN background_dispatches bd ON bd.provider_request_id = pr.id
-         JOIN usage_observations u ON u.request_id = pr.id AND u.completeness = 'complete'
-         WHERE bd.run_id = ? AND pr.outcome = 'completed' AND (u.cache_read_input_tokens > 0 OR u.cache_creation_input_tokens > 0)
-         ORDER BY pr.dispatch_started_at DESC LIMIT 1`,
-      ).get(opts.runId) as { rid: string; started: string } | undefined;
-      if (evRow) {
-        d.activity.noteMaintenanceReceipt({ conversationId: opts.conversationId, capturedActivityRevision: capturedActivityRevision, requestId: evRow.rid, windowId: window.id, dispatchStartedAtIso: evRow.started });
-      }
-    }
-    return { outcome: 'completed', result_code: opts.kind === 'keepwarm' ? 'ack_only' : 'complete:noop' };
+    // 结果分类与收尾（R4a 迁 runtime/background-outcome.ts）
+    return classifyBackgroundOutcome({ db: d.db, trajectory: d.trajectory, activity: d.activity, kind: opts.kind, runId: opts.runId, conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, baseManifest: traj.manifest ?? [], capturedActivityRevision, toolCallsObserved, isCancelRequested: opts.isCancelRequested, loop,
+      ...(d.heartbeat && heartbeatMode && heartbeatHostText !== null
+        ? { heartbeat: { runtime: d.heartbeat, mode: heartbeatMode, hostText: heartbeatHostText } } : {}),
+      // Self-wake appointments and free activity keep their own contract; the
+      // sleep window and rest only stop the heartbeat.
+      speechHold: opts.kind === 'keepwarm' ? this.heartbeatSpeechHold(opts.conversationId, opts.runId) : null,
+    });
   }
 
   /** EXEC_V1 §03.6（WP3/M2）：消息修订 → 内部投影块（asset_image 引用，不含 Base64）。
    *  无媒体服务/纯文本消息=原样单文本块——旧路径零变化。 */
-  /** 消息→OR 块投影。opts.seq：给模型看的消息序号前缀 [N]（勾选式
-   *  话语录入用，2026-10-18 她裁定）——前缀只存在于模型面信封，发布/
-   *  存库/前端内容不带。 */
-  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; textOnly?: boolean; seq?: number; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
-    const withSeq = (t: string): string => (opts.seq !== undefined ? `[${opts.seq}]\n${t}` : t);
+  /** 消息→OR 块投影。包4无seq整改（2026-11-18，裁定7）：模型面信封不再携带消息
+   *  序号前缀 [N]——普通输入、开窗选集与滚窗追赶一律自然正文；真实 sequence 仍存
+   *  于 messages/轨迹 manifest（后台定位正本），工具定位改锚点/游标（见包4报告）。 */
+  /** 本轮的通话事实随实发轨迹保留。指明双向电话的输入和回复交付，内容与长度仍由回合决定。 */
+  private static readonly LIVE_CALL_FACT = '这一轮是你和宿主用户在通电话。接下来是她刚在这通电话里对你说的话，经语音识别转写。你要对她说的话直接放在这轮回复里，她会在同一通电话里实时听到。聊天语音条是另一个动作，通话回复无需另外发送语音条。回复正文只放你要说的话，略去宿主的内部标记。';
+
+  private isCallTurnMessage(messageId: string | null | undefined): boolean {
+    if (!messageId) return false;
+    const row = this.d.db.prepare('SELECT client_message_id FROM messages WHERE id=?').get(messageId) as { client_message_id: string | null } | undefined;
+    return (row?.client_message_id ?? '').startsWith('voice:');
+  }
+
+  private revisionBlocks(messageId: string | null | undefined, revision: number | null | undefined, fallbackText: string, opts: { isCurrentInput?: boolean; hearingAvailable?: boolean; transcriptContinuationAvailable?: boolean } = {}): { blocks: Array<Record<string, unknown>>; hasImage: boolean; hasVoiceWithoutTranscript: boolean; observations: import('../modules/oido/observations.ts').VoiceObservationSnapshot[] } {
     if (this.d.media && messageId && revision) {
       try {
         const proj = this.d.media.projectForRevision(messageId, revision);
@@ -552,18 +623,79 @@ export class TurnSupervisor {
         }
         const extra = hearing || voiceDurations ? { ...opts, ...(hearing ? { hearing } : {}), ...(voiceDurations ? { voiceDurations } : {}) } : opts;
         const snapshots = this.d.voiceObservations?.snapshotsForRevision(messageId, revision, opts.isCurrentInput === true) ?? [];
-        const r = projectRevisionBlocks(withSeq(text), proj.attachments, { ...extra, voiceObservations: new Map(snapshots.map(snapshot => [snapshot.assetId, snapshot.text])) });
+        const r = projectRevisionBlocks(text, proj.attachments, { ...extra, voiceObservations: new Map(snapshots.map(snapshot => [snapshot.assetId, snapshot.text])) });
         const observations = snapshots.filter(snapshot => r.blocks.some(block => block.type === 'text' && block.text === snapshot.text));
         return { blocks: r.blocks as unknown as Array<Record<string, unknown>>, hasImage: r.hasImage, hasVoiceWithoutTranscript: r.hasVoiceWithoutTranscript, observations };
       } catch { /* 修订缺失→退纯文本（装载面已有披露机制），不中断回合 */ }
     }
-    return { blocks: [{ type: 'text', text: withSeq(fallbackText) }], hasImage: false, hasVoiceWithoutTranscript: false, observations: [] };
+    return { blocks: [{ type: 'text', text: fallbackText }], hasImage: false, hasVoiceWithoutTranscript: false, observations: [] };
+  }
+
+  private confirmModelRequest(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
+    'conversationId' | 'windowId' | 'turnId' | 'attemptId' | 'purpose' | 'background' | 'heartbeatMode' | 'heartbeatHostText' | 'morningWake' | 'flushChatTail'>, input: {
+    requestId: string; round: number; attemptIndex: number; generationId: string | null;
+    messages: OrMessage[]; confirmedSeen: ManifestEntry[];
+  }): void {
+    const { db, trajectory, heartbeat } = this.d;
+    const { requestId, round, attemptIndex, generationId, messages, confirmedSeen } = input;
+    const markSent = () => db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
+      .run(new Date().toISOString(), attemptIndex, generationId ?? null, requestId);
+    const { turnId } = o;
+    if (round === 0 && (o.heartbeatMode === 'draw' || o.heartbeatMode === 'exhausted_keepwarm' || o.morningWake) && turnId && trajectory) {
+      // Confirm the first invitation and its recoverable prefix together, before publication.
+      tx(db, () => {
+        markSent();
+        stageHeartbeatCheckpoint(db, {
+          requestId, windowId: o.windowId, turnId, attemptId: o.attemptId,
+          batch: { tail: [], sentMessages: messages }, confirmedSeen, heartbeatHostText: o.heartbeatHostText,
+        });
+      });
+    } else {
+      markSent();
+    }
+    if (o.background?.kind === 'keepwarm') {
+      const runInfo = db.prepare('SELECT occurrence_key, first_dispatch_started_at FROM background_runs WHERE id = ?')
+        .get(o.background.runId) as { occurrence_key: string; first_dispatch_started_at: string | null } | undefined;
+      const reqInfo = db.prepare('SELECT dispatch_started_at, sent_at FROM provider_requests WHERE id = ?')
+        .get(requestId) as { dispatch_started_at: string | null; sent_at: string | null } | undefined;
+      const startedAtIso = reqInfo?.dispatch_started_at ?? runInfo?.first_dispatch_started_at ?? reqInfo?.sent_at ?? new Date(this.nowMs()).toISOString();
+      const morningDate = o.morningWake && runInfo?.occurrence_key ? runInfo.occurrence_key.split(':').at(-1) ?? null : null;
+      this.d.activity?.noteEffectiveHeartbeat({
+        conversationId: o.conversationId,
+        runId: o.background.runId,
+        windowId: o.windowId,
+        startedAtIso,
+        isMorningWake: Boolean(o.morningWake),
+        morningBusinessDate: morningDate,
+      });
+      heartbeat?.observeDelivery(o.background.runId, requestId, messages, o.heartbeatHostText);
+    } else if (o.purpose === 'chat' && o.turnId) {
+      heartbeat?.observeChatDelivery(o.turnId, requestId, messages, o.flushChatTail);
+    }
+  }
+
+  private observeHeartbeatBatch(o: Pick<Parameters<TurnSupervisor['runOrToolLoop']>[0],
+    'conversationId' | 'windowId' | 'turnId' | 'attemptId' | 'background' | 'heartbeatMode' | 'heartbeatHostText' | 'morningWake'>,
+    requestId: string, tail: OrMessage[], sentMessages: OrMessage[], confirmedSeen: ManifestEntry[]): void {
+    const { db, heartbeat, trajectory } = this.d;
+    const { turnId, attemptId, conversationId, windowId, background } = o;
+    if (background?.kind !== 'keepwarm' || !turnId || !trajectory || !heartbeat) return;
+    const speechHold = this.heartbeatSpeechHold(conversationId, background.runId);
+    const eventRows = tx(db, () => {
+      stageHeartbeatCheckpoint(db, { requestId, windowId, turnId, attemptId,
+        batch: { tail, sentMessages }, confirmedSeen, heartbeatHostText: o.heartbeatHostText });
+      return (o.heartbeatMode === 'draw' || o.morningWake) && !speechHold
+        ? heartbeat.publishRepliesInTx({ runId: background.runId, turnId, attemptId, conversationId }, tail, sentMessages.length).eventRows
+        : [];
+    });
+    heartbeat.dispatchEvents(eventRows);
   }
 
   // —— OR 工具循环（§8.2）：assistant tool_calls → 宿主完整验证后串行执行 → tool 结果续请求 →
   // 同样经 P2（previousPayload append-only 断言）。发布/记账语义由调用方 onEvent 决定。
   // 返回 finalMessages：成功回合的完整轨迹消息（含最终 assistant 文本），供轨迹持久化（§2.2）。
   private async runOrToolLoop(o: {
+    forceOpenRouter?: boolean;
     envelope: OrRequestEnvelope;
     purpose: RunnerPurpose;
     activeReviewId: string | null;
@@ -572,7 +704,7 @@ export class TurnSupervisor {
     turnId: string | null; // 确认后恢复的容量评审可无所属 turn——与运行时实况对齐（F-J-31）
     attemptId: string;
     controller: AbortController;
-    onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }) => void;
+    onEvent: (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext) => void;
     seenSequence: number;
     seenMessages: ReadonlyArray<{ id: string; revision: number }>; // D13：实际装载视野（引用核对）
     liveSeenAdditions?: ReadonlyArray<{ id: string; revision: number }>; // 流式期间新发布的已见消息（活引用，exec 时取当下值）
@@ -583,6 +715,12 @@ export class TurnSupervisor {
     inputBinding?: { messageId: string; revision: number };
     voiceObservations?: readonly import('../modules/oido/observations.ts').VoiceObservationSnapshot[];
     previousEnvelope?: OrRequestEnvelope | null; // 跨轮 previousPayload（轨迹正本；首轮后由循环内部接管）
+    scopedTaskTools?: boolean; // 任务专属工具与主会话使用不同工具前缀。
+    completionManifest?: readonly ManifestEntry[];
+    heartbeatMode?: HeartbeatMode;
+    heartbeatHostText?: string;
+    morningWake?: boolean;
+    flushChatTail?: () => void;
     /** EXEC_V1 §04.10（WP4 收尾）+ WAKE_KEEPWARM_V1：后台回合——每次 transport 前过
      *  背景准入（取消/请求数/预算预占），逐尝试记 dispatch 账；心跳与自主共用同一
      *  完整工具循环（2026-10-22：KEEPWARM_TOOL_REFUSED 已删除）。 */
@@ -592,20 +730,69 @@ export class TurnSupervisor {
       maxModelRequests: number;
       recordDispatch: (info: { logicalActionKey: string; attemptNo: number; dispatchKind: 'model' | 'tool'; reservedCostMicroUsd: number; capabilityName?: string }) => { allowed: boolean; dispatchId: string; code?: string };
       isCancelRequested: () => boolean;
-      observeToolCall?: () => void; // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为
+      observeToolCall?: () => void;
       yieldRequested?: (() => boolean) | null; // S-06：心跳安全边界让位（用户消息到来）
     };
   }): Promise<{ result: import('./runner.ts').RunnerRunResult; finalMessages: OrMessage[] | null; lastSentMessages: OrMessage[] | null; toolSeen: ManifestEntry[]; pendingToolSeen: ManifestEntry[] }> {
     const d = this.d;
     const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner; // runOrToolLoop 仅在信封驱动分支被调用（rotateIfNeeded 的 !dv 早退与 runTurn 的 blocked 早退均已判别 ok）
-    let envelope = o.envelope;
+    const driverKind = this.drv()?.kind;
+    const sdkDriver = driverKind === 'claude-agent-sdk';
+    if (sdkDriver) {
+      const messages = this.restoreSdkSelectionHistory(o.windowId, o.envelope.messages);
+      if (messages !== o.envelope.messages) o = { ...o, envelope: { ...o.envelope, messages } };
+    }
+    if (sdkDriver && !o.forceOpenRouter && !(runner instanceof SubscriptionAccessRunner && runner.useOpenRouter())) {
+      const sdk = await this.runSdkToolLoop(o);
+      if (runner instanceof SubscriptionAccessRunner && runner.canFallback(sdk.result)) {
+        if (!o.scopedTaskTools) runner.invalidateSdkSession(o.windowId);
+        return this.runOrToolLoop({ ...o, forceOpenRouter: true });
+      }
+      return sdk;
+    }
+    const transportKind = driverKind === 'deepseek' ? 'deepseek' : 'openrouter';
+    const orFallback = sdkDriver;
+    if (orFallback && runner instanceof SubscriptionAccessRunner && !o.scopedTaskTools) runner.invalidateSdkSession(o.windowId);
+    const requestToolset = storedToolset(d.db, o.windowId);
+    const usesScopedToolProfiles = requestToolset?.protocol === 'direct';
+    const orModel = d.settings?.effectiveOrModel(d.config.openrouter.model) ?? d.config.openrouter.model;
+    let envelope = orFallback ? { ...o.envelope, model: orModel!, sessionId: orSessionId(o.conversationId, orModel!, null),
+      reasoning: d.settings?.effectiveReasoning(d.config.openrouter.reasoning) ?? d.config.openrouter.reasoning } : o.envelope;
+    if (orFallback && d.media && hasAssetImage(envelope.messages) && !await this.modelSupportsImages(envelope.model, transportKind)) {
+      const code = 'MODEL_VISION_UNAVAILABLE';
+      d.logger.warn('media_gate_blocked', { turn_id: o.turnId, code, model: envelope.model, has_image: true });
+      return { result: { outcome: 'error', errorClassified: null, errorCode: code, errorMessage: code, sessionId: null, requestId: null },
+        finalMessages: null, lastSentMessages: null, toolSeen: [], pendingToolSeen: [] };
+    }
     let prevEnvelope: OrRequestEnvelope | null = o.previousEnvelope ?? null;
+    // Signed reasoning belongs to the model/provider that produced it. Keep the
+    // canonical ledger intact, but omit those opaque fields from earlier model
+    // intervals in the outgoing API projection. Current tool-loop reasoning stays.
+    const priorInterval = transportKind === 'openrouter' ? d.db.prepare(`
+      SELECT json_array_length(p.payload_json,'$.messages') AS message_count
+      FROM provider_requests p JOIN turns t ON t.id=p.turn_id
+      LEFT JOIN background_runs b ON b.id=p.background_run_id
+      WHERE p.window_id=? AND p.outcome='completed'
+        AND (json_extract(p.payload_json,'$.model') IS NOT ?
+          OR (json_extract(p.payload_json,'$.execution.entry') IS NOT NULL AND json_extract(p.payload_json,'$.execution.entry') <> ?))
+        AND ((p.purpose='chat' AND t.state='completed') OR (b.retention='retained' AND b.trajectory_committed_at IS NOT NULL))
+      ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1
+    `).get(o.windowId, envelope.model, transportKind) as { message_count: number } | undefined : undefined;
+    const projectModelHistory = <T extends { messages: OrMessage[] }>(value: T): T => {
+      if (!priorInterval) return value;
+      const projected = structuredClone(value);
+      for (const message of projected.messages.slice(0, priorInterval.message_count + 1)) delete message.reasoning_details;
+      return projected;
+    };
+
     // WP4（§7.2，2026-10-08）：conversation_read 的片段级已见——工具结果
     // **实际进入下一模型请求**（onDispatch 首发即真实发出）才从 pending 转
     // active；仅取到工具结果而未发送（停止/轮次耗尽/错误收口）不算已见（O05）
     const toolSeenActive: ManifestEntry[] = [];
     let roundPendingSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
+    const pendingSeenByTool = new Map<string, ManifestEntry[]>();
     let dispatched = false;
+    let toolsExecuted = false; // C03：本轮是否真实执行过工具（含已应答）——失败保留协议的判据
     let lastSentMessages: OrMessage[] | null = null;
     let pendingCalls: MatchedCompleteBlock[] = [];
     let pendingAssistantIndex = -1;
@@ -616,16 +803,25 @@ export class TurnSupervisor {
       const answered = new Set(envelope.messages.slice(pendingAssistantIndex + 1).filter(m => m.role === 'tool').map(m => m.tool_call_id));
       return [...envelope.messages, ...pendingCalls.filter(t => !answered.has(t.tool_id)).map(t => ({ role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: code, executed: false }) }) as OrMessage)];
     };
-    const failedLoop = (result: import('./runner.ts').RunnerRunResult, code = 'EXECUTION_NOT_STARTED') => ({
-      result, finalMessages: o.background && dispatched ? incompleteProtocol(code) : null,
-      lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen,
-    });
+    const failedLoop = (result: import('./runner.ts').RunnerRunResult, code = 'EXECUTION_NOT_STARTED') => {
+      // C03（四仓审计 20261106）：**执行过工具**的失败轮保留已实际发出的协议前缀与工具
+      // 结果（未应答 pending 补显式未执行记录）——下一普通输入从此前缀接续，不丢工具
+      // 往来、不重放副作用。无工具的失败轮不保留（消息重试语义：失败输入不进正史）。
+      const finalMessages = dispatched && (toolsExecuted || pendingCalls.length > 0) ? incompleteProtocol(code) : null;
+      if (finalMessages) {
+        const compacted = this.compactBlockedResults(finalMessages, lastSentMessages?.length ?? 0, envelope.tools, envelope.maxTokens);
+        const unseen = new Set([...compacted].flatMap(id => pendingSeenByTool.get(id) ?? []));
+        roundPendingSeen = roundPendingSeen.filter(entry => !unseen.has(entry));
+      }
+      return { result, finalMessages, lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
+    };
     const seqOf = (id: string): number => {
       const row = d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(id) as { sequence: number } | undefined;
       return row?.sequence ?? 0;
     };
     try {
-    for (let round = 0; round <= MAX_TOOL_ROUNDS; round++) {
+    for (let round = 0; ; round++) {
+      const batchRanges: CoverageRange[] = [];
       pendingCalls = [];
       pendingAssistantIndex = -1;
       const captured: MatchedCompleteBlock[] = [];
@@ -633,46 +829,58 @@ export class TurnSupervisor {
       const prqId0 = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
       const prqId = prqId0;
       let lastPrqId = prqId0; // D07：终态/计量归属**最后一次实际派发**的请求行（重试不再覆盖首发）
-      const wrapped: typeof o.onEvent = (ev, reqCtx) => {
-        void reqCtx;
+      const requestContext: ModelRequestContext = { requestId: prqId, entry: transportKind,
+        requestedModel: envelope.model, responseModel: null, provider: transportKind === 'deepseek' ? 'deepseek' : null };
+      const onResponseMetadata = (info: { model: string | null; provider: string | null }): void => {
+        requestContext.responseModel = info.model;
+        requestContext.provider = info.provider ?? requestContext.provider;
+        recordRequestExecution(d.db, requestContext, o.background?.runId);
+      };
+      const wrapped: typeof o.onEvent = (ev) => {
         if (ev.kind === 'complete_message') {
           for (const b of ev.matched) if (b.block_type === 'tool_use') captured.push(b);
           const text = ev.matched.find((b) => b.block_type === 'text' && typeof b.text === 'string');
           if (text) lastText = text.text;
         }
-        o.onEvent(ev, { requestId: lastPrqId }); // 审计 F12：usage 按实际请求身份去重（不互覆）
+        // F10 同 SDK 车道口径：观测到实际模型/切换模型时刷新本请求上下文——requested 不冒充实际。
+        // message_start 携带的是请求侧模型（OR runner 即 envelope.model），仅在尚无更精确
+        // 观测（onResponseMetadata/切换通知）时采纳，不倒退覆盖。
+        if (ev.kind === 'message_start' && typeof ev.model === 'string' && ev.model && requestContext.responseModel === null) requestContext.responseModel = ev.model;
+        else if (ev.kind === 'system_notice' && ev.subtype === 'model_refusal_fallback' && typeof ev.fallback_model === 'string' && ev.fallback_model) requestContext.responseModel = ev.fallback_model;
+        o.onEvent(ev, requestContext); // 审计 F12：usage 按实际请求身份去重（不互覆）
       };
       // F17：发送前保存不可变协议投影（重放/对账依据；受保护字段，不进普通日志）
       // cost-20261018：每轮落上下文指纹（只含 hash/位置/计数）；同轮重试行共用同一指纹
-      const fingerprintJson = contextFingerprintJson({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
+      const fingerprint = contextFingerprintOf({ round, tools: envelope.tools, messages: envelope.messages, boundaries: envelope.boundaries });
+      const fingerprintJson = JSON.stringify(fingerprint);
+      const manifestJson = this.requestManifest(o.windowId, envelope.messages, [
+        ...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive, ...roundPendingSeen,
+        ...(o.inputBinding ? [{ id: o.inputBinding.messageId, revision: o.inputBinding.revision }] : []),
+      ]);
       d.db.prepare('INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
+        .run(prqId, o.windowId, o.attemptId, o.turnId, o.purpose, manifestJson, JSON.stringify(envelope), fingerprintJson, new Date().toISOString());
+      recordToolContext(d.db,prqId,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
       // F03 尾：工具续请求每轮重算容量硬门（§4.2：连续工具回合每次重算，预留不是无限消费额度）
-      const capacityNow = d.config.windows.model_context_capacity;
-      if (capacityNow !== null) {
-        const estNow = this.estimateRequestTokens(envelope.messages, o.windowId); // 裁定②：与 rotateIfNeeded 同一口径
-        const planNow = rotationPlan({
-          currentInput: estNow, nextInput: estNow, capacity: capacityNow,
-          maxOutput: this.drv()?.maxTokens ?? d.config.openrouter.max_output_tokens,
-          toolReserve: d.config.windows.tool_input_reserve_tokens, reviewReserve: d.config.windows.review_reserve_tokens,
-          safety: d.config.windows.safety_reserve_tokens, soft: d.config.windows.soft_limit_tokens,
-        });
-        if (planNow.action === 'blocked_hard') {
-          d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
-          return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${estNow} 超过安全上界 ${planNow.safeInput}`, sessionId: null, requestId: null });
-        }
+      const capacityNow = this.requestCapacity(envelope.messages, envelope.tools, envelope.maxTokens);
+      if (capacityNow?.plan.action === 'blocked_hard') {
+        d.db.prepare('UPDATE provider_requests SET outcome = ? WHERE id = ?').run('CAPACITY_BLOCKED_HARD', prqId);
+        return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'CAPACITY_BLOCKED_HARD_TOOL_ROUND', errorMessage: `工具续请求输入估计 ${capacityNow.estimate} 超过安全上界 ${capacityNow.plan.safeInput}`, sessionId: null, requestId: null });
       }
       const payloadJson = JSON.stringify(envelope);
       // EXEC_V1 §03.6.2（WP3/M2）：发送边界物化——内部 asset_image 引用在此从不可变文件确定性
       // 物化为 Provider 图像块；envelope/payload_json（内部证据）与轨迹保持引用形态（Base64 不入库）。
       // previousPayload 同规则物化——append-only 断言在物化形态上执行（新旧同语义规则，不忽略失败）。
-      const matEnv = (env: typeof envelope): typeof envelope => (d.media ? materializeEnvelope(env, d.media) as typeof envelope : env);
-      const runEnvelope = matEnv(envelope);
+      const imageRunScope = o.background?.runId ?? (o.purpose === 'chat' ? o.turnId ?? undefined : undefined);
+      const matEnv = async (env: typeof envelope): Promise<typeof envelope> => projectModelHistory(d.media ? await materializeEnvelope(env, d.media, id =>
+        d.heartbeat?.readImage(id, o.conversationId, imageRunScope)
+        ?? (d.mediaTools ? d.mediaTools.readImage(id, o.conversationId) : d.media!.readContentResolvingMaster(id, { modelImage: true }))) as typeof envelope : env);
+      const runEnvelope = await matEnv(envelope);
       // EXEC_V1 02 §4.2（WP2）：transport 前准入落账——每次尝试（含 429/网络/首字节前重试）
       // 单独记 dispatch_started_at 与 wire_v1 最终发包体；sent_at 仍=真实发送确认（响应头已到）。
       // 旧 onDispatch 建行的路径废除：发出但无响应的尝试不再从派发账本消失。
       const onBeforeDispatch = async (info: { attemptIndex: number; payloadWireJson: string }): Promise<void> => {
         if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+        if (runner instanceof SubscriptionAccessRunner) runner.invalidateSdkSession(o.windowId);
         if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
         if (o.inputBinding) {
           const current = d.messages.getMessage(o.inputBinding.messageId);
@@ -680,15 +888,15 @@ export class TurnSupervisor {
         }
         // §04.10.1：driver 内每次重试都过同一准入（取消后不再发；请求数/预算逐笔预占）
         if (o.background) {
-          if (o.background.isCancelRequested()) throw new Error('DISPATCH_ADMISSION_REJECTED:CANCELLED');
+          if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+          // Check newly accepted foreground activity before today's new rest can consume a zero-send morning.
+          if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
           if (o.background.kind === 'keepwarm') {
-            const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
-            if (sleep.blocked) throw new ContractError(sleep.code!);
+            const hold = this.keepwarmHold(o.conversationId, o.background.runId);
+            if (hold) throw new ContractError(hold);
           }
-          // S-06：心跳让位——用户消息已到来且本维护轮尚未开始新的付费请求（安全边界）
-          if (o.background.yieldRequested?.()) throw new Error('DISPATCH_ADMISSION_REJECTED:KEEPWARM_YIELDED');
           const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id = ?').get(o.background.runId) as { model_requests_started: number } | undefined)?.model_requests_started ?? 0;
-          if (started >= o.background.maxModelRequests) throw new Error('DISPATCH_ADMISSION_REJECTED:BACKGROUND_BUDGET_EXHAUSTED');
+          if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
         }
         const nowIso = new Date().toISOString();
         if (o.attemptId) d.surfacing?.markDispatched?.(o.attemptId);
@@ -707,9 +915,14 @@ export class TurnSupervisor {
         } else {
           const retryId = `prq_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
           d.db.prepare("INSERT INTO provider_requests(id, window_id, attempt_id, turn_id, purpose, seen_manifest_json, payload_json, context_fingerprint_json, payload_wire_json, payload_format, created_at, dispatch_started_at, attempt_no, background_run_id, background_dispatch_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, JSON.stringify(envelope.messages.map((m) => ({ role: m.role }))), payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
+            .run(retryId, o.windowId, o.attemptId, o.turnId, o.purpose, manifestJson, payloadJson, fingerprintJson, redactImageBlocksForStorage(info.payloadWireJson).redactedJson, 'wire_v1', nowIso, nowIso, info.attemptIndex, o.background?.runId ?? null, bgDispatchId);
           lastPrqId = retryId; // D07：后续终态/usage 记在真正承载本次发送的行
         }
+        recordToolContext(d.db,lastPrqId!,o.windowId,envelope.messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
+        requestContext.requestId = lastPrqId;
+        requestContext.responseModel = null;
+        requestContext.provider = transportKind === 'deepseek' ? 'deepseek' : null;
+        recordRequestExecution(d.db, requestContext, o.background?.runId);
         if (round === 0 && info.attemptIndex === 0 && o.inputBinding) {
           if (o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, prqId, o.voiceObservations ?? []);
           const message = d.messages.getMessage(o.inputBinding.messageId);
@@ -722,6 +935,17 @@ export class TurnSupervisor {
             payload:{message:{...message,mutation_status:{can_edit:false,can_withdraw:false,reason:'MESSAGE_ALREADY_DISPATCHED'}}},
           });
         }
+        if (o.background?.kind === 'keepwarm') {
+          await this.admitHeartbeatDispatch(o.background.runId, lastPrqId, bgDispatchId, envelope.messages, o.controller.signal, () => {
+            if (o.controller.signal.aborted || o.background!.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+            if (o.background!.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
+            const hold = this.keepwarmHold(o.conversationId, o.background!.runId);
+            if (hold) throw new ContractError(hold);
+            if (d.keepwarmEnabled?.() === false) throw new ContractError('KEEPWARM_DISABLED');
+          });
+        } else if (o.purpose === 'chat' && o.turnId) {
+          await this.admitChatDispatch(o.turnId, lastPrqId, envelope.messages, o.controller.signal);
+        }
         dispatched = true;
         lastSentMessages = envelope.messages;
       };
@@ -729,10 +953,6 @@ export class TurnSupervisor {
       let roundGenerationId: string | null = null; // R07：本轮工具事件的 provider 生成标识
       const onDispatch = (info: { attemptIndex: number; generationId: string | null }): void => {
         roundGenerationId = info.generationId ?? roundGenerationId;
-        // F17 语义保留：2xx=真实发送确认。行已在准入时建好——这里只确认 sent_at 与 generation。
-        const nowIso = new Date().toISOString();
-        d.db.prepare('UPDATE provider_requests SET sent_at = COALESCE(sent_at, ?), attempt_no = COALESCE(attempt_no, ?), generation_id = COALESCE(?, generation_id) WHERE id = ?')
-          .run(nowIso, info.attemptIndex, info.generationId ?? null, lastPrqId);
         if (!roundSeenPromoted) {
           roundSeenPromoted = true;
           // WP4（O05）：请求真实发出=上一轮工具结果（含 conversation_read 片段）
@@ -740,29 +960,44 @@ export class TurnSupervisor {
           if (roundPendingSeen.length > 0) {
             toolSeenActive.push(...roundPendingSeen);
             roundPendingSeen = [];
+            pendingSeenByTool.clear();
           }
         }
+        this.confirmModelRequest(o, { requestId: lastPrqId, round, ...info, messages: envelope.messages, confirmedSeen: toolSeenActive });
       };
-      let previousPayload = prevEnvelope ? this.buildPayloadFrom(matEnv(prevEnvelope)) : null;
+      let previousPayload = prevEnvelope && (!orFallback || round > 0) ? this.buildPayloadFrom(await matEnv(prevEnvelope), transportKind) : null;
+      // Compare against the last real wire request with the same native tool
+      // profile. A scoped task has a different tool list, not a different history.
       // 整合（2026-10-24）：轨迹本轮重建（懒初始化）=合法新基线——旧 wire 锚不再可比，豁免
-      if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn) {
+      if (round === 0 && prevEnvelope && !o.trajectoryRebuiltThisTurn && !orFallback) {
         const anchor = d.db.prepare(`SELECT p.payload_wire_json FROM provider_requests p
           JOIN turns t ON t.id=p.turn_id LEFT JOIN background_runs b ON b.id=p.background_run_id
           WHERE p.window_id=? AND p.outcome='completed' AND p.sent_at IS NOT NULL
             AND p.payload_format='wire_v1' AND p.payload_wire_json IS NOT NULL
+            AND (? = 0 OR json_extract(p.context_fingerprint_json, '$.tools_hash') = ?)
             AND ((p.purpose='chat' AND t.state='completed') OR (b.retention='retained' AND b.trajectory_committed_at IS NOT NULL))
-          ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1`).get(o.windowId) as { payload_wire_json: string } | undefined;
+          ORDER BY p.dispatch_started_at DESC,p.rowid DESC LIMIT 1`).get(o.windowId, Number(usesScopedToolProfiles), fingerprint.tools_hash) as { payload_wire_json: string } | undefined;
         if (anchor) {
           const recorded = JSON.parse(anchor.payload_wire_json) as Record<string, unknown>;
           if (this.drv()?.kind === 'deepseek' && legacyDsReasoningGap(recorded, this.buildPayloadFrom(runEnvelope))) {
             return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW', errorMessage: '旧窗口缺少已发送的模型协议内容，请通过正常手动换窗选择原文后继续；已有历史保持不变。', sessionId: null, requestId: null });
           }
           // Stored redacted image payloads cannot be compared as exact wire bytes.
-          if (!hasStorageImageRedaction(recorded)) previousPayload = recorded;
+          if (!hasStorageImageRedaction(recorded)) {
+            previousPayload = projectModelHistory(recorded as Record<string, unknown> & { messages: OrMessage[] });
+            // Only the retired binding surface may disappear from a legacy
+            // provider tool list. The recorded wire and message prefix stay intact.
+            if (Array.isArray(previousPayload.tools)) previousPayload = {
+              ...previousPayload, tools: modelToolsAfterBindingRetirement(previousPayload.tools),
+            };
+          }
         }
       }
       const result = await Promise.race([
-        runner.run({ driver: this.drv()?.kind ?? 'openrouter', purpose: o.purpose, envelope: runEnvelope, previousPayload, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch }),
+        runner.run({ driver: this.drv()?.kind === 'mock' ? 'mock' : transportKind, purpose: o.purpose, envelope: runEnvelope, previousPayload, allowToolAppend: requestToolset?.onDemand, abortController: o.controller, onEvent: wrapped, onDispatch, onBeforeDispatch, onResponseMetadata,
+          // R2：mock 的会话连续性（AUD-03 断言）经信封请求的可选 SDK 形状字段传递；
+          // route-edit 的 fresh_session 重跑不 resume 旧 session（同旧 prompt 车道语义）
+          ...(this.drv()?.kind === 'mock' && o.attemptId ? { resumeSessionId: (d.db.prepare('SELECT CASE WHEN a.fresh_session = 1 THEN NULL ELSE w.sdk_session_id END AS s FROM attempts a JOIN windows w ON w.id = a.window_id WHERE a.id = ?').get(o.attemptId) as { s: string | null } | undefined)?.s ?? null } : {}) }),
         new Promise<never>((_, reject) => {
           const arm = (): void => { setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.(); };
           if (o.controller.signal.aborted) arm();
@@ -779,6 +1014,9 @@ export class TurnSupervisor {
         d.db.prepare("UPDATE provider_requests SET outcome = 'SUPERSEDED_BY_RETRY' WHERE id = ? AND outcome IS NULL").run(prqId);
       }
       if (result.outcome !== 'completed') return failedLoop(result);
+      if (o.heartbeatMode && o.background?.isCancelRequested()) {
+        return failedLoop({ ...result, outcome: 'interrupted', errorCode: 'STOPPED_DURING_RESPONSE' });
+      }
       if (captured.length === 0) {
         // 最终回复：assistant 文本入轨迹（协议历史的正式组成，供后续轮次与缓存前缀）。
         // F18：lastSentMessages=本轮实际发送的消息（不含未发送的最终 assistant）——G 候选边界
@@ -812,8 +1050,8 @@ export class TurnSupervisor {
       pendingAssistantIndex = envelope.messages.length;
       pendingCalls = captured;
       envelope = { ...envelope, messages: [...envelope.messages, assistantContinue as unknown as OrMessage] };
-      if (round === MAX_TOOL_ROUNDS) {
-        return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: `工具续请求超过 ${MAX_TOOL_ROUNDS} 轮（有界防循环）`, sessionId: null, requestId: result.requestId }, 'TOOL_ROUNDS_EXCEEDED');
+      if (lastSentMessages) {
+        this.observeHeartbeatBatch(o, lastPrqId, envelope.messages.slice(pendingAssistantIndex), lastSentMessages, toolSeenActive);
       }
       // §3.3：同一批里既有 hold 又有 complete → 先执行并核实全部写操作，最后才验证 complete（不并发抢先放行）。
       // 审计 F04：complete 按模型原始顺序排在 hold 前 was 错误签发路径；此处强制重排。
@@ -821,29 +1059,43 @@ export class TurnSupervisor {
         ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) !== 'context_review_complete'),
         ...captured.filter((t) => effectiveToolName(t.tool_name ?? '', t.text) === 'context_review_complete'),
       ];
+      if (o.flushChatTail && o.turnId && d.heartbeat?.cards.getDeliveredDraw(o.turnId) &&
+          !ordered.some(t => effectiveToolName(t.tool_name ?? '', t.text) === TURN_COMPLETION_TOOL)) {
+        o.flushChatTail();
+      }
       for (const t of ordered) {
+        if (readTurnCompletion(d.db, o.attemptId, o.turnId) &&
+            effectiveToolName(t.tool_name ?? '', t.text) !== TURN_COMPLETION_TOOL) {
+          envelope = { ...envelope, messages: [...envelope.messages, {
+            role: 'tool', tool_call_id: t.tool_id, content: JSON.stringify({ error_code: 'TURN_COMPLETED', executed: false }),
+          } as OrMessage] };
+          continue;
+        }
         // 审计 F07：停止后不再分派同批后续工具（内容 fence 不足以拦新副作用——executor 真的会写 Mariposa）
         if (o.controller.signal.aborted) {
           return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'STOPPED_DURING_TOOLS', errorMessage: '停止：同批后续工具不再分派（已发起写单独保留待核）', sessionId: null, requestId: result.requestId }, 'EXECUTION_CANCELLED');
         }
         if (o.background?.kind === 'keepwarm') {
-          const sleep = keepwarmSleepState(d.config.background.keepwarm.sleep_window, this.nowMs());
-          if (sleep.blocked) return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: sleep.code, errorMessage: '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, sleep.code!);
+          const hold = this.keepwarmHold(o.conversationId, o.background.runId);
+          if (hold) return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: hold, errorMessage: hold === 'KEEPWARM_RESTING'
+            ? '乔乔已休息：心跳不再继续，已完成动作保留' : '睡眠时段暂停心跳——后续工具不再派发，已完成动作保留', sessionId: null, requestId: result.requestId }, hold);
         }
         // S-06：心跳安全边界让位——用户消息到来后不再分派后续工具；已执行工具的
         // 真实回执与已发布消息保留（不抹掉、不重复写），本轮按让位收口（completed：
         // 协议链在 provider_requests 留证，后续发布经 catchup 进入下一轮）。
         if (o.background?.yieldRequested?.()) {
-          return failedLoop({ outcome: 'completed', errorClassified: null, errorCode: 'KEEPWARM_YIELDED_DURING_TOOLS', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, 'KEEPWARM_YIELDED');
+          return failedLoop({ outcome: 'interrupted', errorClassified: null, errorCode: 'KEEPWARM_YIELDED', errorMessage: '用户消息到来：心跳让位——已执行工具回执保留，后续工具不再分派', sessionId: null, requestId: result.requestId }, 'KEEPWARM_YIELDED');
         }
         // PURE_ACK 判定：任意工具调用（含 catalog/define/只读）→实质行为（06 §2，按调用计数）
         if (o.background?.observeToolCall) o.background.observeToolCall();
+        toolsExecuted = true;
         // The real executor validates the frozen definition and arguments before
         // quoting/admitting its effective handler. Never quote tool_invoke as free.
         const toolDispatch: { current: { id: string; quote: BackgroundToolQuote } | null } = { current: null };
+        const argumentSource = t.text ?? undefined;
         let args: Record<string, unknown>;
         try {
-          args = JSON.parse(t.text ?? '{}') as Record<string, unknown>;
+          args = JSON.parse(argumentSource ?? '{}') as Record<string, unknown>;
         } catch {
           args = {}; // 参数非法：执行器会因缺必填字段拒绝（§8.2 输入完整校验后才执行）
         }
@@ -851,17 +1103,33 @@ export class TurnSupervisor {
         try {
         exec = await d.tools!.execute(t.tool_name ?? '', args, {
           signal: o.controller.signal, // 语音分支：取消传播（电话/检索取消链）
+          argumentSource,
+          remainingResultBytes: () => this.remainingToolResultBytes(envelope.messages, envelope.tools, envelope.maxTokens),
           roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId, purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
           activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
           seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeenActive.map(m => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision }))], // D13：含流式期间新发布的已见原话；WP4：含已实际进入请求的回读片段
           requestId: lastPrqId, // internal request ledger identity; provider generation is separate
+          ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
           // R07（审计 FE-12）：工具生命周期统一身份
           toolCallId: t.tool_id, attemptId: o.attemptId, round, generationId: roundGenerationId,
+          ...(o.turnId && t.tool_id && lastSentMessages && d.trajectory ? {
+            recordCompletionCheckpoint: receipt => stageTurnCompletion(d.db, {
+              requestId: lastPrqId, windowId: o.windowId, turnId: o.turnId!, attemptId: o.attemptId, callId: t.tool_id!,
+              batch: { tail: envelope.messages.slice(pendingAssistantIndex), inFlight: [], sentMessages: lastSentMessages! },
+              receipt, manifestAdditions: o.completionManifest ?? [], confirmedSeen: toolSeenActive, pendingSeen: roundPendingSeen,
+              heartbeatHostText: o.heartbeatHostText,
+            }),
+          } : {}),
+          ...(o.background?.kind === 'keepwarm' && t.tool_id ? {
+            recordCommittedToolReceipt: receipt => appendCompletionToolReceipt(d.db, o.attemptId, t.tool_id!, receipt, []),
+          } : {}),
           ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
             const rec = o.background!.recordDispatch({ logicalActionKey: `tool:${t.tool_id}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
             if (!rec.allowed) throw new ContractError(rec.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
             toolDispatch.current = { id: rec.dispatchId, quote };
+            if (o.background?.kind === 'keepwarm' && t.tool_id) markHeartbeatToolStarted(d.db, o.attemptId, lastPrqId, t.tool_id);
           } } : {}),
+          ...(o.background?.kind === 'keepwarm' ? { checkChatPublishAllowed: () => this.checkKeepwarmChatPublish(o) } : {}),
         });
         } catch (error) {
           if ((error as { code?: string }).code === 'IDEMPOTENCY_CONFLICT') {
@@ -877,43 +1145,341 @@ export class TurnSupervisor {
         if (exec.ok && toolDispatch.current?.quote.verifiedFree) {
           settleBackgroundDispatch(d.db, toolDispatch.current.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
         }
-        // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
-        // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
-        if (exec.seenAdditions && exec.seenAdditions.length > 0) {
-          for (const a of exec.seenAdditions) {
-            roundPendingSeen.push({
-              id: a.id, revision: a.revision, seq: seqOf(a.id), origin: 'tool', visible: true,
-              ...(a.char_start !== undefined ? { char_start: a.char_start, char_end: a.char_end } : {}),
-            });
-          }
-        }
         // RE-05（2026-10-24）：工具结果携带内部图引用（如 oido_view 测量图）且当前型号
         // 已核实支持图像 → 工具消息正文=文本 JSON + asset_image 引用块（发送边界物化为
         // 原生图块，存储侧照常脱敏）；未核实/不支持 → 仅文本（工具 JSON 内已如实声明
         // 图未随正文携带，模型不得声称已看图）
-        const modelSupportsImages = visionSupportCached(envelope.model) === true;
-        const imageBlocks = modelSupportsImages && exec.imageRefs && exec.imageRefs.length > 0
-          ? exec.imageRefs.map((id) => ({ type: 'asset_image', asset_id: id, projection_version: 'v1' as const }))
-          : [];
-        envelope = { ...envelope, messages: [...envelope.messages, { role: 'tool', tool_call_id: t.tool_id, ...(imageBlocks.length > 0 ? { content: [{ type: 'text', text: JSON.stringify(exec.output) }, ...imageBlocks] } : { content: JSON.stringify(exec.output) }) } as unknown as OrMessage] };
+        if (exec.ok && exec.imageRefs?.length && !await this.modelSupportsImages(envelope.model, driverKind === 'mock' ? 'mock' : transportKind)) {
+          exec = { ok: false, output: { error_code: 'MODEL_VISION_UNAVAILABLE', detail: '工具已执行，但当前型号未核实支持图片，图片未交付。' } };
+        }
+        if (exec.ok && batchRanges.length && exec.coverageProjection) {
+          exec = { ...exec, ...exec.coverageProjection(batchRanges) };
+        }
+        if (exec.ok && exec.coverageAdditions) batchRanges.push(...exec.coverageAdditions);
+        // WP4：conversation_read 等只读工具返回的已见增量——先入 pending，
+        // 随工具结果进入下一请求时转正（O05：取到结果≠已见）
+        if (exec.seenAdditions && exec.seenAdditions.length > 0) {
+          const additions: ManifestEntry[] = [];
+          for (const a of exec.seenAdditions) {
+            additions.push({
+              id: a.id, revision: a.revision, seq: seqOf(a.id), origin: 'tool', visible: true,
+              ...(a.char_start !== undefined ? { char_start: a.char_start, char_end: a.char_end } : {}),
+            });
+          }
+          if (t.tool_id) pendingSeenByTool.set(t.tool_id, additions);
+          roundPendingSeen.push(...additions);
+        }
+        envelope = { ...envelope, messages: [...envelope.messages, {role:'tool',tool_call_id:t.tool_id,content:toolResultContent(exec)} as OrMessage] };
+        if (o.background?.kind === 'keepwarm' && t.tool_id) {
+          appendCompletionToolReceipt(d.db, o.attemptId, t.tool_id, exec, pendingSeenByTool.get(t.tool_id) ?? []);
+        }
+        const addition = exec.activatedTool;
+        if (exec.ok && addition && !envelope.tools.some(tool => (tool as HostToolSpec).function.name === addition.function.name)) {
+          envelope = { ...envelope, tools: [...envelope.tools, addition] };
+        }
+        this.recordToolCoverage(lastPrqId, t.tool_id, exec);
+
+      }
+      if (readTurnCompletion(d.db, o.attemptId, o.turnId)) {
+        // Final tool receipts are canonical locally; only the previous request
+        // was sent. The next natural request carries the new protocol tail.
+        return { result, finalMessages: envelope.messages, lastSentMessages, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen };
       }
       if (o.activeReviewId && d.reviews?.get(o.activeReviewId)?.status === 'completed') {
         return { result, finalMessages: null, lastSentMessages: null, toolSeen: toolSeenActive, pendingToolSeen: roundPendingSeen }; // §3.3：complete 最后验证；完成后收口，评审请求不进对话轨迹
       }
     }
-    return failedLoop({ outcome: 'error', errorClassified: null, errorCode: 'TOOL_ROUNDS_EXCEEDED', errorMessage: 'unreachable', sessionId: null, requestId: null });
     } catch (error) {
       return failedLoop({ outcome: 'error', errorClassified: 'unknown', errorCode: stableCode(error), errorMessage: String((error as Error).message ?? error), sessionId: null, requestId: null });
     }
   }
 
-  /** 指纹输入视图：并入运行时 override（or_model）。reasoning 不参与指纹
-   *  ——effort 是逐请求生成参数，切换不构成运行边界变化（不换窗）。 */
-  private fingerprintConfigView(config: import('../config/schema.ts').Config): import('../identity/service.ts').BoundaryConfigInput {
-    if (!this.d.settings) return config;
-    const model = this.d.settings.effectiveOrModel(config.openrouter.model);
-    if (model === config.openrouter.model) return config;
-    return { ...config, openrouter: { ...config.openrouter, model } };
+  private requestManifest(windowId: string, messages: readonly OrMessage[], seen: readonly SeenRef[]): string {
+    const opening = this.bootstrapMachine.coverageFor(windowId, messages);
+    return JSON.stringify([
+      ...seen.map(ref => ({ ...ref, visible: true })),
+      ...(opening ? [opening] : []),
+    ]);
+  }
+
+  private recordToolCoverage(requestId: string | null, toolCallId: string | null, result: ToolExecResult): void {
+    if (!requestId || !toolCallId || !result.ok || !result.coverageAdditions?.length) return;
+    // Ranges describe the projected result. The tool ID must later appear in a
+    // confirmed request before this metadata can establish actual coverage.
+    this.d.db.prepare("UPDATE provider_requests SET seen_manifest_json=json_insert(seen_manifest_json, '$[#]', json(?)) WHERE id=?")
+      .run(JSON.stringify({ tool_coverage: [{ tool_call_id: toolCallId, ranges: result.coverageAdditions }] }), requestId);
+  }
+
+  /** Older SDK sessions persisted a copy of each guide in the next selected message.
+   * Match those leading blocks against the frozen selection before rebuilding. */
+  private restoreSdkSelectionHistory(windowId: string, messages: OrMessage[]): OrMessage[] {
+    const firstGuide = messages.findIndex(m => m.role === 'system' && m.guide === true);
+    if (firstGuide === -1) return messages;
+    const items = this.d.selections?.forTargetWindow(windowId)?.items;
+    if (!items?.length) return messages;
+
+    let guide: string | undefined;
+    let selectedIndex = 0;
+    let restored: OrMessage[] | undefined;
+    for (let i = firstGuide; i < messages.length && selectedIndex < items.length; i++) {
+      const message = messages[i]!;
+      if (message.role === 'system') {
+        guide = message.guide === true && Array.isArray(message.content) ? message.content[0]?.text : undefined;
+        continue;
+      }
+      const item = items[selectedIndex++]!;
+      if (message.role !== (item.speaker === 'owner' ? 'user' : 'assistant')) return messages;
+      if (guide && Array.isArray(message.content)) {
+        const blocks = message.content;
+        let copies = 0;
+        while (blocks[copies]?.type === 'text' && blocks[copies]?.text === guide) copies++;
+        if (copies > 0) {
+          // A real selected message can itself be the same literal guide.
+          // Legacy sequence-prefixed originals already sit after the added copies.
+          const originalHasGuideText = sha256Hex(guide) === item.content_hash;
+          const originalHasSequencePrefix = blocks[copies]?.text === `[${item.sequence}]\n${guide}`;
+          if (originalHasGuideText && !originalHasSequencePrefix) copies--;
+          if (copies > 0) (restored ??= messages.slice())[i] = { ...message, content: blocks.slice(copies) };
+        }
+      }
+      guide = undefined;
+    }
+    return restored ?? messages;
+  }
+
+  private async runSdkToolLoop(o: Parameters<TurnSupervisor['runOrToolLoop']>[0]): Promise<Awaited<ReturnType<TurnSupervisor['runOrToolLoop']>>> {
+    const d = this.d;
+    const runner = (d.runnerSelection as Extract<RunnerSelection, { status: 'ok' }>).runner;
+    const systemPrompt = o.envelope.messages.filter(m => m.role === 'system').flatMap(m => typeof m.content === 'string'
+      ? [m.content] : m.content.filter(b => b.type === 'text').map(b => b.text ?? ''));
+    const cwd = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
+    const options = subscriptionSdkOptions({ ...d.config, runtime: { ...d.config.runtime, model: o.envelope.model } }, systemPrompt, cwd);
+    const sdkEffort = o.envelope.reasoning?.effort;
+    if (sdkEffort) options.options.effort = sdkEffort as import('../config/schema.ts').ThinkingEffort;
+    const toolSeen: ManifestEntry[] = [];
+    const batchRanges: CoverageRange[] = [];
+    let pendingToolSeen: ManifestEntry[] = (d.trajectory?.forWindow(o.windowId)?.pendingManifest ?? []).map(({ pending_dispatch: _pending, ...entry }) => ({ ...entry, visible: true }));
+    const pendingSeenByTool = new Map<string, ManifestEntry[]>();
+    let requestId: string | null = null;
+    let generationId: string | null = null;
+    let dispatchId: string | null = null;
+    let lastSentMessages: OrMessage[] | null = null;
+    const requestContext: ModelRequestContext = { requestId: null, entry: 'claude-agent-sdk',
+      requestedModel: o.envelope.model, responseModel: null, provider: 'firstParty' };
+    const result = await runner.run({
+      driver: 'claude-agent-sdk', prompt: '', options, resumeSessionId: null, abortController: o.controller,
+      onEvent: ev => {
+        if (ev.kind === 'message_stop' && requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run('completed', requestId);
+        o.onEvent(ev, requestContext);
+      },
+      host: {
+        windowId: o.windowId, purpose: o.purpose, envelope: o.envelope,
+        isolatedSession: o.scopedTaskTools,
+        completionRequested: () => readTurnCompletion(d.db, o.attemptId, o.turnId) !== null,
+        captureCompletionBatch: Boolean(o.turnId && d.trajectory),
+        captureHeartbeatBatch: o.background?.kind === 'keepwarm' && Boolean(o.turnId && d.trajectory),
+        ...(o.background?.kind === 'keepwarm' ? { observeHeartbeatBatch: (tail: OrMessage[], sent: OrMessage[]) => {
+          if (requestId) this.observeHeartbeatBatch(o, requestId, tail, sent, toolSeen);
+        } } : {}),
+        // 2026-10-31 她批：SDK 原生媒体投影——发送边界物化（sdk-host-query/sdk-history），
+        // 账本/持久化保持 asset_image 引用形态；无媒体服务（无 d.media）不注入→保留未核实门。
+        ...(d.media ? { readImage: (assetId: string) => d.heartbeat?.readImage(assetId, o.conversationId, o.background?.runId ?? (o.purpose === 'chat' ? o.turnId ?? undefined : undefined))
+          ?? (d.mediaTools ? d.mediaTools.readImage(assetId, o.conversationId) : d.media!.readContentResolvingMaster(assetId, { modelImage: true })) } : {}),
+        beforeModel: async (messages, round) => {
+          if (o.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+          if (round > 0 && readTurnCompletion(d.db, o.attemptId, o.turnId)) throw new ContractError('TURN_COMPLETED_STOP');
+          if (round === 0) this.admitProgramFact(o.turnId, o.conversationId);
+          if (o.inputBinding && d.messages.getMessage(o.inputBinding.messageId)?.current_revision !== o.inputBinding.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
+          if (this.requestCapacity(messages, o.envelope.tools, o.envelope.maxTokens)?.plan.action === 'blocked_hard') {
+            throw new ContractError('CAPACITY_BLOCKED_HARD_TOOL_ROUND');
+          }
+          if (o.background) {
+            if (o.background.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+            if (o.background.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
+            const hold = o.background.kind === 'keepwarm' ? this.keepwarmHold(o.conversationId, o.background.runId) : null;
+            if (hold) throw new ContractError(hold);
+            const started = (d.db.prepare('SELECT model_requests_started FROM background_runs WHERE id=?').get(o.background.runId) as { model_requests_started: number }).model_requests_started;
+            if (started >= o.background.maxModelRequests) throw new ContractError('BACKGROUND_BUDGET_EXHAUSTED');
+            // The official preflight has just confirmed included subscription
+            // usage and disabled overage. OR fallback retains its existing quote.
+            const admission = o.background.recordDispatch({ logicalActionKey: `sdk:model:${round}`, attemptNo: 1, dispatchKind: 'model', reservedCostMicroUsd: 0 });
+            if (!admission.allowed) throw new ContractError(admission.code ?? 'BACKGROUND_BUDGET_EXHAUSTED');
+            dispatchId = admission.dispatchId;
+          }
+          requestId = genId('prq');
+          const envelope = { ...o.envelope, messages };
+          const at = new Date().toISOString();
+          d.db.prepare(`INSERT INTO provider_requests(id,window_id,attempt_id,turn_id,purpose,seen_manifest_json,payload_json,context_fingerprint_json,payload_format,created_at,dispatch_started_at,attempt_no,background_run_id,background_dispatch_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(requestId, o.windowId, o.attemptId, o.turnId, o.purpose,
+            this.requestManifest(o.windowId, messages, [
+              ...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen, ...pendingToolSeen,
+              ...(o.inputBinding ? [{ id: o.inputBinding.messageId, revision: o.inputBinding.revision }] : []),
+            ]), JSON.stringify(envelope),
+            contextFingerprintJson({ round, tools: envelope.tools, messages, boundaries: envelope.boundaries }),
+            'sdk_projection_v1', at, at, 0, o.background?.runId ?? null, dispatchId);
+          recordToolContext(d.db,requestId,o.windowId,messages,o.background ? {name:'background_complete',id:o.background.runId} : o.activeReviewId ? {name:'context_review_complete',id:o.activeReviewId} : undefined);
+          requestContext.requestId = requestId;
+          requestContext.responseModel = null;
+          recordRequestExecution(d.db, requestContext, o.background?.runId);
+          if (o.background?.kind === 'keepwarm') {
+            await this.admitHeartbeatDispatch(o.background.runId, requestId, dispatchId, messages, o.controller.signal, () => {
+              if (o.controller.signal.aborted || o.background!.isCancelRequested()) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
+              if (o.background!.yieldRequested?.()) throw new ContractError('KEEPWARM_YIELDED');
+              const hold = this.keepwarmHold(o.conversationId, o.background!.runId);
+              if (hold) throw new ContractError(hold);
+              if (d.keepwarmEnabled?.() === false) throw new ContractError('KEEPWARM_DISABLED');
+            });
+          } else if (o.purpose === 'chat' && o.turnId) {
+            await this.admitChatDispatch(o.turnId, requestId, messages, o.controller.signal);
+          }
+          lastSentMessages = structuredClone(messages);
+          if (round === 0 && o.inputBinding && o.turnId) d.voiceObservations?.commitProjection(o.inputBinding, o.turnId, requestId, o.voiceObservations ?? []);
+          d.surfacing?.markDispatched?.(o.attemptId);
+        },
+        modelStarted: (id, round, model) => {
+          generationId = id;
+          requestContext.responseModel = model ?? null;
+          recordRequestExecution(d.db, requestContext, o.background?.runId);
+          toolSeen.push(...pendingToolSeen); pendingToolSeen = [];
+          pendingSeenByTool.clear();
+          batchRanges.length = 0;
+          if (requestId && lastSentMessages) {
+            this.confirmModelRequest(o, { requestId, round, attemptIndex: 0, generationId: id, messages: lastSentMessages, confirmedSeen: toolSeen });
+          }
+        },
+        recordToolDelivery: (toolCallId, result) => {
+          this.recordToolCoverage(requestId, toolCallId, result);
+          if (o.background?.kind === 'keepwarm' || readTurnCompletion(d.db, o.attemptId, o.turnId)) {
+            appendCompletionToolReceipt(d.db, o.attemptId, toolCallId, result, pendingSeenByTool.get(toolCallId) ?? []);
+          }
+        },
+        executeTool: async (name, args, toolCallId, round, messages = o.envelope.messages, argumentSource, completionBatch) => {
+          if (!d.tools) throw new ContractError('HOST_TOOLS_UNAVAILABLE');
+          if (o.controller.signal.aborted || o.background?.isCancelRequested()) throw new ToolNotDispatched('EXECUTION_CANCELLED');
+          if (o.background?.kind === 'keepwarm') {
+            const hold = this.keepwarmHold(o.conversationId, o.background.runId);
+            if (hold) throw new ToolNotDispatched(hold);
+          }
+          if (o.background?.yieldRequested?.()) throw new ToolNotDispatched('KEEPWARM_YIELDED');
+          if (o.flushChatTail && o.turnId && d.heartbeat?.cards.getDeliveredDraw(o.turnId) &&
+              effectiveToolName(name, args) !== TURN_COMPLETION_TOOL) {
+            o.flushChatTail();
+          }
+          o.background?.observeToolCall?.();
+          let toolDispatch: { id: string; quote: BackgroundToolQuote } | null = null;
+          let executed: ToolExecResult;
+          try {
+          executed = await d.tools.execute(name, args, {
+            signal: o.controller.signal, roomId: o.conversationId, windowId: o.windowId, turnId: o.turnId,
+            argumentSource,
+            remainingResultBytes: () => this.remainingToolResultBytes(messages, o.envelope.tools, o.envelope.maxTokens),
+            purpose: o.purpose, backgroundRunId: o.background?.runId ?? null,
+            activeReviewId: o.activeReviewId, seenSequence: o.seenSequence,
+            seenMessages: [...o.seenMessages, ...(o.liveSeenAdditions ?? []), ...toolSeen],
+            requestId: requestId!, toolCallId, attemptId: o.attemptId, round, generationId,
+            ...(completionBatch && o.turnId && d.trajectory ? {
+              recordCompletionCheckpoint: receipt => {
+                const batch = completionBatch();
+                const pending = batch.tail.filter(message => message.role === 'tool')
+                  .flatMap(message => pendingSeenByTool.get(String(message.tool_call_id)) ?? []);
+                stageTurnCompletion(d.db, {
+                  requestId: requestId!, windowId: o.windowId, turnId: o.turnId!, attemptId: o.attemptId, callId: toolCallId,
+                  batch, receipt, manifestAdditions: o.completionManifest ?? [], confirmedSeen: toolSeen, pendingSeen: pending,
+                  heartbeatHostText: o.heartbeatHostText,
+                });
+              },
+            } : {}),
+            ...(o.background?.kind === 'keepwarm' ? {
+              recordCommittedToolReceipt: receipt => appendCompletionToolReceipt(d.db, o.attemptId, toolCallId, receipt, []),
+            } : {}),
+            ...(o.inputBinding ? { sourceMessageId: o.inputBinding.messageId } : {}),
+            ...(o.background ? { beforeBackgroundTool: (quote: BackgroundToolQuote) => {
+              const admission = o.background!.recordDispatch({ logicalActionKey: `tool:${toolCallId}`, attemptNo: 1, dispatchKind: 'tool', reservedCostMicroUsd: quote.maxCostMicroUsd, capabilityName: quote.toolName });
+              if (!admission.allowed) throw new ContractError(admission.code ?? 'BACKGROUND_TOOL_ADMISSION_REJECTED');
+              toolDispatch = { id: admission.dispatchId, quote };
+              if (o.background?.kind === 'keepwarm' && requestId) markHeartbeatToolStarted(d.db, o.attemptId, requestId, toolCallId);
+            } } : {}),
+            ...(o.background?.kind === 'keepwarm' ? { checkChatPublishAllowed: () => this.checkKeepwarmChatPublish(o) } : {}),
+          });
+          } catch (error) {
+            if ((error as { code?: string }).code === 'IDEMPOTENCY_CONFLICT') {
+              executed = { ok: false, output: { error_code: 'IDEMPOTENCY_CONFLICT' } };
+            } else if (o.background && toolDispatch === null) {
+              throw new ToolNotDispatched(error instanceof ContractError ? error.code : 'BACKGROUND_TOOL_ADMISSION_REJECTED');
+            } else {
+              throw error;
+            }
+          }
+          const settled = toolDispatch as { id: string; quote: BackgroundToolQuote } | null;
+          if (executed.ok && settled?.quote.verifiedFree) settleBackgroundDispatch(d.db, settled.id, { actualCostMicroUsd: 0, outcomeCode: 'verified_free_tool' });
+          if (executed.ok && batchRanges.length && executed.coverageProjection) {
+            executed = { ...executed, ...executed.coverageProjection(batchRanges) };
+          }
+          if (executed.seenAdditions?.length) {
+            const additions = executed.seenAdditions.map((seen): ManifestEntry => {
+              const row = d.db.prepare('SELECT sequence FROM messages WHERE id=?').get(seen.id) as { sequence: number } | undefined;
+              return { ...seen, seq: row?.sequence ?? 0, origin: 'tool', visible: true };
+            });
+            pendingSeenByTool.set(toolCallId, additions);
+            pendingToolSeen.push(...additions);
+          }
+          if (executed.ok && !executed.imageRefs?.length && executed.coverageAdditions) batchRanges.push(...executed.coverageAdditions);
+          return executed;
+        },
+      },
+    });
+    if (requestId) d.db.prepare('UPDATE provider_requests SET outcome=? WHERE id=?').run(result.outcome, requestId);
+    // RB03（复审 20261106）：维护轮（cache_keepalive）成功同样 rebind——协议保留后
+    // 维护记录属于当前 SDK 会话，宿主会话投影与原生锚同一事实。
+    if (result.sessionId && !o.scopedTaskTools) {
+      const old = d.windows.get(o.windowId)?.sdk_session_id ?? null;
+      d.windows.rebindSession(o.windowId, old, result.sessionId);
+    }
+    const finalMessages = lastSentMessages ? result.finalMessages ?? null : null;
+    const sent = result.lastSentMessages ?? lastSentMessages;
+    if (result.outcome !== 'completed' && finalMessages) {
+      const compacted = this.compactBlockedResults(finalMessages, sent?.length ?? 0, o.envelope.tools, o.envelope.maxTokens);
+      const unseen = new Set([...compacted].flatMap(id => pendingSeenByTool.get(id) ?? []));
+      pendingToolSeen = pendingToolSeen.filter(entry => !unseen.has(entry));
+    }
+    return { result, finalMessages, lastSentMessages: sent, toolSeen, pendingToolSeen };
+  }
+
+  private async admitHeartbeatDispatch(
+    runId: string,
+    requestId: string,
+    dispatchId: string | null,
+    messages: OrMessage[],
+    signal: AbortSignal,
+    checkLiveGate?: () => void,
+  ): Promise<void> {
+    try {
+      await this.d.heartbeat?.beforeDispatch(runId, requestId, messages, signal, checkLiveGate);
+    } catch (error) {
+      // The local gate refused before any transport. Close the reservation
+      // rather than carrying this known-zero continuation as an unknown cost.
+      this.d.db.prepare('UPDATE provider_requests SET dispatch_started_at=NULL WHERE id=? AND sent_at IS NULL')
+        .run(requestId);
+      if (dispatchId) settleBackgroundDispatch(this.d.db, dispatchId, {
+        actualCostMicroUsd: 0, outcomeCode: HEARTBEAT_BLOCKED_BEFORE_SEND, providerRequestId: requestId,
+      });
+      throw error;
+    }
+  }
+
+  private async admitChatDispatch(
+    turnId: string,
+    requestId: string,
+    messages: OrMessage[],
+    signal: AbortSignal,
+  ): Promise<void> {
+    try {
+      await this.d.heartbeat?.beforeChatDispatch(turnId, requestId, messages, signal);
+    } catch (error) {
+      this.d.db.prepare('UPDATE provider_requests SET dispatch_started_at=NULL WHERE id=? AND sent_at IS NULL')
+        .run(requestId);
+      throw error;
+    }
   }
 
   /** RE-08（2026-10-24）：本窗冻结目录是否含某工具——续读提示只在工具真实可用时给出
@@ -929,11 +1495,64 @@ export class TurnSupervisor {
   /** WAKE_KEEPWARM_V1：后台执行位重检的统一时钟（测试可虚拟推进）。 */
   private nowMs(): number { return this.d.now?.() ?? Date.now(); }
 
+  /** Why a running heartbeat may not take its next step, read at the moment of
+   *  that step: the fixed sleep window, or the owner's standing rest decision. */
+  private checkKeepwarmChatPublish(o: { conversationId: string; controller: AbortController; background?: { runId: string; isCancelRequested: () => boolean; yieldRequested?: (() => boolean) | null } }): { allowed: true } | { allowed: false; code: string; detail: string } {
+    const deny = (code: string, detail: string) => ({ allowed: false as const, code, detail });
+    if (o.controller.signal.aborted || o.background?.isCancelRequested()) return deny('EXECUTION_CANCELLED', '当前后台运行已取消，未发入聊天。');
+    if (o.background?.yieldRequested?.()) return deny('KEEPWARM_YIELDED', '前台聊天或通话优先，后台发言已让位。');
+    const hold = this.heartbeatSpeechHold(o.conversationId, o.background?.runId);
+    if (hold === 'sleep') return deny('KEEPWARM_SLEEP_WINDOW', '已进入睡眠静默时段，未发入聊天。');
+    if (hold === 'rest') return deny('KEEPWARM_RESTING', '乔乔正在休息，未发入聊天。');
+    if (hold === 'disabled') return deny('KEEPWARM_DISABLED', '心跳保温已关闭，未发入聊天。');
+    return { allowed: true };
+  }
+
+  private keepwarmHold(conversationId: string, runId?: string): 'KEEPWARM_SLEEP_WINDOW' | 'KEEPWARM_SLEEP_CONFIG_INVALID' | 'KEEPWARM_RESTING' | null {
+    const nowMs = this.nowMs();
+    const act = this.d.activity?.get(conversationId) ?? null;
+    const sleep = effectiveSleepState(this.d.config.background.keepwarm.sleep_window, nowMs, act?.early_resumed_date);
+    if (sleep.blocked) return sleep.code!;
+    if (!act || act.resting !== 1) return null;
+    // Only a normal evening rest (morning_0800) whose target morning has arrived allows today's
+    // morning-wake run to execute; any new rest decision or wait-next-user rest immediately holds.
+    if (runId && isMorningWakeRun(this.d.db, runId) && act.rest_recovery_mode === 'morning_0800') {
+      const shanghaiDate = shanghaiDateOfMs(nowMs);
+      const targetDate = act.rest_morning_date ?? shanghaiDate;
+      const today08Ms = Date.parse(`${targetDate}T08:00:00+08:00`);
+      const run = this.d.db.prepare('SELECT COALESCE(first_dispatch_started_at, created_at) AS started_at FROM background_runs WHERE id = ?').get(runId) as { started_at: string | null } | undefined;
+      const restMs = act.rest_decided_at ? Date.parse(act.rest_decided_at) : NaN;
+      const startedMs = run?.started_at ? Date.parse(run.started_at) : today08Ms;
+      if (nowMs >= today08Ms && Number.isFinite(restMs) && restMs < today08Ms && (!Number.isFinite(startedMs) || restMs < startedMs)) {
+        return null;
+      }
+    }
+    return 'KEEPWARM_RESTING';
+  }
+
+  /** Why heartbeat speech may not enter the chat now. Card delivery, tool
+   *  facts, protocol and cost are unaffected; nothing is resent later. */
+  private heartbeatSpeechHold(conversationId: string, runId?: string): HeartbeatSpeechHold | null {
+    const hold = this.keepwarmHold(conversationId, runId);
+    if (hold) return hold === 'KEEPWARM_RESTING' ? 'rest' : 'sleep';
+    return this.d.keepwarmEnabled?.() === false ? 'disabled' : null;
+  }
+
   /** 当前信封驱动配置（身份映射隔离：OR/DS 各自的型号、预算上限、粗估系数与 session 派生——互不混用；
    *  非信封驱动（SDK/mock）返回 null。 */
-  private drv(): { kind: 'openrouter' | 'deepseek'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
+  private drv(): { kind: 'openrouter' | 'deepseek' | 'claude-agent-sdk' | 'mock'; model: string; maxTokens: number; reasoning: Record<string, unknown> | null; charsPerToken: number; sessionId: (roomId: string) => string } | null {
     const r = this.d.runnerSelection;
     if (r.status !== 'ok' || !isEnvelopeDriverKind(r.runner.kind)) return null;
+    if (r.runner.kind === 'mock') {
+      // R2：mock 并入信封管线——模型取 OR 声明值（与 wire 校验/视觉门同口径），session 仅测试断言用；
+      // provider=mock 时 openrouter.model 可为空，回退到通过 buildOrPayload 型号校验的固定测试型号
+      const or = this.d.config.openrouter;
+      return { kind: 'mock', model: or.model ?? 'anthropic/claude-mock', maxTokens: or.max_output_tokens, reasoning: null, charsPerToken: or.estimate_chars_per_token, sessionId: roomId => `mock:${roomId}` };
+    }
+    if (r.runner.kind === 'claude-agent-sdk') {
+      return { kind: 'claude-agent-sdk', model: (this.d.settings?.effectiveSdkModel(this.d.config.runtime.model) ?? this.d.config.runtime.model)!, maxTokens: this.d.config.openrouter.max_output_tokens,
+        reasoning: { effort: this.d.settings?.reasoningEffort() ?? this.d.config.runtime.thinking.effort }, charsPerToken: this.d.config.openrouter.estimate_chars_per_token, sessionId: roomId => `sdk:${roomId}` };
+    }
     if (r.runner.kind === 'deepseek') {
       const ds = this.d.config.deepseek;
       return { kind: 'deepseek', model: ds.model!, maxTokens: ds.max_output_tokens, reasoning: null, charsPerToken: ds.estimate_chars_per_token, sessionId: (roomId) => dsSessionId(roomId, ds.model!) };
@@ -946,8 +1565,19 @@ export class TurnSupervisor {
     return { kind: 'openrouter', model: model!, maxTokens: or.max_output_tokens, reasoning, charsPerToken: or.estimate_chars_per_token, sessionId: (roomId) => orSessionId(roomId, model!, null) };
   }
 
-  private buildPayloadFrom(envelope: OrRequestEnvelope): Record<string, unknown> {
-    if (this.drv()?.kind === 'deepseek') return buildDeepSeekPayload(envelope);
+  private async modelSupportsImages(model: string, kind: string | undefined): Promise<boolean> {
+    const { base_url: baseUrl, vision_supported_models: declared } = this.d.config.openrouter;
+    // The selectable Claude SDK catalog supports native image input via SDKUserMessage.
+    if (kind === 'claude-agent-sdk' && SDK_MODEL_OPTIONS.some(option => option === model)) return true;
+    if (declared.includes(model)) return true;
+    const cached = visionSupportCached(model, baseUrl);
+    if (cached !== null) return cached;
+    return kind === 'openrouter' && await refreshVisionSupport(baseUrl, model) === true;
+  }
+
+  private buildPayloadFrom(envelope: OrRequestEnvelope, kind = this.drv()?.kind): Record<string, unknown> {
+    if (kind === 'claude-agent-sdk') return { ...envelope };
+    if (kind === 'deepseek') return buildDeepSeekPayload(envelope);
     const or = this.d.config.openrouter;
     return buildOrPayload({
       model: envelope.model, sessionId: envelope.sessionId, messages: envelope.messages, tools: envelope.tools,
@@ -1000,7 +1630,10 @@ export class TurnSupervisor {
   // 当前输入之前的双方原话（§3.2.2：范围=本窗实际携带的真实对话；不扩大到全库）
   private dialogueUpTo(conversationId: string, maxSequence: number): Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> {
     const rows = this.d.db.prepare(
-      'SELECT id, sequence, speaker, current_revision, turn_id FROM messages WHERE conversation_id = ? AND sequence <= ? ORDER BY sequence DESC LIMIT 200',
+      `SELECT id,sequence,speaker,current_revision,turn_id FROM messages
+       WHERE conversation_id=? AND sequence<=?
+         AND NOT (speaker='system' AND COALESCE(client_message_id,'') LIKE 'heartbeat:%')
+       ORDER BY sequence DESC LIMIT 200`,
     ).all(conversationId, maxSequence) as Array<{ id: string; sequence: number; speaker: string; current_revision: number; turn_id: string | null }>;
     const out: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; turnId: string | null }> = [];
     for (const r of rows) {
@@ -1021,327 +1654,83 @@ export class TurnSupervisor {
    *  取数顺序：I → 事件 → 我们的话 → 心情（可选段让位剩余时间，预留 1700ms
    *  给终验）→ 同快照终验；SNAPSHOT_STALE/瞬时全局失败整包重建一次；
    *  Stop（父取消）返回 null 不告警；完整成功才进缓存。 */
-  private async windowBootstrap(windowId: string, signal?: AbortSignal): Promise<string | null> {
-    if (signal?.aborted) return null;
-    let t = this.bootstrapByWindow.get(windowId);
-    if (t !== undefined) return t;
-    const d = this.d;
-    const mc = d.bootstrap ?? null; // P04.5/P18(S18)：窄端口；夹具一律显式注入（回退已删）
-    if (!mc) return null; // 未接线：如实无 B
-    const lifetime = signal ? AbortSignal.any([signal, AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS)]) : AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS);
-    const startedAt = performance.now();
-    const moodBudgetMs = (): number => Math.max(0, Math.floor(BOOTSTRAP_DEADLINE_MS - (performance.now() - startedAt) - 1700));
-    const dedupeKey = `bootstrap:${windowId}`;
-    const UNAVAILABLE_TEXT = 'Mariposa开窗资料未取得，I、计划及记忆资料状态未知；不表示记忆不存在';
-    const report = (gaps: BootstrapGap[], code = 'BOOTSTRAP_UNAVAILABLE'): void => {
-      const unavailable = gaps.length === 0;
-      const critical = unavailable || gaps.some(gap => gap.section === 'i');
-      const note = unavailable
-        ? UNAVAILABLE_TEXT
-        : gaps.some(gap => gap.section === 'i')
-          ? 'I 当前的话未全载；其他已复核资料已保留，本次资料不完整'
-          : '部分开窗资料未全载；失败的心情全文未注入，其他已复核资料已保留';
-      d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'bootstrap', code: unavailable ? code : (gaps[0]?.code ?? 'unknown'), section: unavailable ? 'bootstrap' : gaps[0]?.section, note } });
-      d.alerts?.observe({ code: 'BOOTSTRAP_INCOMPLETE', severity: critical ? 'critical' : 'warning', scopeKind: 'integration', scopeId: 'mariposa', dedupeKey, observationId: null,
-        safeSummary: { title: '开窗资料不完整', detail: note, reason: gaps.map(gap => gap.code).join(',') || code, count: gaps.length, window_id: windowId, retryable: gaps.some(gap => gap.retryable) } });
-    };
-    // SNAPSHOT_STALE invalidates every dependent field. Rebuild once from a new
-    // first page, never splice a replacement snapshot into an existing attempt.
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        const first = await bootstrapCall(s => mc.bootstrapGet(s), { signal: lifetime });
-        if (first.plans != null && (typeof first.plans !== 'object' || Array.isArray(first.plans)
-          || (first.plans as { items?: unknown }).items !== undefined && (!Array.isArray((first.plans as { items?: unknown[] }).items) || ((first.plans as { items?: unknown[] }).items ?? []).some(item => !item || typeof item !== 'object' || Array.isArray(item))))) {
-          throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', 'bootstrap');
-        }
-        const snapId = typeof first.snapshot_id === 'string' && first.snapshot_id ? first.snapshot_id : null;
-        const gaps: BootstrapGap[] = [];
-        // —— I（current words）：畸形值=critical 局部缺口（不启续取）；续取失败整段丢弃 ——
-        let iText: string | null = null;
-        let iNote = '';
-        const iRaw = (first as Record<string, unknown>).i as unknown;
-        if (iRaw != null) {
-          const bad = (v: unknown): boolean => v === null || typeof v !== 'object' || Array.isArray(v) || typeof (v as { content?: unknown }).content !== 'string';
-          if (bad(iRaw)) {
-            gaps.push({ section: 'i', code: 'BOOTSTRAP_SHAPE_INVALID', retryable: false });
-            iText = null;
-          } else {
-            const iSec = iRaw as { content: string; truncated?: unknown; total_chars?: unknown; next_cursor?: Record<string, unknown> | null };
-            iText = iSec.content;
-            const iLoaded = Array.from(iText).length;
-            const iTotal = typeof iSec.total_chars === 'number' ? iSec.total_chars : null;
-            if (iSec.truncated === true && iSec.next_cursor == null) {
-              gaps.push({ section: 'i', code: 'BOOTSTRAP_CURSOR_MISSING', retryable: false });
-              iNote = '（超窗未全载：续取未完成）';
-            } else if (iSec.next_cursor != null) {
-              if (!snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISSING', 'i');
-              const seenOffsets = new Set<number>();
-              let iCur: Record<string, unknown> | null = iSec.next_cursor ?? null;
-              let loaded = iLoaded;
-              let guard = 0;
-              while (iCur != null && guard < 64) {
-                guard++;
-                const offset = (iCur as { i_offset?: unknown }).i_offset;
-                if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset !== loaded || seenOffsets.has(offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', 'i');
-                seenOffsets.add(offset);
-                try {
-                  const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, iCur!, 'i', sg), { signal: lifetime, section: 'i' });
-                  if (typeof page.offset !== 'number' || page.offset !== loaded) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', 'i');
-                  if (page.snapshot_id !== snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISMATCH', 'i');
-                  if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', 'i');
-                  if (page.section !== 'i') throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', 'i');
-                  if (typeof page.content !== 'string' || page.content.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', 'i');
-                  if (typeof page.total_chars !== 'number' || !Number.isSafeInteger(page.total_chars) || page.total_chars < 0 || (iTotal != null && page.total_chars !== iTotal)) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', 'i');
-                  if (!Object.hasOwn(page, 'next_cursor')) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_MISSING', 'i');
-                  const cpLen = Array.from(page.content).length;
-                  const endOffset = loaded + cpLen;
-                  if (endOffset > page.total_chars) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', 'i');
-                  const upcoming = page.next_cursor as Record<string, unknown> | null;
-                  if (upcoming != null) {
-                    const noff = (upcoming as { i_offset?: unknown }).i_offset;
-                    if (typeof noff !== 'number' || noff !== endOffset) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', 'i');
-                    if (seenOffsets.has(noff)) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_REPEATED', 'i');
-                  } else if (endOffset !== page.total_chars) {
-                    throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', 'i');
-                  }
-                  // 全部校验通过才拼接——坏页的尾巴不得进入已载前缀
-                  iText += page.content;
-                  loaded = endOffset;
-                  iCur = upcoming;
-                } catch (err) {
-                  if (!(err instanceof BootstrapPagingError)) throw err;
-                  if (globalBootstrapFailure(err)) throw err;
-                  gaps.push({ section: 'i', code: err.code, retryable: retryableBootstrapFailure(err) });
-                  iNote = `（超窗未全载：续取未完成，已载 ${Array.from(iText ?? '').length}字）`;
-                  break;
-                }
-              }
-            }
-          }
-        }
-        // —— 事件/我们的话（每桶独立局部缺口；全局失败上抛整包重建）——
-        const dayItems = ((((first as Record<string, unknown>).memory_days as Record<string, unknown> | undefined)?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ ...item }));
-        const readTextSection = async (item: Record<string, unknown>, field: 'event_text' | 'our_words'): Promise<void> => {
-          const memId = item.memory_id;
-          const curKey = `${field}_next`; const truncKey = `${field}_truncated`; const totalKey = field === 'event_text' ? 'event_text_total_chars' : 'our_words_total_items';
-          let cur = item[curKey] as Record<string, unknown> | undefined | null;
-          if (item[truncKey] === true && cur == null) {
-            gaps.push({ section: field, ...(typeof memId === 'string' ? { memoryId: memId } : {}), code: 'BOOTSTRAP_CURSOR_MISSING', retryable: false });
-            item.__bootNote = `[${field === 'event_text' ? '事件正文' : '我们的话'}分节未全载（续取游标缺失）]`;
-            delete item[truncKey];
-            return;
-          }
-          if (cur == null) return;
-          if (!snapId) throw new BootstrapPagingError('BOOTSTRAP_SNAPSHOT_MISSING', field);
-          try {
-            if (field === 'event_text') {
-              let text = typeof item.event_text === 'string' ? item.event_text : '';
-              let loaded = Array.from(text).length;
-              const total0 = item.event_text_total_chars;
-              let total = typeof total0 === 'number' && Number.isSafeInteger(total0) ? total0 : null;
-              const seen = new Set<number>();
-              let guard = 0;
-              while (cur != null && guard < 64) {
-                guard++;
-                if (cur.memory_id !== memId || cur.field !== field || typeof cur.offset !== 'number' || cur.offset !== loaded || seen.has(cur.offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                seen.add(cur.offset);
-                const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
-                if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
-                if (field === 'event_text' && (typeof page.offset !== 'number' || page.offset !== loaded)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
-                if (typeof page.content !== 'string' || page.content.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', field);
-                if (typeof page.total_chars !== 'number' || !Number.isSafeInteger(page.total_chars) || (total != null && page.total_chars !== total)) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                if (!Object.hasOwn(page, 'next_cursor')) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_MISSING', field);
-                const cpLenE = Array.from(page.content).length;
-                const endE = loaded + cpLenE;
-                if (endE > page.total_chars) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                const upcoming = page.next_cursor as Record<string, unknown> | null;
-                if (upcoming != null) {
-                  if (upcoming.memory_id !== memId || upcoming.field !== field || upcoming.offset !== endE) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                  if (seen.has(upcoming.offset as number)) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_REPEATED', field);
-                } else if (endE !== page.total_chars) throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', field);
-                // 全部校验通过才拼接
-                total = page.total_chars;
-                text += page.content;
-                loaded = endE;
-                cur = upcoming;
-              }
-              if (total != null && loaded !== total) throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', field);
-              item.event_text = text;
-              delete item[curKey]; delete item[truncKey];
-            } else {
-              const groups = Array.isArray(item.our_words) ? (item.our_words as Array<{ speaker?: string; texts?: unknown[] }>) : [];
-              let flat: Array<{ speaker?: string; text: string }> = [];
-              for (const g of groups) {
-                if (!g || typeof g !== 'object') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                if (g.texts !== undefined && !Array.isArray(g.texts)) throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                for (const wt of g.texts ?? []) {
-                  if (typeof wt !== 'string') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                  flat.push({ speaker: g.speaker, text: wt });
-                }
-              }
-              const total0 = item.our_words_total_items;
-              let total = typeof total0 === 'number' && Number.isSafeInteger(total0) ? total0 : null;
-              const seenIdx = new Set<number>();
-              let itemOffset = flat.length;
-              const cursor0 = cur as { item_offset?: unknown; char_offset?: unknown };
-              if (cursor0.item_offset !== itemOffset || cursor0.char_offset !== 0) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-              let guard = 0;
-              while (cur != null && guard < 64) {
-                guard++;
-                const co = cur as { item_offset?: unknown; char_offset?: unknown };
-                if (typeof co.item_offset !== 'number' || co.item_offset !== itemOffset || typeof co.char_offset !== 'number' || seenIdx.has(co.item_offset)) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                seenIdx.add(co.item_offset);
-                const page = await bootstrapCall(sg => mc.bootstrapNext(snapId!, cur as Record<string, unknown>, 'memory_item', sg), { signal: lifetime, section: field });
-                if (page.snapshot_id !== snapId || page.section !== 'memory_item' || page.memory_id !== memId || page.field !== field) throw new BootstrapPagingError('BOOTSTRAP_RESOURCE_MISMATCH', field);
-                if (page.instruction_authority !== 'none' || page.content_role !== 'bootstrap_memory_package') throw new BootstrapPagingError('BOOTSTRAP_AUTHORITY_INVALID', field);
-                if (!Array.isArray(page.items) || page.items.length === 0) throw new BootstrapPagingError('BOOTSTRAP_NO_PROGRESS', field);
-                for (const g of page.items as Array<{ speaker?: string; texts?: unknown[] }>) {
-                  for (const wt of g?.texts ?? []) {
-                    if (typeof wt !== 'string') throw new BootstrapPagingError('BOOTSTRAP_SHAPE_INVALID', field);
-                    flat.push({ speaker: g.speaker, text: wt });
-                  }
-                }
-                itemOffset += page.items.length;
-                if (typeof page.total_items === 'number' && Number.isSafeInteger(page.total_items)) {
-                  if (total != null && page.total_items !== total) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                  total = page.total_items;
-                }
-                if (total != null && itemOffset > total) throw new BootstrapPagingError('BOOTSTRAP_TOTAL_MISMATCH', field);
-                if (!Object.hasOwn(page, 'next_cursor')) throw new BootstrapPagingError('BOOTSTRAP_CURSOR_MISSING', field);
-                const upcoming = page.next_cursor as Record<string, unknown> | null;
-                if (upcoming != null) {
-                  const u = upcoming as { item_offset?: unknown; char_offset?: unknown };
-                  if (u.item_offset !== itemOffset || u.char_offset !== 0) throw new BootstrapPagingError('BOOTSTRAP_OFFSET_MISMATCH', field);
-                } else if (total != null && itemOffset !== total) throw new BootstrapPagingError('BOOTSTRAP_INCOMPLETE', field);
-                cur = upcoming;
-              }
-              // 重组为分组形状（渲染层沿用分组）
-              const regrouped: Array<{ speaker?: string; texts: string[] }> = [];
-              for (const w of flat) {
-                const lastG = regrouped[regrouped.length - 1];
-                if (lastG && lastG.speaker === w.speaker) lastG.texts.push(w.text);
-                else regrouped.push({ speaker: w.speaker, texts: [w.text] });
-              }
-              item.our_words = regrouped;
-              delete item[curKey]; delete item[truncKey];
-            }
-          } catch (err) {
-            if (!(err instanceof BootstrapPagingError)) throw err;
-            if (globalBootstrapFailure(err)) throw err;
-            gaps.push({ section: field, ...(typeof memId === 'string' ? { memoryId: memId } : {}), code: err.code, retryable: retryableBootstrapFailure(err) });
-            // 续取失败：保留已载前缀+如实披露游标（不静默当全文）；初值本就缺段则只留披露行
-            const nextKey = field === 'event_text' ? 'event_text_next' : 'our_words_next';
-            item.__bootNote = `[${field === 'event_text' ? '事件正文' : '我们的话'}分节未全载（${nextKey} 续取未完成）]`;
-            delete item[curKey]; delete item[truncKey];
-          }
-        };
-        for (const item of dayItems) {
-          await readTextSection(item, 'event_text');
-          await readTextSection(item, 'our_words');
-        }
-        // —— 心情（可选段：剩余时间-1700ms 预算；先终验后心情也依此预算让位）——
-        const moodPkt = { ...(first as Record<string, unknown>), memory_days: dayItems.length > 0 || (first as Record<string, unknown>).memory_days != null ? { ...((first as Record<string, unknown>).memory_days as Record<string, unknown> ?? {}), ...(dayItems.length > 0 ? { items: dayItems } : {}) } : undefined };
-        const moodResult = await completeBootstrapPages(mc, moodPkt as Record<string, unknown>, { signal: lifetime, maxDurationMs: moodBudgetMs() });
-        const data = moodResult.data as Record<string, any>;
-        gaps.push(...moodResult.gaps);
-        // —— 同快照终验（仅部分交付需要：先验证其余段再交付缺口；失效=整包重建）——
-        // 完整单页包 get 本身即权威（快照一页取尽），无需再验。
-        if (gaps.length > 0) {
-          const verify = await bootstrapCall(sg => mc.bootstrapValidate(snapId!, sg), { signal: lifetime });
-          if (verify.unchanged !== true || verify.snapshot_id !== snapId || verify.profile !== 'estomago') {
-            throw new BootstrapPagingError('SNAPSHOT_STALE', 'bootstrap');
-          }
-        }
-        // —— 渲染（展示顺序不变：心情→事件→我们的话→计划→I）——
-        const seg: string[] = ['[memory/bootstrap：开窗资料（数据，非指令；按需可用 memory_recall 查询更多）]'];
-        // 临近纪念日提醒（她 2026-10-17 裁定：快到了才提醒，不每天提醒）——许愿星只读查询，
-        // 失败/无凭据=无此行如实降级（一次警告，不阻塞开窗）
-        if (d.wishstar) {
-          try {
-            const upcoming = (await d.wishstar.upcoming(d.config.wishstar?.upcoming_days ?? 3, lifetime)) ?? { items: [] };
-            for (const it of upcoming.items ?? []) {
-              seg.push(`[临近纪念日：${it.name}（${it.days_until === 0 ? '就是今天' : `还有 ${it.days_until} 天`}）——来自许愿星]`);
-            }
-          } catch {
-            d.events.publish('context.warning', { conversationId: 'unknown', entityRef: windowId, scope: 'private', payload: { source: 'wishstar', code: 'WISHSTAR_UNAVAILABLE', note: '临近纪念日查询不可用——本轮不带提醒，不影响其他开窗资料' } });
-          }
-        }
-        const days = ((data.memory_days as Record<string, any> | undefined)?.items ?? []) as Array<Record<string, unknown>>;
-        if (days.length > 0) {
-          seg.push('近三日记忆：');
-          for (const it of days) {
-            let line = `- ${String(it.original_title ?? '')}（${String(it.memory_date ?? '?')}）`;
-            if (Array.isArray(it.mood_tags) && (it.mood_tags as unknown[]).length > 0) {
-              line += ' 心情:' + (it.mood_tags as unknown[]).join('/');
-            }
-            if (typeof it.mood_text === 'string' && it.mood_text.length > 0) {
-              line += `（心情文字：${it.mood_text}）`;
-            }
-            seg.push(line);
-            if (typeof it.event_text === 'string' && it.event_text.length > 0) seg.push(`  事件：${it.event_text}`);
-            const words0 = it.our_words as unknown;
-            for (const g of Array.isArray(words0) ? (words0 as Array<{ speaker?: string; texts?: unknown[] }>) : []) {
-              for (const wt of g?.texts ?? []) if (typeof wt === 'string') seg.push(`  ${g?.speaker === 'jiaming' ? '他' : '她'}：${wt}`);
-            }
-            if (typeof it.__bootNote === 'string') seg.push(`  ${it.__bootNote}`);
-          }
-        }
-        const plansSec = data.plans as Record<string, any> | undefined;
-        const plans = ((plansSec?.items ?? []) as Array<Record<string, unknown>>);
-        if (plans.length > 0) {
-          seg.push('计划：');
-          for (const pl of plans) {
-            const detail = typeof pl.detail === 'string' && pl.detail.length > 0 ? `（${pl.detail}）` : '';
-            seg.push(`- ${String(pl.title ?? '')}${detail}`);
-          }
-        }
-        if (plansSec?.next_cursor != null) {
-          const total = typeof plansSec.total === 'number' ? plansSec.total : null;
-          seg.push(`[计划还有更多未载入（plans 续页未取；已载 ${plans.length}${total != null ? '/' + total : ''} 条）——按需可用 plans_read 查询]`);
-        }
-        if (typeof iText === 'string' && iText.length > 0) seg.push(`I（当前的话）：${iText}${iNote}`);
-        else if (gaps.some(gap => gap.section === 'i')) seg.push('[I 当前的话未全载；其余已复核资料保留]');
-        const moodGaps = gaps.filter(gap => gap.section === 'mood_text');
-        if (moodGaps.length > 0) seg.push('[部分开窗资料未全载：心情文字未全载（该条心情全文未注入）；其他已复核资料已保留]');
-        // 她 1022 裁定（首批 identity_milestone_write）：初始可读工具定义随 B 注入——
-        // 随窗冻结（新窗生效）；wire 入口不变；invoke 旁路校验见 tool-initial-visible.ts
-        // P01.4：定义快照由装配方显式传入（tool-initial-visible 不再反向依赖 host-tools）
-        const initialTools = renderInitialVisibleText(d.db, this.toolCatalogSource().currentCatalog());
-        if (initialTools !== null) seg.push(initialTools);
-        if (seg.length === 1) {
-          // 空包（无任何资料段）：如实无 B——不注入占位文本、不告警、不缓存
-          if (gaps.length > 0) report(gaps);
-          return null;
-        }
-        const text = seg.join('\n');
-        if (gaps.length > 0) {
-          report(gaps);
-          return text; // 部分交付：如实披露，不进缓存（下次重试）
-        }
-        this.bootstrapByWindow.set(windowId, text);
-        d.alerts?.resolve(dedupeKey, { summary: {} });
-        return text;
-      } catch (err) {
-        if (err instanceof BootstrapPagingError && err.code === 'BOOTSTRAP_CANCELLED') return null; // 父 Stop：静默，无告警无缓存
-        if (err instanceof BootstrapPagingError && err.code === 'BOOTSTRAP_DEADLINE_EXCEEDED') {
-          report([], 'BOOTSTRAP_DEADLINE_EXCEEDED');
-          return UNAVAILABLE_TEXT;
-        }
-        if (!(err instanceof BootstrapPagingError)) throw err;
-        if (attempt < 1 && (err.code === 'SNAPSHOT_STALE' || retryableBootstrapFailure(err))) continue; // 整包重建一次（仅快照失效/瞬时；授权拒绝重建无意义）
-        report([], err.code);
-        return UNAVAILABLE_TEXT;
-      }
-    }
-    return null;
-  }
 
   /** F-J-09：本窗冻结的工具快照（首发时定格，后续轮/评审/续请求复用） */
   /** 她 1024 裁定（接缝②）：容量按**实际发送载荷**计——消息轨迹 + 冻结工具目录（含 B 段
    *  tools/initial）同一份口径，rotateIfNeeded 预测与工具循环硬门共用本估测，不再各拼一套。 */
-  private estimateRequestTokens(messages: unknown[], windowId: string): number {
-    return Math.ceil(JSON.stringify({ messages, tools: this.windowTools(windowId) }).length / (this.drv()?.charsPerToken ?? 2.5));
+  private estimateRequestTokens(messages: unknown[], tools: OrRequestEnvelope['tools']): number {
+    return Math.ceil(JSON.stringify({ messages, tools }).length / (this.drv()?.charsPerToken ?? 2.5));
+  }
+
+  private requestCapacity(messages: OrMessage[], tools: OrRequestEnvelope['tools'], maxOutput: number) {
+    const windows = this.d.config.windows;
+    if (windows.model_context_capacity === null) return null;
+    const estimate = this.estimateRequestTokens(messages, tools);
+    const plan = rotationPlan({
+      currentInput: estimate, capacity: windows.model_context_capacity, maxOutput,
+      toolReserve: windows.tool_input_reserve_tokens, reviewReserve: windows.review_reserve_tokens,
+      safety: windows.safety_reserve_tokens, soft: windows.soft_limit_tokens,
+    });
+    return { estimate, plan };
+  }
+
+  private remainingToolResultBytes(messages: OrMessage[], tools: OrRequestEnvelope['tools'], maxOutput: number): number {
+    const capacity = this.requestCapacity(messages, tools, maxOutput);
+    if (!capacity) return Infinity;
+    // The result consumes at most as many UTF-16 code units as UTF-8 bytes.
+    // Leave room for the protocol envelope around the result.
+    return Math.max(0, Math.floor((capacity.plan.safeInput - capacity.estimate) * (this.drv()?.charsPerToken ?? 2.5)) - 512);
+  }
+
+  private compactBlockedResults(messages: OrMessage[], sentCount: number, tools: OrRequestEnvelope['tools'], maxOutput: number): Set<string> {
+    if (sentCount >= messages.length || this.requestCapacity(messages, tools, maxOutput)?.plan.action !== 'blocked_hard') return new Set();
+    return compactUnsentToolResults(messages, sentCount);
+  }
+
+  /** Identify a retained response to the last dispatched request in this window.
+   * A denied continuation can contain a full tool call and a short committed
+   * receipt even after large unsent results have already been compacted. */
+  private rejectedContinuationPrefix(windowId: string, messages: OrMessage[]): number | null {
+    const last = this.d.db.prepare(`
+      SELECT p.payload_json, p.purpose, p.sent_at, a.blocked_reason,
+             wake.trajectory_committed_at AS wake_committed_at
+      FROM provider_requests p LEFT JOIN attempts a ON a.id=p.attempt_id
+      LEFT JOIN background_runs wake ON p.purpose='proactive_turn'
+        AND wake.id=p.background_run_id AND wake.kind='autonomous'
+        AND wake.window_id=p.window_id AND wake.turn_id=p.turn_id AND wake.retention='retained'
+        AND wake.conversation_id=(SELECT conversation_id FROM windows WHERE id=p.window_id)
+        AND a.window_id=p.window_id AND a.turn_id=p.turn_id AND a.state='failed'
+      WHERE p.window_id=? AND (p.dispatch_started_at IS NOT NULL OR p.sent_at IS NOT NULL)
+      ORDER BY p.rowid DESC LIMIT 1
+    `).get(windowId) as {
+      payload_json: string; purpose: string; sent_at: string | null; blocked_reason: string | null;
+      wake_committed_at: string | null;
+    } | undefined;
+    if (!last?.sent_at) return null;
+    const hardLimit = 'CAPACITY_BLOCKED_HARD_TOOL_ROUND';
+    const chatBlocked = last.purpose === 'chat' && last.blocked_reason?.startsWith(`${hardLimit}:`);
+    // Background finalization records the bare attempt error and commits the
+    // trajectory before the scheduler publishes the run's final status.
+    const wakeBlocked = last.wake_committed_at !== null && last.blocked_reason === hardLimit;
+    if (!chatBlocked && !wakeBlocked) return null;
+    const sent = (JSON.parse(last.payload_json) as { messages?: OrMessage[] }).messages;
+    if (!sent?.length || sent.length >= messages.length
+        || JSON.stringify(sent) !== JSON.stringify(messages.slice(0, sent.length))) return null;
+    const tail = messages.slice(sent.length);
+    const toolCalls = new Set(tail.flatMap(m => m.role === 'assistant' && Array.isArray(m.tool_calls)
+      ? m.tool_calls.map((call: { id: string }) => call.id) : []));
+    return tail.some(m => m.role === 'tool' && typeof m.tool_call_id === 'string' && toolCalls.has(m.tool_call_id)) ? sent.length : null;
+  }
+
+  private recoverOverbudgetTrajectory(trajectory: NonNullable<ReturnType<WindowTrajectoryService['forWindow']>>, sentCount: number): boolean {
+    // Older hosts retained giant denied result bodies. Keep sent history and
+    // original calls; only replace oversized results from the unsent tail.
+    if (!trajectory.manifest || trajectory.pendingManifest.length) return false;
+    const messages = trajectory.messages.slice();
+    if (compactUnsentToolResults(messages, sentCount).size === 0) return false;
+    this.d.trajectory!.replace(trajectory.windowId, messages, trajectory.lastBoundary, trajectory.manifest);
+    trajectory.messages = messages;
+    return true;
   }
 
   /** S17b 批次3：目录来源统一为同一 Registry——生产=显式 toolCatalog 依赖；
@@ -1350,15 +1739,18 @@ export class TurnSupervisor {
     return this.d.toolCatalog ?? this.d.tools?.getCapabilityRegistry() ?? (() => { throw new Error('TOOL_CATALOG_NOT_WIRED'); })();
   }
 
+  private async prepareWindowTools(windowId: string, signal?: AbortSignal): Promise<void> {
+    if (storedToolset(this.d.db,windowId)) return;
+    await this.d.tools?.prepareWindowDefinitions(signal ?? AbortSignal.timeout(BOOTSTRAP_DEADLINE_MS));
+    this.windowTools(windowId);
+  }
+
   private windowTools(windowId: string): import('./or-payload.ts').OrTool[] {
-    let t = this.frozenToolsByWindow.get(windowId);
-    if (!t) {
-      // S17b 批次3：目录=同一 Registry。生产装配显式传 d.toolCatalog；直接构造的测试夹具
-      // 经执行器上的同一注册表回退（过渡形态，BLOCKERS 登记待夹具显式化后移除）。
-      t = freezeWindowTools(this.d.db, windowId, this.toolCatalogSource().currentCatalog(), this.d.config.runtime.tool_schema_mode) as unknown as import('./or-payload.ts').OrTool[];
-      this.frozenToolsByWindow.set(windowId, t);
-    }
-    return t;
+    const existing = storedToolset(this.d.db, windowId);
+    if (existing) return modelToolsAfterBindingRetirement(existing.tools);
+    const source = this.toolCatalogSource();
+    return modelToolsAfterBindingRetirement(freezeWindowTools(this.d.db, windowId, source.currentCatalog(),
+      this.d.config.runtime.tool_schema_mode, source.currentGroups?.() ?? {}));
   }
 
   /** F-J-39：追赶投影——清单高水位之后、有真实发出证据（purpose=chat 且 sent_at 非空）的
@@ -1381,28 +1773,55 @@ export class TurnSupervisor {
     conversationId: string;
     /** JOINT-VOICE：窗口感知听觉判定（旧窗冻结目录无 oido 工具时退回阻断） */
     windowId?: string;
-    materials: { identityText: string; rulesText: string; iText: string | null } | null;
+    materials: { identityText: string; rulesText: string; iText: string | null; memoryAnchorsText?: string } | null;
     dialogue: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>;
     tailUserText: string;
     bootText?: string | null;
+    /** 宿主用户 2026-11-07 裁定：开窗定格的"运行中事项"独立片段（authority=none；
+     *  随窗冻结，来自 WindowBootstrapMachine，不并入 B 段正文） */
+    episodeFragment?: string | null;
     /** WP3（2026-10-08）：人工选集装配——严格按确认的引用集合装载（E04：
      *  不把"自动携带预算设 0"代替拆分——该预算键已随 WP5 退役）。给出即忽略
      *  dialogue 的自动预算挑选；可为空数组=明确空选（不带历史）。 */
     selectedMessages?: Array<{ message_id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string; occurred_at?: string | null; reference_at?: string }>;
     /** EXEC_V1 §03.6：当前输入消息（投影其附件进尾部；缺省=纯文本尾） */
     tailMessage?: { id: string; revision: number } | null;
+    /** 相册重构 P5：开窗携带块（选集图+相册携带合并规划的 system 数据块；随首请求冻结进轨迹） */
+    carryFragment?: { blocks: Array<{ type: 'text'; text: string } | { type: 'asset_image'; asset_id: string; projection_version: 'v1' }> } | null;
   }): { envelope: OrRequestEnvelope; selected: Array<{ id: string; revision: number; sequence: number; role: 'user' | 'assistant'; content: string }>; hasImage: boolean; hasVoiceWithoutTranscript: boolean } {
     const dv = this.drv()!;
-    const systemText = [o.materials?.identityText ?? '', o.materials?.iText ?? '', o.materials?.rulesText ?? '', FIXED_RUNTIME_FRAGMENT, HOST_BOUNDARY_RULES].filter((t) => t.length > 0).join('\n\n');
+    // DBG-05/06（包2 2026-11-16）：A 段=身份正本+运行规则正本（文件版单一正本）+宿主边界。
+    // I 不再复制进 A 段（唯一注入点=B 段 bootstrap，M I 版本体系）；代码内规则片段退役
+    // （旧实现文件版与代码版双注入、且 I 占位与真实 I 冲突）。
+    const splitOpening = o.materials?.memoryAnchorsText !== undefined;
+    const runtimeRules = [o.materials?.rulesText, HOST_BOUNDARY_RULES].filter(Boolean).join('\n\n');
+    const systemText = [o.materials?.identityText, splitOpening ? null : runtimeRules].filter(Boolean).join('\n\n');
     const messages: OrMessage[] = [
       { role: 'system', content: [{ type: 'text', text: systemText }] },
     ];
     // R11（复审 2026-10-07）：B（开窗资料）作为独立 system 数据块——显式
     // A/B 缓存分界（cache-plan 的 B 点分支要求 systemMessageCount>=2），
     // 不把外部资料并入 A 段升级成高优先级指令
-    if (o.bootText && o.bootText.length > 0) {
-      messages.push({ role: 'system', content: [{ type: 'text', text: o.bootText }] });
+    let localTools: string | null;
+    let tools: OrRequestEnvelope['tools'];
+    if (o.windowId) {
+      tools = this.windowTools(o.windowId);
+      localTools = storedToolset(this.d.db,o.windowId)?.initialText ?? null;
+    } else {
+      const source = this.toolCatalogSource(), catalog = source.currentCatalog();
+      const groups = resolveToolGroups(this.d.db, catalog, source.currentGroups?.() ?? {});
+      const mode = this.d.config.runtime.tool_schema_mode;
+      tools = mode === 'direct' ? buildDirectTools(catalog, groups) : mode === 'deferred' ? buildDeferredTools() : catalog;
+      localTools = mode === 'legacy' ? null : renderToolContext(catalog, groups, mode);
     }
+    const bootstrapText = [o.bootText, splitOpening ? null : localTools].filter(Boolean).join('\n');
+    if (bootstrapText) messages.push({role:'system',content:[{type:'text',text:bootstrapText}]});
+    if (splitOpening) {
+      const runtimeText = [runtimeRules, localTools].filter(Boolean).join('\n\n');
+      messages.push({ role: 'system', content: [{ type: 'text', text: runtimeText }] });
+    }
+    if (o.episodeFragment) messages.push({role:'system',content:[{type:'text',text:o.episodeFragment}]});
+    if (o.carryFragment) messages.push({ role: 'system', content: o.carryFragment.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     let selected: typeof o.dialogue = [];
     if (o.selectedMessages) {
       // WP3：人工选集——顺序=服务端 sequence（已由选集服务排好）；
@@ -1416,23 +1835,57 @@ export class TurnSupervisor {
       selected = [];
     }
     // EXEC_V1 §03.6：历史与尾部统一走投影器（内部 asset_image 引用——轨迹/证据不含 Base64）
-    // 2026-10-18 她的裁定：多选只带文本——选集历史投影 textOnly（图片以占位文本带入，
-    // 不产视觉块、不触发视觉门）；尾部当前输入与追赶投影不受影响（当前轮的图照常进模型）
+    // 相册重构 P5（宿主用户 2026-11-08 裁定：开窗包按最新裁定）：撤销 2026-10-18 textOnly——
+    // 选集历史图片是真实图像输入（asset_image 块，发送边界物化+视觉门照常），并与开窗
+    // 携带照片合并计入 CARRY_IMAGE_LIMIT（装配即校验，见下方 carryImageCount）。
     let envHasImage = false;
     const guides = selectionGuides(o.selectedMessages ?? []);
+    let carryImageCount = o.carryFragment ? countCarryImageBlocks([{ content: o.carryFragment.blocks }]) : 0;
+    // R2/RR2（复审 2026-11-09）：跨已选消息去块按 **M 对象身份**（content_sha256）——
+    // 同字节经不同上传操作本来就是不同 E asset_id、同一张图（规划器 planCarryImages
+    // 早已按 hash 合并；旧实现这里按 asset_id 去块，同字节别名仍双块）。
+    // 收据缺席/无法定位的资产退回 asset 身份（不因缺哈希丢块）。
+    const emittedImageKeys = new Set<string>();
+    const imageKeyOf = (assetId: string): string => {
+      const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(assetId) as { content_sha256: string } | undefined;
+      return row?.content_sha256 ?? `est:${assetId}`;
+    };
+    // P1-a（审计 2026-11-15）：携带图先入去重键集——选集历史再出现同图（或同字节别名）
+    // 时去块，不与携带双投（旧实现只对选集内部去重，携带图不在键集）。
+    if (o.carryFragment) for (const b of o.carryFragment.blocks) {
+      if ((b as { type: string }).type === 'asset_image') emittedImageKeys.add(imageKeyOf((b as { asset_id: string }).asset_id));
+    }
     for (const m of selected) {
       const guide = guides.get(m.sequence);
-      if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }] });
-      const proj = this.revisionBlocks(m.id, m.revision, m.content, { textOnly: true, seq: m.sequence, transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
+      // 选集引导来自宿主。API 保留原位，SDK 按顺序装进系统提示。
+      // guide 标记供旧 SDK 轨迹清理定位。
+      if (guide) messages.push({ role: 'system', content: [{ type: 'text', text: guide }], guide: true } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
+      const proj = this.revisionBlocks(m.id, m.revision, m.content, { transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
       envHasImage = envHasImage || proj.hasImage;
-      messages.push({ role: m.role, content: proj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
+      const dedupedBlocks = proj.blocks.map((b) => {
+        if (b.type !== 'asset_image') return b;
+        const assetId = (b as { asset_id: string }).asset_id;
+        const key = imageKeyOf(assetId);
+        if (emittedImageKeys.has(key)) return null; // 后续重复原图（含同字节别名）：去块（正文/caption 文本保留）
+        emittedImageKeys.add(key);
+        return b;
+      }).filter((b) => b !== null);
+      carryImageCount += countCarryImageBlocks([{ content: dedupedBlocks }]);
+      messages.push({ role: m.role, content: dedupedBlocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     }
-    // 尾部当前输入也带 [seq]（她本轮的消息同样可被勾选）；无消息实体时（如
-    // 保温空尾）不带序号
-    const tailSeq = o.tailMessage?.id
-      ? (this.d.db.prepare('SELECT sequence FROM messages WHERE id = ?').get(o.tailMessage.id) as { sequence: number } | undefined)?.sequence
-      : undefined;
-    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read'), ...(tailSeq !== undefined ? { seq: tailSeq } : {}) });
+    // 03 §8.5 装配级核验（规划器已拦一次，这里对实际装出的块再核一遍）：携带图+选集图
+    // 合并后的实际图像块不得超过 CARRY_IMAGE_LIMIT；超限明确阻断，不截前 10、不静默丢图。
+    if (carryImageCount > CARRY_IMAGE_LIMIT) {
+      throw new Error(`CARRY_IMAGES_EXCEEDED:开窗携带图片 ${carryImageCount} 块超过上限 ${CARRY_IMAGE_LIMIT}——请减少选集中的图片或调低相册携带设置`);
+    }
+    // 相册重构 P4（03 §4/§5.1）：宿主一次性通知作为独立 system 数据块在尾部前追加——
+    // 只追加新事件（不插历史中间、不改写旧前缀）；投递即标记（SDK 会话前缀保留已发
+    // 内容，同会话重试不重复）。无通知=零块，前缀不受影响。
+    // R4（复审 2026-11-08）：通知注入从窗口初始化信封移除——该信封可被 discardUnsent
+    // 丢弃重建，而通知曾在取出时即标记 delivered（存档→滚窗→通知丢失的根因）。
+    // 唯一注入点=普通轮尾部（orMessages 装配处），按实际投递证据收口。
+    // 包4无seq整改：尾部当前输入不再查询/携带消息序号（旧 tailSeq 注入随裁定7 退役）
+    const tailProj = this.revisionBlocks(o.tailMessage?.id ?? null, o.tailMessage?.revision ?? null, o.tailUserText, { isCurrentInput: true, hearingAvailable: voiceHearingPort(this.d.db, this.d.oidoHearing === true, o.windowId), transcriptContinuationAvailable: this.windowHasTool(o.windowId, 'transcript_read') });
     envHasImage = envHasImage || tailProj.hasImage;
     messages.push({ role: 'user', content: tailProj.blocks } as unknown as { role: string; content: Array<{ type: 'text'; text: string }> });
     return {
@@ -1442,7 +1895,7 @@ export class TurnSupervisor {
         model: dv.model,
         sessionId: dv.sessionId(o.conversationId),
         messages,
-        tools: (this.d.config.runtime.tool_schema_mode === 'legacy' ? this.toolCatalogSource().currentCatalog() : buildDeferredTools()) as unknown as import('./or-payload.ts').OrTool[],
+        tools,
         boundaries: [], // 断点规划由调用方（cache-plan）负责；DS 直连自动缓存忽略断点
         maxTokens: dv.maxTokens,
         reasoning: dv.reasoning,
@@ -1459,7 +1912,7 @@ export class TurnSupervisor {
     currentInputSequence: number;
     attemptId: string;
     turnId: string | null; // 自动换窗=当前 turn（评审请求可被 stop(turnId) 中断）；手动换窗=null（stopAll 兜底）
-    materials: { identityText: string; rulesText: string; iText: string | null } | null;
+    materials: { identityText: string; rulesText: string; iText: string | null; memoryAnchorsText?: string } | null;
     cause?: RotationCause; // Persisted server intent; absent only during capacity evaluation.
     preserveWindow?: boolean; // Explicit retry may block on capacity but never rotates/rebuilds history.
   }): Promise<{ rotated: boolean; blocked: string | null }> {
@@ -1470,53 +1923,49 @@ export class TurnSupervisor {
     // F06：评审范围的实际已见清单优先取轨迹 manifest（真实发送证据）；无轨迹时退化为库投影。
     const dialogue = this.dialogueUpTo(o.conversationId, o.currentInputSequence - 1);
     // §11.1 估计：本地粗估 + 上次实际 usage 校准；精度如实标注。
-    // D06（审计 3655d60）：**旧窗工作集不含新入站消息**——硬门只判旧窗自身是否无可挽回（blocked_hard）；
-    // 新消息长度只并入"下一输入"预测触发换窗（§4.2：大输入先保存、先提醒旧窗、新输入只进新窗一次）。
-    // 新窗装下新输入的最终校验由工具循环每轮的 P2 容量门承担（F03 尾），真实硬门不放松。
-    const currentInputLen = (d.db.prepare(
-      `SELECT LENGTH(r.content) AS len FROM messages m JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       WHERE m.conversation_id = ? AND m.sequence = ?`,
-    ).get(o.conversationId, o.currentInputSequence) as { len: number | null } | undefined)?.len ?? 0;
-    // 审计 F25：估算只用实际发送集合——轨迹正本（无轨迹的新窗首轮回退库内近期，此时二者一致）。
-    // 被拒/未发送的历史大消息不得污染当前工作集（否则短输入被持续 CAPACITY_BLOCKED_HARD）。
+    // 工作集估算（R4b 迁 runtime/rotation-estimate.ts：D06/F25/1024 裁定②/F-J-33/R21 口径单一正本）
     const trajForEstimate = d.trajectory?.forWindow(o.window.id) ?? null;
-    // 她 1024 裁定②：工作集=实际发送载荷（轨迹消息+冻结工具目录，与工具循环硬门同一口径）
-    const trajMessagesForEstimate = trajForEstimate ? trajForEstimate.messages : dialogue;
-    // F-J-33：无轨迹回退路径补 system 材料（轨迹路径 system 段已在 messages 内）
-    const systemChars = trajForEstimate ? 0 : (o.materials?.identityText.length ?? 0) + (o.materials?.rulesText.length ?? 0) + (o.materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const oldWindowEstimate = this.estimateRequestTokens(trajMessagesForEstimate, o.window.id) + Math.ceil(systemChars / (dv?.charsPerToken ?? 1.5)); // 旧窗自身工作集
-    const lastActual = (d.db.prepare(
-      `SELECT u.input_tokens FROM usage_observations u JOIN attempts a ON a.id = u.attempt_id
-       WHERE a.window_id = ? AND u.input_tokens IS NOT NULL AND u.completeness = 'complete' ORDER BY u.observed_at DESC LIMIT 1`,
-    ).get(o.window.id) as { input_tokens: number } | undefined)?.input_tokens ?? null;
-    const workingSet = Math.max(oldWindowEstimate, lastActual ?? 0);
-    // R21（复审 2026-10-07）：下一输入=旧工作集+本轮新增输入（system 只计
-    // 一次）——此前 Math.max(workingSet, incomingEstimate) 漏加本轮输入，
-    // 临界消息在旧窗超软线却不触发提醒/换窗（既有问题，硬门不受影响）
-    const nextWithIncoming = workingSet + Math.ceil(currentInputLen / (dv?.charsPerToken ?? 1.5));
+    const estimate = () => estimateRotationWorkingSet({ db: d.db, conversationId: o.conversationId, currentInputSequence: o.currentInputSequence, windowId: o.window.id, trajectoryRow: trajForEstimate, fallbackDialogue: dialogue, materials: o.materials, charsPerToken: dv?.charsPerToken ?? null, estimateTokensFor: (msgs) => this.estimateRequestTokens(msgs, this.windowTools(o.window.id)) });
+    let { workingSet, nextWithIncoming } = estimate();
 
         // 2026-10-08 晚间她裁定：6h 静默触发已删除（睡觉≠换窗；换窗唯一自动基线=容量软线，2026-10-17 起 600k 兜底）
     const capacity = d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER; // 未测量：容量触发按上限禁用（不画假百分比）。6h idle 触发已退役（2026-10-08）——唯一自动换窗基线=容量软线（600k 兜底）
     let plan: ReturnType<typeof rotationPlan> | null = null;
-    if (!o.cause) {
-      plan = rotationPlan({
+    let hardContinuationRecovery = false;
+    if (dv && (!o.cause || o.cause === 'capacity')) {
+      const planForEstimate = () => rotationPlan({
         currentInput: workingSet, // D06：旧窗自身（硬门判这个）
         nextInput: nextWithIncoming, // 新消息并入下一输入预测（触发先提醒再换窗，不直接堵死）
         capacity,
-        maxOutput: dv!.maxTokens,
+        maxOutput: dv.maxTokens,
         toolReserve: d.config.windows.tool_input_reserve_tokens,
         reviewReserve: d.config.windows.review_reserve_tokens,
         safety: d.config.windows.safety_reserve_tokens,
         soft: d.config.windows.soft_limit_tokens,
       });
+      plan = planForEstimate();
+      if (plan.action === 'blocked_hard' && trajForEstimate
+          && this.requestCapacity(trajForEstimate.messages, this.windowTools(o.window.id), dv.maxTokens)?.plan.action === 'blocked_hard') {
+        const sentCount = this.rejectedContinuationPrefix(o.window.id, trajForEstimate.messages);
+        if (sentCount !== null) {
+          if (this.recoverOverbudgetTrajectory(trajForEstimate, sentCount)) {
+            ({ workingSet, nextWithIncoming } = estimate());
+            plan = planForEstimate();
+          }
+          hardContinuationRecovery = Boolean(d.selections) && plan.action === 'blocked_hard';
+        }
+      }
+    }
+    if (!o.cause && plan) {
       // WP5（2026-10-08 §1.5 她裁定）：容量预警推送/展示退役——不再发布
       // 预警事件；软线计算（rotate 触发）与硬门（blocked_hard）照常保留。
       // bootstrap 不可用/缓存保护未覆盖等其他 context.warning 诊断不受影响。
       // 审计 F03：blocked_hard 是硬门——超安全输入上界不得继续发送；交调用方按待恢复收口，不静默放行
-      if (plan.action === 'blocked_hard') {
-        return { rotated: false, blocked: `CAPACITY_BLOCKED_HARD:当前输入估计 ${workingSet} 超过安全输入上界 ${plan.safeInput}（C-O-T-R-S），输入已保存待恢复` };
+      if (plan.action === 'blocked_hard' && !hardContinuationRecovery) {
+        const recovery = d.selections && !o.preserveWindow ? '；可在手动换窗确认选集后续接这条输入' : '';
+        return { rotated: false, blocked: `CAPACITY_BLOCKED_HARD:当前输入估计 ${workingSet} 超过安全输入上界 ${plan.safeInput}（C-O-T-R-S），输入已保存待恢复${recovery}` };
       }
-      if (plan.action !== 'rotate') return { rotated: false, blocked: null };
+      if (plan.action !== 'rotate' && !hardContinuationRecovery) return { rotated: false, blocked: null };
       // A just-prepared target already includes the confirmed selection and
       // pending input budget. Its first input must not rotate the empty window
       // again on the same soft trigger; the per-request hard gate still applies.
@@ -1567,11 +2016,18 @@ export class TurnSupervisor {
       return { rotated: false, blocked: `WRITES_UNRESOLVED:${unresolvedBefore.length}（存在结果未知的写操作，换窗前须核实）` };
     }
 
-    const fingerprintChanged = o.window.context_fingerprint && o.window.context_fingerprint !== contextFingerprint(this.fingerprintConfigView(d.config), o.gate.manifest);
+    const fingerprintChanged = o.window.context_fingerprint && o.window.context_fingerprint !== contextFingerprint(d.config, o.gate.manifest);
     if (reason !== 'capacity' || fingerprintChanged || !dv) {
       d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private', payload: { code: reason === 'manual' ? 'manual_review_bypassed' : 'identity_or_transport_review_unavailable', reason } });
       return this.doRotate(o, reason, null, selectionId);
     }
+
+    const rotateWithoutOverbudgetReview = () => {
+      d.events.publish('context.warning', { conversationId: o.conversationId, entityRef: o.window.id, scope: 'private',
+        payload: { code: 'capacity_recovery_review_not_dispatched', reason, selection_id: selectionId } });
+      return this.doRotate(o, reason, null, selectionId);
+    };
+    if (hardContinuationRecovery) return rotateWithoutOverbudgetReview();
 
     // 她裁定 2026-10-07 的总开关：关=换窗不发 hold 提醒（WP5 起该开关只
     // 管提醒——日结已整链退役）。记录 skipped 凭证如实定位（不伪造
@@ -1656,15 +2112,6 @@ export class TurnSupervisor {
       }); // §3.2.5：空范围不叫模型
       return await this.doRotate(o, reason, null, selectionId);
     }
-    // §3.3 有界恢复（审计 P2-1）：同窗评审失败达上限后不再自动发评审（每次评审都是真实付费请求）。
-    // 恢复路径：评审成功换新窗（新窗计数自动重置）或人工处理（修提示/型号后手动换窗）。
-    const failedReviews = (d.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE window_id = ? AND status = 'failed'").get(o.window.id) as { n: number }).n;
-    if (failedReviews >= MAX_WINDOW_REVIEW_ATTEMPTS) {
-      return { rotated: false, blocked: `ROTATION_REVIEW_RETRY_EXHAUSTED:本窗评审已失败 ${failedReviews} 次（上限 ${MAX_WINDOW_REVIEW_ATTEMPTS}），不再自动评审——请检查模型对提醒的响应或手动换窗；输入已保存待恢复` };
-    }
-    const review = d.reviews.create(o.window.id, o.conversationId, o.window.revision, range);
-    d.events.publish('review.sent', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { window_id: o.window.id, reason, focus_count: range.length } });
-
     // —— §8.1 一次提醒（synthetic user 尾部；宿主隐藏普通输出；purpose=pre_rotate_review）——
     // 轨迹正本优先（模型看见的就是它看过的协议历史）；无轨迹时退化为 system+近期原话投影。
     const traj = trajEarly;
@@ -1674,7 +2121,24 @@ export class TurnSupervisor {
     const reviewCatchup = unifiedCatchup;
     const reviewCatchupMessages: OrMessage[] = reviewCatchup.map((m) => ({ role: m.role, content: [{ type: 'text', text: m.content }] }) as unknown as OrMessage);
     const reviewBaseMessages: OrMessage[] = traj ? [...traj.messages, ...reviewCatchupMessages] : []; // 无轨迹已在上方阻断——此分支不可达
-    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: buildPreRotateReviewMessage({ reviewId: review.id, reason, messageRefs: rangeKeys.join(', ') }) }] }];
+    const baseTools = this.windowTools(o.window.id);
+    const toolset = storedToolset(d.db, o.window.id)!;
+    const scopedTaskTools = toolset.protocol === 'direct';
+    const reviewId = genId('rev');
+    const reviewDefinition = taskDefinitionContext(toolset, 'context_review_complete', reviewId);
+    const reviewMessages: OrMessage[] = [...reviewBaseMessages, { role: 'user', content: [{ type: 'text', text: [buildPreRotateReviewMessage({ reviewId, reason, messageRefs: rangeKeys.join(', ') }),reviewDefinition].filter(Boolean).join('\n') }] }];
+    const reviewTools = scopedTaskTools ? modelToolsAfterBindingRetirement(toolsetForTask(toolset, 'context_review_complete')) : baseTools;
+    // A rolled-back wake can leave a fitting old prefix but an oversized review
+    // once its already-published message is included. Honor the confirmed selection.
+    if (selectionId && this.requestCapacity(reviewMessages, reviewTools, dv.maxTokens)?.plan.action === 'blocked_hard') {
+      return rotateWithoutOverbudgetReview();
+    }
+    const failedReviews = (d.db.prepare("SELECT COUNT(*) n FROM rotation_reviews WHERE window_id = ? AND status = 'failed'").get(o.window.id) as { n: number }).n;
+    if (failedReviews >= MAX_WINDOW_REVIEW_ATTEMPTS) {
+      return { rotated: false, blocked: `ROTATION_REVIEW_RETRY_EXHAUSTED:本窗评审已失败 ${failedReviews} 次（上限 ${MAX_WINDOW_REVIEW_ATTEMPTS}），不再自动评审——请检查模型对提醒的响应或手动换窗；输入已保存待恢复` };
+    }
+    const review = d.reviews.create(o.window.id, o.conversationId, o.window.revision, range, reviewId);
+    d.events.publish('review.sent', { conversationId: o.conversationId, entityRef: review.id, scope: 'private', payload: { window_id: o.window.id, reason, focus_count: range.length } });
     const { boundaries: reviewBoundaries, gDropped: reviewGDropped } = planBoundaries({ messages: reviewMessages, systemMessageCount: fixedSystemCount(reviewMessages), prevBoundary: traj?.lastBoundary ?? null });
     // F-J-32：G 保护点被丢弃时发脱敏观察事件（§7.2"保护未覆盖"可观测）
     if (reviewGDropped) {
@@ -1684,8 +2148,7 @@ export class TurnSupervisor {
       model: dv.model,
       sessionId: dv.sessionId(o.conversationId),
       messages: reviewMessages,
-      // F-J-09：评审请求同窗复用冻结工具快照（epoch 内 tools 恒定）
-      tools: this.windowTools(o.window.id),
+      tools: reviewTools,
       boundaries: reviewBoundaries,
       maxTokens: dv.maxTokens,
       reasoning: dv.reasoning,
@@ -1697,10 +2160,10 @@ export class TurnSupervisor {
     const stopKey = o.turnId ?? `review:${o.window.id}`;
     this.active.set(stopKey, reviewRun);
     const reviewTurnId = (d.db.prepare('SELECT turn_id FROM attempts WHERE id = ?').get(o.attemptId) as { turn_id: string } | undefined)?.turn_id ?? o.attemptId;
-    const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
+    const quietEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext): void => {
       // 评审请求不发布正文/思考（§8.1）；只记账 usage 与终态（F12：真实 turn 归属 + 请求身份）
       if (ev.kind === 'usage') {
-        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.window.id, scope: ev.scope, usage: ev.usage, model: dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属（D10 修复：此前误传不存在的 o.windowId → 恒 NULL）
+        d.usage.record({ turnId: reviewTurnId, attemptId: o.attemptId, requestId: reqCtx?.requestId ?? undefined, windowId: o.window.id, scope: ev.scope, usage: ev.usage, model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? dv.model, source: ev.source, completeness: ev.completeness }); // F31：评审费用按窗口归属（D10 修复：此前误传不存在的 o.windowId → 恒 NULL）
       }
     };
     const seenHighWater = effectiveManifest.length > 0 ? Math.max(...effectiveManifest.map((m) => m.seq)) : 0;
@@ -1710,6 +2173,7 @@ export class TurnSupervisor {
         envelope, purpose: 'pre_rotate_review', activeReviewId: review.id,
         conversationId: o.conversationId, windowId: o.window.id,
         turnId: null, attemptId: o.attemptId, controller, onEvent: quietEvent, seenSequence: seenHighWater,
+        scopedTaskTools,
         seenMessages: effectiveManifest.map((m) => (m.char_start !== undefined ? { id: m.id, revision: m.revision, char_start: m.char_start, char_end: m.char_end } : { id: m.id, revision: m.revision })), // D13+R12：评审视野=本窗实际已见清单（单一正本，含追赶投影；WP4 保片段范围）
       }));
     } finally {
@@ -1744,18 +2208,129 @@ export class TurnSupervisor {
     //（selection consumed + target_window_id + ACTIVE 指针 + 初始轨迹
     // 要么全成要么全回滚）
     const latestGate = this.d.identity.evaluateGate(this.d.db, { driver: this.drv()?.kind ?? 'claude-agent-sdk' });
-    if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(this.d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(this.d.config), o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
+    if (latestGate.state !== 'READY' || contextFingerprint(this.d.config, latestGate.manifest) !== contextFingerprint(this.d.config, o.gate.manifest)) return { rotated: false, blocked: 'IDENTITY_CHANGED_DURING_PREPARE' };
     const rotated = this.d.windows.rotate({ conversationId: o.conversationId, expectedWindowId: o.window.id, gate: o.gate, maxSequence: o.currentInputSequence - 1, assembledOptions: null, selectionId: selectionId ?? undefined, initialTrajectory });
     if (!rotated.ok) return { rotated: false, blocked: `ROTATE_PREPARE_FAILED:${rotated.reason.slice(0, 80)}` };
     if (o.window.context_fingerprint !== rotated.window.context_fingerprint) this.d.db.prepare("UPDATE windows SET blocked_reason='ROTATED_CONTEXT_STALE' WHERE id=?").run(o.window.id);
     // pending 键上的 bootstrap 缓存迁移到真实窗 id（同窗不重复拉）
-    const pendingBoot = this.bootstrapByWindow.get(`pending:${o.conversationId}`);
-    if (pendingBoot !== undefined) {
-      this.bootstrapByWindow.set(rotated.window.id, pendingBoot);
-      this.bootstrapByWindow.delete(`pending:${o.conversationId}`);
-    }
+    this.bootstrapMachine.transferPending(`pending:${o.conversationId}`, rotated.window.id);
     this.d.events.publish('window.rotated', { conversationId: o.conversationId, entityRef: rotated.window.id, scope: 'private', payload: { reason, review_id: reviewId, selection_id: selectionId } });
     return { rotated: true, blocked: null };
+  }
+
+  /** 相册重构 P5：解析本窗开窗携带计划（选集图 ∪ 相册携带设置，去重 ≤ 上限）。
+   *  P1-b（审计 2026-11-15）：content 已配置但 carry-set 读取失败（不可达/非 200/正文
+   *  截断/形状不对）→ **准备明确失败**——旧实现 warn 后按空携带继续，滚窗会冻结空计划
+   *  （本窗永久丢携带图）；失败保留旧窗/选集，可恢复重试。content 未配置=无携带能力，
+   *  照常空携带。空清单（200+items=[]）合法滚窗。合并超限→抛错阻断本次换窗准备。 */
+  private async resolveWindowCarry(conversationId: string, stashKey: string, selectedMessages: Array<{ message_id: string; attachments?: Array<{ asset_id: string; presentation: string }> }>): Promise<{ fragment: { blocks: Array<{ type: 'text'; text: string } | { type: 'asset_image'; asset_id: string; projection_version: 'v1' }> } | null; plan: ReturnType<typeof planCarryImages> }> {
+    let carryItems: CarrySetItem[] = [];
+    if (this.d.contentClient) {
+      try {
+        const res = await contentForward(this.d.contentClient, { method: 'GET', actor: 'jiaming', path: '/api/v1/content/carry-set' });
+        if (res.status === 200 && !res.bodyFailed) {
+          const body = res.body as { items?: CarrySetItem[] };
+          if (Array.isArray(body.items)) carryItems = body.items;
+          else throw new Error(`carry-set 响应形状不对（items 非数组）`);
+        } else {
+          throw new Error(`carry-set 读取失败（status=${res.status}${res.bodyFailed ? '，正文传输中断' : ''}）`);
+        }
+      } catch (err) {
+        this.d.logger.warn('carry_set_unreadable', { conversationId, error: String((err as Error).message).slice(0, 120) });
+        throw new Error(`CARRY_SET_UNREADABLE:${String((err as Error).message).slice(0, 120)}——携带清单读不到，本次准备不继续（旧窗/选集保留，可重试；不冻结空计划）`);
+      }
+    }
+    // ALB-07：选集图带 M 对象身份（content_sha256）参与合并去重（同字节不同 asset 仍一张）
+    const selectionImages = selectedMessages.flatMap((m) =>
+      (m.attachments ?? []).filter((a) => a.presentation === 'image' || a.presentation === 'sticker').map((a) => {
+        const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(a.asset_id) as { content_sha256: string } | undefined;
+        return { asset_id: a.asset_id, message_id: m.message_id, content_sha256: row?.content_sha256 ?? `est:${a.asset_id}` };
+      }));
+    // R2（复审 2026-11-08）：相册携带项补 M 对象身份——生产装配此前只传 asset_id，
+    // 规划器对选集图按 sha、相册图按 est:asset 计键，同图两张（反例：uniqueMedia=1
+    // planned=2 blocks=2）。统一按 content_sha256 去重。
+    const carryItemsWithHash = carryItems.map((c) => {
+      const row = this.d.db.prepare('SELECT content_sha256 FROM media_assets WHERE id = ?').get(c.asset_id) as { content_sha256: string } | undefined;
+      // 本地正本行优先；行缺席时保留 content 随携带集提供的身份（RR2，自查修正：
+      // 旧写法无脑覆盖，本地查不到会把好数据抹成 null 退化回 est:asset 双键）
+      return { ...c, content_sha256: row?.content_sha256 ?? c.content_sha256 ?? null };
+    });
+    // F1（复审 2026-11-09 二轮）：对账补身份——携带集仍缺 content_sha256 的存量行
+    // （v7 前旧数据）按 E 资产正本经既有相册条目入口幂等回填；content 侧只补
+    // content_sha256（不动 carry_mode/留言/updated_at）。失败仅告警不阻断滚窗，
+    // 下次对账再补；201=对账间隙条目被删后重建（unexpected，可观测即可）。
+    const backfillClient = this.d.contentClient;
+    if (backfillClient) {
+      for (let i = 0; i < carryItems.length; i++) {
+        const c = carryItems[i]!;
+        if (c.content_sha256) continue; // content 行已有身份
+        const localHash = carryItemsWithHash[i]?.content_sha256 ?? null;
+        if (!localHash) continue; // E 正本也不认识该资产：无从补，如实保持 asset 身份
+        try {
+          const res = await contentForward(backfillClient, {
+            method: 'POST', actor: 'jiaming', path: `/api/v1/content/albums/${encodeURIComponent(c.kind)}/entries`,
+            body: { asset_id: c.asset_id, content_sha256: localHash },
+            headers: { 'idempotency-key': `carry-hash:${c.entry_id}` },
+          });
+          if (res.status === 201) this.d.logger.warn('carry_hash_backfill_recreated', { entryId: c.entry_id });
+          else if (res.status !== 200) this.d.logger.warn('carry_hash_backfill_rejected', { entryId: c.entry_id, status: res.status });
+        } catch {
+          this.d.logger.warn('carry_hash_backfill_unreachable', { entryId: c.entry_id });
+        }
+      }
+    }
+    const plan = planCarryImages({ selectionImages, carryItems: carryItemsWithHash, speakerLabels: {
+      qiaosheng: this.d.config.memory_surfacing.sol?.user_display_name ?? '宿主用户',
+      jiaming: this.d.config.memory_surfacing.sol?.assistant_display_name ?? 'char',
+    } });
+    if (!plan.ok) throw new Error(`${plan.code}:${plan.detail}`);
+    // ALB-08（审计 2026-11-08）：计划立即持久化（先落 pending 键行；窗口落地时迁到真实
+    // window_id）——旧实现只存进程内 Map，滚窗成功后、首请求前重启即丢，next_once 复活。
+    this.d.db.prepare('INSERT OR REPLACE INTO window_carry_plans(window_id, plan_json, has_next_once, created_at) VALUES (?,?,?,?)')
+      .run(stashKey, JSON.stringify(plan), plan.ok && plan.hasNextOnce ? 1 : 0, new Date().toISOString());
+    this.pendingCarryPlans.set(stashKey, { plan, conversationId, createdAt: new Date().toISOString() });
+    return { fragment: buildCarryFragment(plan.ok ? plan.fragmentImages : [], plan.ok ? plan.images : []), plan };
+  }
+
+  /** 窗口落地后把暂存计划固化到真实 window_id（幂等；无暂存=无携带，不建行）。
+   *  ALB-08：计划在准备期已落 pending 键行——这里把该行迁到真实 window_id（行迁移，
+   *  不依赖进程内 Map 存活；Map 仅作同进程幂等缓存）。 */
+  private persistCarryPlanForWindow(windowId: string): void {
+    for (const [key, stash] of this.pendingCarryPlans) {
+      if (!key.startsWith('pending:')) continue;
+      if (stash.conversationId !== this.d.db.prepare('SELECT conversation_id FROM windows WHERE id = ?').get(windowId)?.conversation_id) continue;
+      this.d.db.prepare('INSERT OR IGNORE INTO window_carry_plans(window_id, plan_json, has_next_once, created_at) VALUES (?,?,?,?)')
+        .run(windowId, JSON.stringify(stash.plan), stash.plan.ok && stash.plan.hasNextOnce ? 1 : 0, stash.createdAt);
+      // pending 键行使命结束：删除（非 UPDATE 迁移——新行已 INSERT，UPDATE 会撞 PK 唯一约束）
+      this.d.db.prepare('DELETE FROM window_carry_plans WHERE window_id = ?').run(key);
+      this.pendingCarryPlans.delete(key);
+    }
+  }
+
+  /** P5 §7.4：窗内首次成功投递后消费 next_once（before=建窗时刻——不吞投递后新设项；
+   *  content 失败保留未消费，下次成功补齐；同窗已消费即跳过）。 */
+  private async consumeCarryNextOnceOnSuccess(windowId: string): Promise<void> {
+    const row = this.d.db.prepare('SELECT has_next_once, consumed_at, created_at FROM window_carry_plans WHERE window_id = ?').get(windowId) as { has_next_once: number; consumed_at: string | null; created_at: string } | undefined;
+    if (!row || !row.has_next_once || row.consumed_at || !this.d.contentClient) return;
+    try {
+      const res = await contentForward(this.d.contentClient, {
+        method: 'POST', actor: 'jiaming', path: '/api/v1/content/carry-set/consume-next-once',
+        body: { before: row.created_at }, headers: { 'idempotency-key': `carry-consume:${windowId}` },
+      });
+      // RR4-A：2xx 但正文截断=消费结果未知——不标记已消费（保留下次成功投递后补消费；
+      // 同键 replay 幂等，content 侧已提交的话重放取回原回执）。
+      if (res.status === 200 && res.bodyFailed) {
+        this.d.logger.warn('carry_consume_body_unparseable', { windowId });
+        return;
+      }
+      if (res.status === 200) {
+        this.d.db.prepare('UPDATE window_carry_plans SET consumed_at = ? WHERE window_id = ? AND consumed_at IS NULL').run(new Date().toISOString(), windowId);
+      } else {
+        this.d.logger.warn('carry_consume_rejected', { windowId, status: res.status });
+      }
+    } catch {
+      this.d.logger.warn('carry_consume_unreachable', { windowId }); // 保留未消费，后续成功回合补齐
+    }
   }
 
   /** WP-07（CX-09）：新窗初始轨迹材料（事务外先行）——按已确认选集
@@ -1771,15 +2346,19 @@ export class TurnSupervisor {
     }
     if (!d.trajectory) throw new Error('ROTATION_TRAJECTORY_UNAVAILABLE');
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const boot = await this.windowBootstrap(`pending:${conversationId}`);
+    const boot = await this.bootstrapMachine.windowBootstrap(`pending:${conversationId}`, undefined, conversationId, materials?.memoryAnchorsText);
     const sel = selectionId && d.selections ? d.selections.get(selectionId) : null;
+    const loadedSelection = d.selections && sel ? d.selections.loadForProjection(sel) : [];
+    const carry = await this.resolveWindowCarry(conversationId, `pending:${conversationId}`, loadedSelection);
     const built = this.buildEnvelope({
       conversationId,
-      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+      materials,
       bootText: boot,
+      episodeFragment: this.bootstrapMachine.episodeFragmentFor(`pending:${conversationId}`),
       dialogue: [],
       tailUserText: ' ',
-      selectedMessages: d.selections && sel ? d.selections.loadForProjection(sel) : [],
+      selectedMessages: loadedSelection,
+      carryFragment: carry.fragment,
     });
     const inputChars = JSON.stringify(built.envelope.messages).length + this.selectionPendingInputChars(conversationId);
     const hardBound = (d.config.windows.model_context_capacity ?? Number.MAX_SAFE_INTEGER) - dv.maxTokens - d.config.windows.tool_input_reserve_tokens - d.config.windows.review_reserve_tokens - d.config.windows.safety_reserve_tokens;
@@ -1796,40 +2375,21 @@ export class TurnSupervisor {
   private selectionEstimateContext(tailInputChars: number): { charsPerToken: number; systemChars: number; tailInputChars: number; capacityBoundTokens: number } | null {
     const d = this.d;
     const dv = this.drv();
-    if (!dv) {
-      // SDK 驱动（无信封映射）：粗估回退——不做选集级容量预检（请求级
-      // 容量门仍在 SDK 侧），系统段记 0、界=不设限；tokenizer 未知=rough
-      return { charsPerToken: 1.5, systemChars: 0, tailInputChars, capacityBoundTokens: Number.MAX_SAFE_INTEGER };
-    }
+    if (!dv) return selectionEstimateContext({ driver: null, systemChars: 0, windows: d.config.windows, tailInputChars }); // SDK 驱动粗估回退（§6.2）
     const gate = d.identity.evaluateGate(d.db, { driver: dv.kind });
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const systemChars = (materials?.identityText.length ?? 0) + (materials?.rulesText.length ?? 0) + (materials?.iText?.length ?? 0) + FIXED_RUNTIME_FRAGMENT.length + HOST_BOUNDARY_RULES.length;
-    const w = d.config.windows;
-    const capacity = w.model_context_capacity ?? Number.MAX_SAFE_INTEGER;
-    const bound = Math.min(w.soft_limit_tokens, capacity - dv.maxTokens - w.tool_input_reserve_tokens - w.review_reserve_tokens - w.safety_reserve_tokens);
-    return { charsPerToken: dv.charsPerToken, systemChars, tailInputChars, capacityBoundTokens: Math.max(0, bound) };
+    return selectionEstimateContext({ driver: { charsPerToken: dv.charsPerToken, maxTokens: dv.maxTokens }, systemChars: systemFragmentChars(materials), windows: d.config.windows, tailInputChars });
   }
 
   /** 选择面截止水位：最后一条"已了结"消息（其 turn 非 pending/blocked）——
    *  待回答与排队输入不得作为历史带入（H04）。 */
   private selectionCutoffSequence(conversationId: string): number {
-    const row = this.d.db.prepare(
-      `SELECT MAX(m.sequence) AS m FROM messages m
-       LEFT JOIN turns t ON t.input_message_id = m.id
-       WHERE m.conversation_id = ? AND (t.id IS NULL OR t.state NOT IN ('pending','blocked'))`,
-    ).get(conversationId) as { m: number | null };
-    return row?.m ?? 0;
+    return selectionCutoffSequence(this.d.db, conversationId); // R4b 迁 context/selection-estimate.ts（H04）
   }
 
   /** 待回答/排队输入的总字符（容量估计并入"当前待回答输入"，H04/H05）。 */
   private selectionPendingInputChars(conversationId: string): number {
-    const row = this.d.db.prepare(
-      `SELECT COALESCE(SUM(LENGTH(r.content)), 0) AS chars FROM messages m
-       JOIN message_revisions r ON r.message_id = m.id AND r.revision = m.current_revision
-       JOIN turns t ON t.input_message_id = m.id
-       WHERE m.conversation_id = ? AND (t.state = 'pending' OR (t.state = 'blocked' AND EXISTS (SELECT 1 FROM attempts a WHERE a.turn_id=t.id AND a.state='blocked' AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%'))))`,
-    ).get(conversationId) as { chars: number };
-    return row?.chars ?? 0;
+    return selectionPendingInputChars(this.d.db, conversationId); // R4b 迁 context/selection-estimate.ts（H04/H05）
   }
 
   /** preview（§6.2）：只读核验——不跑模型、不 hold、不换窗、不写选集。 */
@@ -1949,35 +2509,36 @@ export class TurnSupervisor {
         if (rot === null) {
           try {
             const latestGate = d.identity.evaluateGate(d.db, { driver: dv?.kind ?? 'claude-agent-sdk' });
-            if (latestGate.state !== 'READY' || contextFingerprint(this.fingerprintConfigView(d.config), latestGate.manifest) !== contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
+            if (latestGate.state !== 'READY' || contextFingerprint(d.config, latestGate.manifest) !== contextFingerprint(d.config, gate.manifest)) throw new Error('IDENTITY_CHANGED_DURING_PREPARE');
             const created = d.windows.createWindow({ conversationId, gate, assembledOptions: null, selectionId: selId, initialTrajectory: prepared });
             rot = created.window.status === 'ACTIVE' ? { ok: true, windowId: created.window.id } : { ok: false, reason: created.blockedReason ?? '建窗失败' };
             // RRA-015（2026-10-09 复审）：无活动窗恢复分支同样迁移 pending
             // bootstrap 缓存到真实窗 id 并清 pending——此前只 doRotate 迁移，
             // 连续模型恢复的第二/三窗复用第一次的旧 B（违反新窗必拉最新）
             if (created.window.status === 'ACTIVE') {
-              const pendingBoot = this.bootstrapByWindow.get(`pending:${conversationId}`);
-              if (pendingBoot !== undefined) {
-                this.bootstrapByWindow.set(created.window.id, pendingBoot);
-                this.bootstrapByWindow.delete(`pending:${conversationId}`);
-              }
+              this.bootstrapMachine.transferPending(`pending:${conversationId}`, created.window.id);
             }
           } catch { rot = { ok: false, reason: 'ROTATE_COMMIT_FAILED' }; }
         }
       }
       if (!rot || !rot.ok) return { ok: false as const, reason: rot?.reason ?? 'ROTATION_NOT_COMMITTED', resumed: 0 };
-      const rows = d.db.prepare(
-        "SELECT DISTINCT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state='blocked' AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%') WHERE t.conversation_id = ? AND t.state='blocked'",
-      ).all(conversationId) as Array<{ id: string }>;
-      for (const r of rows) {
-        tx(d.db, () => {
-          d.db.prepare("UPDATE attempts SET state='pending', blocked_reason=NULL WHERE turn_id=? AND state='blocked' AND (blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%')").run(r.id);
-          d.db.prepare("UPDATE turns SET state='pending', completed_at=NULL WHERE id=? AND state='blocked'").run(r.id);
-        });
-        this.enqueue(r.id); // 链尾排队（当前串行任务结束后执行）
-      }
-      return { ok: true as const, windowId: rot.windowId, resumed: rows.length };
+      return { ok: true as const, windowId: rot.windowId, resumed: this.resumeSelectionInputs(conversationId) };
     });
+  }
+
+  private resumeSelectionInputs(conversationId: string): number {
+    const db = this.d.db;
+    const rows = db.prepare(
+      "SELECT DISTINCT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id AND a.state='blocked' AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%') WHERE t.conversation_id = ? AND t.state='blocked'",
+    ).all(conversationId) as Array<{ id: string }>;
+    for (const r of rows) {
+      tx(db, () => {
+        db.prepare("UPDATE attempts SET state='pending', blocked_reason=NULL WHERE turn_id=? AND state='blocked' AND (blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%')").run(r.id);
+        db.prepare("UPDATE turns SET state='pending', completed_at=NULL WHERE id=? AND state='blocked'").run(r.id);
+      });
+      this.enqueue(r.id); // 链尾排队（当前串行任务结束后执行）
+    }
+    return rows.length;
   }
 
   async manualRotate(conversationId: string, expectedWindowId?: string): Promise<{ ok: true; windowId: string } | { ok: false; reason: string }> {
@@ -1987,7 +2548,9 @@ export class TurnSupervisor {
       if (expectedWindowId && this.d.windows.activeWindow(conversationId)?.id !== expectedWindowId) {
         return { ok: false as const, reason: 'WINDOW_STALE:目标窗口已不再活动' };
       }
-      return this.rotateConfirmed(conversationId, 'manual', true);
+      const result = await this.rotateConfirmed(conversationId, 'manual', true);
+      if (result.ok && this.d.selections?.forTargetWindow(result.windowId)) this.resumeSelectionInputs(conversationId);
+      return result;
     });
   }
 
@@ -2003,12 +2566,29 @@ export class TurnSupervisor {
       const prior = d.selections.activeForWindow(conversationId, window.id);
       const selection = prior ?? d.selections.ensureAwaiting({ conversationId, sourceWindowId: window.id, expectedWindowRevision: window.revision, cutoffSequence: cutoff, cause: 'manual' });
       d.selections.recordCause(selection.selection_id, 'manual');
+      // Explicit manual rotation can recover the latest unchanged, never-sent
+      // chat input from a legacy hard block without treating an old wake as committed.
+      d.db.prepare(`
+        UPDATE attempts SET blocked_reason=?
+        WHERE id=(
+          SELECT a.id FROM turns t JOIN messages m ON m.id=t.input_message_id
+          JOIN attempts a ON a.id=(SELECT id FROM attempts WHERE turn_id=t.id ORDER BY attempt_no DESC LIMIT 1)
+          WHERE t.conversation_id=? AND t.trigger='user_message' AND t.state='blocked'
+            AND m.conversation_id=t.conversation_id AND m.speaker='owner'
+            AND m.sequence=(SELECT MAX(sequence) FROM messages WHERE conversation_id=t.conversation_id AND speaker='owner')
+            AND a.state='blocked' AND a.blocked_reason LIKE 'CAPACITY_BLOCKED_HARD:%'
+            AND a.input_revision=m.current_revision AND a.retry_window_id IS NULL
+            AND (a.window_id IS NULL OR a.window_id=?)
+            AND NOT EXISTS(SELECT 1 FROM provider_requests p WHERE p.turn_id=t.id AND (p.dispatch_started_at IS NOT NULL OR p.sent_at IS NOT NULL))
+            AND NOT EXISTS(SELECT 1 FROM voice_stream_turns v WHERE v.est_turn_id=t.id)
+        )
+      `).run(`CONTEXT_SELECTION_REQUIRED:容量阻断的原输入等待手动换窗确认（selection_id=${selection.selection_id}）`, conversationId, window.id);
       d.events.publish('context.warning', { conversationId, entityRef: selection.selection_id, scope: 'private', payload: { code: 'manual_rotation_requested', previous_cause: prior?.rotation_cause ?? null, source_window_id: window.id } });
     }
     const materials = gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
     const r = await this.rotateIfNeeded({ conversationId, window, gate, currentInputSequence: cutoff + 1,
       attemptId: 'rotation-resume', turnId: null,
-      materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+      materials,
       cause,
     });
     if (!r.rotated) return { ok: false, reason: r.blocked ?? 'ROTATION_NOT_COMMITTED' };
@@ -2056,24 +2636,13 @@ export class TurnSupervisor {
     const gate = d.identity.evaluateGate(d.db, { driver: dv ? dv.kind : 'claude-agent-sdk' });
     // F04：校验与装配用同一份已验证材料（含批准规则正文；I 留在开窗包通道，未批准策略不装载）
     const materials = gate.state === 'READY' && gate.manifest ? d.identity.loadVerifiedMaterials(gate.manifest) : null;
-    const workspacesDir = buildPaths(resolveStateRoot(process.env.ESTOMAGO_HOME)).workspacesDir;
-    const built = dv ? null : buildSdkOptions({ config: d.config, gate, identityText: materials?.identityText ?? null, approvedRulesText: materials?.rulesText ?? null, cwd: workspacesDir });
     if (d.runnerSelection.status === 'blocked') {
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, `RUNTIME_NOT_READY:${d.runnerSelection.reasons.map(codeOf).join(';')}`, 'blocked');
-      return;
-    }
-    if (built !== null && built.status === 'blocked') {
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, `IDENTITY_NOT_READY:${built.reasons.map(codeOf).join(';').slice(0, 120)}`, 'blocked');
       return;
     }
     if (dv !== null && (!materials?.identityText || !materials?.rulesText)) {
       // §2.1：信封驱动（OR/DS）首条生成前必须有批准身份/规则材料——与 SDK 同一 gate，不提供默认人格
       this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:ENVELOPE_DRIVER_MISSING_APPROVED_MATERIALS', 'blocked');
-      return;
-    }
-    if (dv !== null && !materials?.iText) {
-      // 审计 F02：当前 I 必须完整进入固定前缀（§5.1/§7.1）——缺必需 I 时阻断，不静默降级
-      this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'IDENTITY_NOT_READY:ENVELOPE_DRIVER_MISSING_I', 'blocked');
       return;
     }
 
@@ -2110,7 +2679,7 @@ export class TurnSupervisor {
           return;
         }
       }
-      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: built ? built.assembled : null });
+      d.windows.createWindow({ conversationId: turn.conversation_id, gate, assembledOptions: null });
       window = d.windows.activeWindow(turn.conversation_id);
       if (!window) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'NO_ACTIVE_WINDOW', 'blocked');
@@ -2120,7 +2689,7 @@ export class TurnSupervisor {
     // §7 AUD：人格/运行边界指纹变化 → 旧窗 CONTEXT_STALE，禁止 resume 旧 session
     // 2026-10-08：指纹按生效视图（含 or_model override；reasoning 已不参与指纹——
     // 换思考深度不换窗，上下文全复用）
-    const expectedFingerprint = contextFingerprint(this.fingerprintConfigView(d.config), gate.manifest);
+    const expectedFingerprint = contextFingerprint(d.config, gate.manifest);
     if (window.context_fingerprint && window.context_fingerprint !== expectedFingerprint) {
       if (attempt.retry_window_id) {
         this.blockAttempt(attempt.id, turnId, turn.conversation_id, 'RETRY_CONTEXT_CHANGED:运行配置已变化，本次重试未发送', 'blocked');
@@ -2161,7 +2730,7 @@ export class TurnSupervisor {
     };
     let trajInitializedThisTurn = false; // RE-10：懒初始化重建的轨迹=合法新基线，wire 守卫跳过
     if (dv && d.trajectory) {
-      if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapByWindow.delete(window.id);
+      if (!attempt.retry_window_id && d.trajectory.discardUnsent(window.id)) this.bootstrapMachine.delete(window.id);
       const trajExists = d.trajectory.forWindow(window.id) !== null;
       if (attempt.retry_window_id && !trajExists) {
         this.active.delete(turnId);
@@ -2177,12 +2746,18 @@ export class TurnSupervisor {
         // D2（她批准 2026-10-06）：新窗轨迹初始化时装入开窗资料（缓存点 B）——
         // B 进入轨迹正本的 system 段并随窗冻结（§7.1 首次装配后固定）；取不到
         // =无 B 降级（context.warning 已记），不阻塞消息、不伪造"记忆已恢复"
-        const boot0 = await this.windowBootstrap(window.id, prepSignal);
+        await this.prepareWindowTools(window.id, prepSignal);
+        const boot0 = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id, materials?.memoryAnchorsText);
         if (stoppedDuringPreparation()) return;
         const sel0 = d.selections?.forTargetWindow(window.id) ?? null;
+        // 相册重构 P5：懒初始化位点解析开窗携带（真实窗 id——直接固化行；选集/携带图
+        //  随 buildEnvelope 装配并冻结进轨迹）。超限抛错→本 attempt 阻断（不静默丢图）。
+        const loaded0 = sel0 ? d.selections!.loadForProjection(sel0) : [];
+        const carry0 = await this.resolveWindowCarry(turn.conversation_id, window.id, loaded0);
+        this.persistCarryPlanForWindow(window.id);
         const built0 = sel0
-          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(sel0) })
-          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: boot0, dialogue: baseDialogue, tailUserText: ' ' });
+          ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loaded0, carryFragment: carry0.fragment })
+          : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: boot0, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carry0.fragment });
         // F06（复审修正）：manifest 从 buildEnvelope 实际选中的子集生成——裁剪掉旧消息时
         // 不再按索引回映全量前缀 ID（正文含 B、清单含 A 的错配源头）
         const baseManifest = built0.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
@@ -2195,7 +2770,7 @@ export class TurnSupervisor {
       const rotation = await this.rotateIfNeeded({
         conversationId: turn.conversation_id, window, gate,
         currentInputSequence: inputMessage.sequence, attemptId: attempt.id, turnId,
-        materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+        materials,
         preserveWindow: Boolean(attempt.retry_window_id),
       });
       if (rotation.blocked) {
@@ -2206,18 +2781,23 @@ export class TurnSupervisor {
       if (rotation.rotated) {
         const next = d.windows.activeWindow(turn.conversation_id);
         if (next) window = next; // 新窗已 ACTIVE：本轮输入只进新窗一次（§4.2）
+        if (next) this.persistCarryPlanForWindow(next.id); // P5：准备期暂存的携带计划随窗落地
         if (d.trajectory) {
           const nextTraj = d.trajectory.forWindow(window.id);
           if (!nextTraj) {
             const baseDialogue = this.dialogueUpTo(turn.conversation_id, inputMessage.sequence - 1);
-            const bootR = await this.windowBootstrap(window.id, prepSignal);
+            await this.prepareWindowTools(window.id, prepSignal);
+            const bootR = await this.bootstrapMachine.windowBootstrap(window.id, prepSignal, turn.conversation_id, materials?.memoryAnchorsText);
             if (stoppedDuringPreparation()) return;
             // WP3：换窗后的新窗按消费的选集装配（选集在 doRotate 同事务
             // 绑定 target_window_id；无命中=兼容期自动回退）
             const selR = d.selections?.forTargetWindow(window.id) ?? null;
+            const loadedR = selR ? d.selections!.loadForProjection(selR) : [];
+            const carryR = await this.resolveWindowCarry(turn.conversation_id, window.id, loadedR);
+            this.persistCarryPlanForWindow(window.id);
             const builtR = selR
-              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: [], tailUserText: ' ', selectedMessages: d.selections!.loadForProjection(selR) })
-              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null, bootText: bootR, dialogue: baseDialogue, tailUserText: ' ' });
+              ? this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: [], tailUserText: ' ', selectedMessages: loadedR, carryFragment: carryR.fragment })
+              : this.buildEnvelope({ conversationId: turn.conversation_id, windowId: window.id, materials, bootText: bootR, episodeFragment: this.bootstrapMachine.episodeFragmentFor(window.id), dialogue: baseDialogue, tailUserText: ' ', carryFragment: carryR.fragment });
             const baseManifest = builtR.selected.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
             d.trajectory.init(window.id, builtR.envelope.messages.slice(0, -1), baseManifest);
           }
@@ -2227,7 +2807,6 @@ export class TurnSupervisor {
     // route-edit 的新 attempt（fresh_session=1）：不 resume 旧 session——修订输入全新开跑，
     // 旧 session 历史含被替代的旧触发，定点排除语义未实测前不得带旧触发重跑。
     // 信封驱动（OR/DS）无宿主可见 resume 语义（session_id 是内部关联标识，不存历史）→ 恒 null。
-    const resumeSessionId = dv ? null : attempt.fresh_session ? null : window.sdk_session_id;
 
     // —— fence + running（claim 条件更新：双执行防护，AUD-37）——
     const generation = turn.generation + 1;
@@ -2245,7 +2824,7 @@ export class TurnSupervisor {
     }
     d.events.publish('turn.status', {
       conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id,
-      payload: { state: 'running', attempt_no: attempt.attempt_no, generation, resume_session: Boolean(resumeSessionId) },
+      payload: { state: 'running', attempt_no: attempt.attempt_no, generation, resume_session: Boolean(window.sdk_session_id && !attempt.fresh_session) },
     });
 
     // R10：准备阶段被取消 → 迟到的 bootstrap 结果不得再启动模型
@@ -2275,16 +2854,43 @@ export class TurnSupervisor {
     // 消息当前修订；工具续轮不重跑本路径（runTurn 每
     // attempt 一次；工具循环在 runOrToolLoop 内部，不重新装配尾部）。
     let surfacingAugment: import('../context/contributions.ts').AugmentResult | null = null;
-    if (d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
+    // P3（U05/T05，20261106）：通话话轮不注入浮现面——通话期间 Sol 调用与浮现注入均为 0
+    const inputIsCallTurn = inputMessage ? Boolean(this.d.db.prepare("SELECT 1 FROM messages WHERE id=? AND client_message_id LIKE 'voice:%'").get(inputMessage.id)) : false;
+    if (!inputIsCallTurn && d.surfacing && supportsSurfacingTransport(this.drv()?.kind ?? '') && inputMessage && inputMessage.speaker === 'owner') {
       try {
         const candidate = d.surfacing.reuseFrozen(attempt.id) ?? await d.surfacing.augmentFor({
           conversationId: turn.conversation_id, windowId: window.id, turnId,
           attemptId: attempt.id,
+          approvedIdentityText: materials?.identityText ?? null,
+          pendingCoverage: this.bootstrapMachine.coverageFor(window.id, d.trajectory?.forWindow(window.id)?.messages ?? [])?.window_coverage,
           message: { id: inputMessage.id, revision: effective.revision, sequence: inputMessage.sequence, content: effective.content, hash: effective.hash },
         });
         surfacingAugment = candidate;
       } catch {
         surfacingAugment = null; // 复核失败=本轮零注入，正常聊天不受影响（docs/08）
+      }
+      // ALB-10/R28 + R6 精确封存（复审 2026-11-08）：争吵封存的主闸在 prepare 下推——
+      // quarrel sm 集随来源边界进 M，检索层逐项排除（words/raw 按 source_ref、event 按
+      // 桶绑定），无关候选不再整包扣留。此处是终投递资格检查（03 §6：覆盖存档前已在
+      // 途、存档后才冻结返回的候选）：命中来源仍整包扣留（text/items 一体冻结，item
+      // 级剔除会投影不一致；下轮 prepare 已带排除集不再重推）。content 不可达=只暂缓
+      // 本次自动注入（正常聊天继续），不空集放行冒充已核对。主动查看/手选/默认携带
+      // 不在本路径；无法定位来源的候选（words/event 无 source_ref）不凭相似封禁。
+      if (surfacingAugment && this.d.archives && this.d.contentClient) {
+        // RR4-B：终投递复核同样受本回合取消约束（stop/route-signal abort 控制器）。
+        const blocked = await this.d.archives.quarrelBlockedSourceRefs(turn.conversation_id, runToken.controller.signal);
+        // RR4-W2d：服务可达（reachable）与范围读全（complete）分开——任一不成立都
+        // 暂缓本次自动注入（正常聊天继续），已生成未投递的候选不绕过完整性判断。
+        if (!blocked.reachable || !blocked.complete) {
+          d.logger.warn('surfacing_deferred_quarrel_unreachable', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId, complete: blocked.complete });
+          surfacingAugment = null;
+        } else if (blocked.refs.size > 0) {
+          const hit = surfacingAugment.items.some((it) => typeof it.source_ref === 'string' && blocked.refs.has(it.source_ref.replace(/^source_msg:/, '')));
+          if (hit) {
+            d.logger.info('surfacing_suppressed_quarrel', { turn_id: turnId, delivery_id: surfacingAugment.deliveryId, blocked_refs: blocked.refs.size });
+            surfacingAugment = null;
+          }
+        }
       }
     }
     // §3：经 ContextAssembler 构造（allowlist builder；reasoning 无通道）
@@ -2299,12 +2905,27 @@ export class TurnSupervisor {
     );
     // 程序事实轮（拒接/取消留言调度）：空尾 + program_fact_turns 有行 → 事实块追加为尾部
     // 宿主注入（[program_fact] 前缀，同 time_context 先例——不是用户发言，不写 messages）
+    // B4（2026-11-04）：行内括号解释移入 HOST_BOUNDARY_RULES 固定边界（缓存前缀一次声明）；
+    // 已实发旧轨迹的长格式逐字保留，新旧格式在新窗口轮出前共存（执行稿 B4 版本边界）。
     const programFact = inputMessage ? null : (d.db.prepare('SELECT fact_text, kind FROM program_fact_turns WHERE turn_id = ?').get(turnId) as { fact_text: string; kind: string } | undefined ?? null);
+    // B4：一次性待消费程序事实（现网用例=通话结束）——仅随正常文字轮附带：
+    // ①本轮输入存在（正常用户消息）②不是通话轮（通话中文字输入≠通话结束，B5 缩小打字依赖此区分）
+    // ③该会话当前无 active 通话（事实仍真实时才说）。多个待消费事实按创建序全量附带。
+    const pendingFacts = inputMessage && !this.isCallTurnMessage(inputMessage.id)
+      ? (d.db.prepare("SELECT id, fact_text FROM pending_program_facts WHERE conversation_id=? AND consumed_at IS NULL ORDER BY created_at").all(turn.conversation_id) as Array<{ id: string; fact_text: string }>)
+        .filter(() => !isVoiceCallActive(d.db, turn.conversation_id)) // E02：窄能力（与 model-bridge/executor 同源判定）
+      : [];
+    // 只有经 Siren 实时入口登记、实际接着本轮回复流的回合才声明电话模式。
+    // 普通语音附件、通话时键入的消息、以及挂断后从聊天重试都没有本轮通话输出抽头。
+    const liveCallFact = this.voiceTaps.has(turnId) ? `[program_fact]\n${TurnSupervisor.LIVE_CALL_FACT}` : null;
     const prompt = [
-      ...assembledContext.segments.map((seg) => `[${seg.source}]${seg.source === 'time_context' ? '（宿主注入的程序事实，不是用户发言）' : ''}\n${seg.text}`),
-      ...(programFact ? [`[program_fact]（宿主注入的程序事实，不是用户发言）\n${programFact.fact_text}`] : []),
+      ...assembledContext.segments.flatMap((seg) => {
+        const block = `[${seg.source}]\n${seg.text}`;
+        return seg.source === 'user_input' && liveCallFact ? [liveCallFact, block] : [block];
+      }),
+      ...(programFact ? [`[program_fact]\n${programFact.fact_text}`] : []),
+      ...pendingFacts.map((f) => `[program_fact]\n${f.fact_text}`),
     ].join('\n\n');
-    // SDK has no host tool bridge; automatic surfacing remains unsupported.
     const inputHash = effective.hash || sha256Hex(effective.content);
 
     // 信封请求 v3（§5.5/§6.3/§7，OR/DS 共用管线）：消息=窗口轨迹正本 + 本轮输入尾部（append-only）；
@@ -2324,7 +2945,7 @@ export class TurnSupervisor {
     const catchup = orTraj ? this.catchupEntries(turn.conversation_id, dialogueForInput, trajMaxSeq, window.id) : [];
     // EXEC_V1 §03.6：追赶投影经同一投影器（媒体消息进上下文不再被拆成纯文本）
     const catchupContinuation = this.windowHasTool(window.id, 'transcript_read');
-    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { seq: m.sequence, transcriptContinuationAvailable: catchupContinuation }).blocks }) as unknown as OrMessage);
+    const catchupMessages: OrMessage[] = catchup.map((m) => ({ role: m.role, content: this.revisionBlocks(m.id, m.revision, m.content, { transcriptContinuationAvailable: catchupContinuation }).blocks }) as unknown as OrMessage);
     const catchupManifest: ManifestEntry[] = catchup.map((m) => ({ id: m.id, revision: m.revision, seq: m.sequence, origin: 'dialogue' as const, visible: true }));
     // WP-07（CX-07）：无轨迹 fallback 必须携带该窗已确认选集（选集为空
     // 数组=只发待答输入）——杜绝 dialogueUpTo 全量装配进入新窗（历史
@@ -2334,7 +2955,7 @@ export class TurnSupervisor {
     const fallbackBuild = (!orTraj && dv)
       ? this.buildEnvelope({
           conversationId: turn.conversation_id,
-          materials: materials ? { identityText: materials.identityText, rulesText: materials.rulesText, iText: materials.iText } : null,
+          materials,
           dialogue: [],
           tailUserText: prompt,
           tailMessage: inputMessage ? { id: inputMessage.id, revision: effective.revision } : null,
@@ -2345,16 +2966,21 @@ export class TurnSupervisor {
       ? [...orTraj.messages, ...catchupMessages]
       : (fallbackBuild ? fallbackBuild.envelope.messages.slice(0, -1) : []);
     // EXEC_V1 §03.6：本轮输入尾部投影（当前消息附件进模型；isCurrentInput：无转写语音在门处阻断）
+    // P2 §6.6：同上——聊天语音观察的有界等待在装配前完成（独立预算，不挂浮现 300s）
+    if (inputMessage && this.d.voiceObservations) await this.d.voiceObservations.awaitReadyForDispatch(inputMessage.id, effective.revision, VOICE_OBSERVATION_PREP_BUDGET_MS);
     const tailProjection = this.revisionBlocks(inputMessage?.id ?? null, effective.revision, prompt, { isCurrentInput: true, hearingAvailable: Boolean(dv) && voiceHearingPort(this.d.db, this.d.oidoHearing === true, window.id), transcriptContinuationAvailable: this.windowHasTool(window.id, 'transcript_read') });
-    const sdkPrompt = tailProjection.blocks.filter(block => block.type === 'text').map(block => String(block.text)).join('\n\n');
-    // Host memory is separate from the real input. OR uses explicitly labelled
-    // user-channel data; DS retains its system data message. Only the tail grows.
+    // Append the recollection before the real input, preserving both the user message and the existing history.
     const hostMemory: OrMessage[] = surfacingAugment
       ? [surfaceTransportMessage(this.drv()?.kind ?? '', surfacingAugment.text)] : [];
-    const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory,
+    // ALB-11（审计 2026-11-08，03 §4.2）：宿主一次性通知在下一次正常请求尾部追加为
+    // 独立 system 数据块（与浮现注入同一追加位；不进冻结轨迹前缀、不改历史）。取出
+    // 不立即标记——按本轮实际投递证据在终态收口（confirmNoticesDelivered）。
+    const pendingNoticeBatch = this.d.archives ? this.d.archives.takePendingNotices(turn.conversation_id, true) : [];
+    const hostNoticeMessages: OrMessage[] = pendingNoticeBatch.map((n) => ({ role: 'system', content: [{ type: 'text', text: n.text }] }) as OrMessage);
+    const orMessages: OrMessage[] = [...orBaseMessages, ...hostMemory, ...hostNoticeMessages,
       { role: 'user', content: tailProjection.blocks } as OrMessage];
-    const orEnvelope: OrRequestEnvelope | null = dv
-      ? (() => {
+    // R2：四类驱动均为信封驱动；RUNTIME_NOT_READY/IDENTITY 门已在此前返回，dv 必非空
+    const orEnvelope: OrRequestEnvelope = (() => {
           // R11：systemMessageCount 按实际（B 独立数据块时=2，cache-plan
           // 的独立 B 点分支由此生效；此前硬编码 1，B 点显式边界从未成立）
           const { boundaries, gDropped } = planBoundaries({ messages: orMessages, systemMessageCount: fixedSystemCount(orBaseMessages), prevBoundary: orTraj?.lastBoundary ?? null });
@@ -2362,17 +2988,16 @@ export class TurnSupervisor {
             d.events.publish('context.warning', { conversationId: turn.conversation_id, entityRef: window.id, scope: 'private', payload: { source: 'cache', code: 'g_dropped' } });
           }
           return {
-            model: dv.model,
-            sessionId: dv.sessionId(turn.conversation_id),
+            model: dv!.model,
+            sessionId: dv!.sessionId(turn.conversation_id),
             messages: orMessages,
             // F-J-09：本窗冻结快照（首发定格；词表中途变化不改变本窗 tools）
             tools: this.windowTools(window.id),
             boundaries,
-            maxTokens: dv.maxTokens,
-            reasoning: dv.reasoning,
+            maxTokens: dv!.maxTokens,
+            reasoning: dv!.reasoning,
           };
-        })()
-      : null;
+        })();
     // F-J-09：跨轮 previousPayload 的 tools 取**已发送冻结快照**（本窗首发定格），
     // 不用本轮重建结果充当"上一请求"——若当前信封 tools 与冻结快照漂移（回归），
     // append-only 断言可在跨轮间抓到（此前两边恒同源=结构性失明）
@@ -2458,6 +3083,8 @@ export class TurnSupervisor {
     // 记账模型：信封驱动用各自明确型号（§9.3 不混淆口径）；SDK 沿配置模型，F10 观测实际值后覆盖
     const configuredModelForUsage = dv ? dv.model : d.config.runtime.model;
 
+    // 首发信封已确定本次执行窗口，发布和通话抽头共用该窗的冻结合同。
+    const legacySequenceMarkers = catalogUsesLegacySequenceMarkers(storedToolset(d.db, window.id)?.catalog ?? []);
     const segmenter = new TextSegmenter();
     let sawReasoningBlock = false;
     // §16 + F11：正文按 (messageId, blockIndex) 跟踪——同一消息多个 text 块各自独立
@@ -2473,7 +3100,7 @@ export class TurnSupervisor {
       publishedByKey.set(key, text);
       // RE-02（2026-10-24）：语音抽头与聊天落库同源（同一真实新增 tail，provider 速度）；
       // 取消后代际内不供给（与下方 publishSegments 的 fence 一致）
-      if (!runToken.token.cancelled) this.voiceTaps.get(turnId)?.(tail);
+      if (!runToken.token.cancelled) this.voiceTaps.get(turnId)?.(tail, legacySequenceMarkers);
       publishSegments(segmenter.push(tail));
     };
     let routeSignalHandled = false;
@@ -2485,19 +3112,23 @@ export class TurnSupervisor {
     // 首段创建、后续段落以新修订追加（内容增长）；不再逐段独立成气泡
     let turnAssistantMessageId: string | null = null;
     const publishSegments = (segs: string[]): void => {
-      // 2026-10-19 她报障：模型把消息序号标记学舌进回复开头（前端可见）。
-      // 发表层剥除段首标记（[N]/[seq N] 形态）——提示词已禁写，这里是保险层
-      const stripped = segs.map((s) => s.replace(/^(\[seq ?\d+\]|\[\d+\])\s*/, ''));
-      for (const seg of stripped) {
+      for (const part of segs) {
         if (runToken.token.cancelled) return;
+        const seg = legacySequenceMarkers ? stripLegacySequenceMarker(part) : part;
         let msg: ReturnType<import('../messages/service.ts').MessageService['getMessage']> | null;
         if (turnAssistantMessageId === null) {
           msg = d.messages.publishAssistantMessage({ conversationId: turn.conversation_id, turnId, content: seg });
           turnAssistantMessageId = msg.id;
-          turnManifestAdditions.push({ id: msg.id, revision: 1, seq: msg.sequence, origin: 'dialogue', visible: true });
+          turnManifestAdditions.push({ id: msg.id, revision: msg.current_revision, seq: msg.sequence, origin: 'dialogue', visible: true });
         } else {
           msg = d.messages.appendAssistantPublication(turnAssistantMessageId, seg);
           if (msg === null) continue;
+          // F02（四仓联合审计 20261104，链A）：追加段使消息修订增长——manifest 的"实际已见"
+          // 证据必须同步推进，否则下一轮请求已含完整两段而 manifest 仍记首段修订，
+          // resolveQuoteRefs 按旧修订读取导致引用截断（审计实测：storedRevision=2、
+          // manifestRevision=1，引用只有第一段）。同消息单条 entry，原地推进修订。
+          const entry = turnManifestAdditions.find((e) => e.id === msg!.id);
+          if (entry && msg.current_revision > entry.revision) entry.revision = msg.current_revision;
         }
         d.events.publish('message.published', {
           conversationId: turn.conversation_id, turnId, entityRef: msg.id, entityRevision: msg.sequence,
@@ -2506,7 +3137,7 @@ export class TurnSupervisor {
       }
     };
 
-    const handleRouteSignal = (): void => {
+    const handleRouteSignal = (notice?: { currentModel: string | null; evidenceCode: string }): void => {
       if (routeSignalHandled) return;
       routeSignalHandled = true;
       runToken.token.cancelled = true; // fence 立即生效（AUD-05：迟到输出不得发布）
@@ -2535,7 +3166,7 @@ export class TurnSupervisor {
         tx(d.db, () => {
           const ticket = d.routing.createPendingInTx({
             conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
-            inputHash, targetModel: null, evidenceCode: 'SDK_ROUTE_SIGNAL',
+            inputHash, targetModel: null, evidenceCode: notice?.evidenceCode ?? 'SDK_ROUTE_SIGNAL',
             messageId: inputMessage?.id ?? null, inputRevision: effective.revision,
           });
           ticketId = ticket.id;
@@ -2549,14 +3180,15 @@ export class TurnSupervisor {
       }
       d.events.publish('route.pending', {
         conversationId: turn.conversation_id, turnId, attemptId: attempt.id, scope: 'private',
-        payload: { decision_id: ticketId, current_model: null, target_model: null, evidence_code: 'SDK_ROUTE_SIGNAL', already_switched: false, affects_future_sessions: null },
+        payload: { decision_id: ticketId, current_model: notice?.currentModel ?? null, target_model: null, evidence_code: notice?.evidenceCode ?? 'SDK_ROUTE_SIGNAL', already_switched: false, affects_future_sessions: null },
       });
+      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'route_owner_pending', generation } });
       runToken.controller.abort(); // 通知 runner 停止
       d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'interrupted', generation });
     };
 
     // §6.3：驱动判别请求——同一 handleEvent（发布/记账/route 语义对两驱动一致，不复制两套处理）
-    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: { requestId: string | null }): void => {
+    const handleEvent = (ev: import('../../../../packages/contracts/src/sdk-events.ts').SdkNormalizedEvent, reqCtx?: ModelRequestContext): void => {
           // generation fence（AUD-05/03 迟到 chunk）：只挡内容类事件（正文/思考/工具投影）；
           // usage 与路由事实是记账观测，不是发布——fence 后仍须入账（F10：实际模型不能丢）
           if (runToken.token.cancelled && ev.kind !== 'usage' && ev.kind !== 'system_notice' && ev.kind !== 'packet_conflict') return;
@@ -2617,7 +3249,7 @@ export class TurnSupervisor {
                 turnId, attemptId: attempt.id, scope: ev.scope, usage: ev.usage,
                 requestId: reqCtx?.requestId ?? undefined, // F12：同 turn 多请求按请求身份分行保留
                 windowId: window.id, // F31：直接归属窗口（不再只靠 attempt JOIN）
-                model: actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
+                model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? actualModelForUsage ?? configuredModelForUsage, // F10：观测到实际模型后按实际值；OR 用明确型号
                 source: ev.source, completeness: ev.completeness,
               });
               // EXEC_V1 §04.5（WP2）：缓存证据观测——温态五条件门活接线（字段缺失/无派发起点=不评）
@@ -2626,10 +3258,11 @@ export class TurnSupervisor {
                   const prq = d.db.prepare('SELECT dispatch_started_at FROM provider_requests WHERE id = ?').get(reqCtx.requestId) as { dispatch_started_at: string | null } | undefined;
                   observeCacheUsage(d.alerts, {
                     db: d.db, windowId: window.id, requestId: reqCtx.requestId,
-                    model: actualModelForUsage ?? configuredModelForUsage,
+                    model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? actualModelForUsage ?? configuredModelForUsage,
                     readTokens: ev.usage.cache_read_input_tokens ?? null,
                     writeTokens: ev.usage.cache_creation_input_tokens ?? null,
-                    inputTotal: ev.usage.input_tokens ?? null,
+                    inputTotal: providerInputTotal({ source: ev.source, input_tokens: ev.usage.input_tokens ?? null,
+                      cache_read_input_tokens: ev.usage.cache_read_input_tokens ?? null, cache_creation_input_tokens: ev.usage.cache_creation_input_tokens ?? null }),
                     dispatchStartedAt: prq?.dispatch_started_at ?? null,
                     usageCompleteness: ev.completeness,
                   });
@@ -2662,17 +3295,21 @@ export class TurnSupervisor {
                   });
                 } catch { /* 告警失败不影响回合 */ }
               }
-              if (ev.subtype === 'model_refusal_fallback' || ev.subtype === 'model_refusal_no_fallback') {
+              if (ev.subtype === 'model_flagged' || ev.subtype === 'model_refusal_fallback' || ev.subtype === 'model_refusal_no_fallback') {
                 const actualModel = ev.subtype === 'model_refusal_fallback' ? (ev.fallback_model ?? null) : null;
                 try {
                   d.routing.recordSdkRouteEvent({
                     conversationId: turn.conversation_id, turnId, attemptId: attempt.id,
                     subtype: ev.subtype, originalModel: ev.original_model, actualModel,
+                    scope: ev.scope ?? 'session', noticeId: ev.notice_id, requestId: ev.request_id,
                   });
                 } catch (err) {
                   d.logger.error('route_event_tx_failed', { turn_id: turnId, code: stableCode(err) });
                 }
-                if (actualModel) {
+                if (ev.scope === 'local') break;
+                if (ev.subtype === 'model_flagged' || ev.subtype === 'model_refusal_no_fallback') {
+                  handleRouteSignal({ currentModel: ev.original_model ?? reqCtx?.responseModel ?? reqCtx?.requestedModel ?? null, evidenceCode: 'SDK_FLAGGED' });
+                } else if (actualModel) {
                   // 切换已发生：后续生成/工具动作按规格暂停——fence + abort，回合按 interrupted 收口
                   actualModelForUsage = actualModel;
                   fallbackSwitched = true;
@@ -2689,25 +3326,18 @@ export class TurnSupervisor {
     let result: import('./runner.ts').RunnerRunResult;
     let orFinalMessages: OrMessage[] | null = null;
     let orLastSentMessages: OrMessage[] | null = null; // F18：实际发送末态（G 边界依据）
-    let orToolSeen: ManifestEntry[] = []; // WP4：conversation_read 片段已见（实际进入请求的部分）
-    if (orEnvelope !== null) {
+    let orToolSeen: ManifestEntry[] = []; // confirmed in a provider request
+    let orPendingToolSeen: ManifestEntry[] = [];
+    // R2：orEnvelope 恒非空（四类驱动均信封驱动）；保留块作用域
+    {
       // EXEC_V1 §03.6（WP3/M2）媒体门：当前输入无转写语音→不空输入唤起模型；
       // 含图但型号未核实视觉→MODEL_VISION_UNAVAILABLE（消息已保存、零模型请求、不静默丢图/换模型）
-      const orHasImage = orMessages.some((m) => Array.isArray((m as { content: unknown }).content) && ((m as { content: Array<Record<string, unknown>> }).content.some((b) => b && b.type === 'asset_image')));
+      const orHasImage = hasAssetImage(orMessages);
       const tailVoiceBlocked = fallbackBuild ? fallbackBuild.hasVoiceWithoutTranscript : tailProjection.hasVoiceWithoutTranscript;
       let mediaBlockedCode: string | null = null;
       if (d.media) {
         if (tailVoiceBlocked) mediaBlockedCode = 'MEDIA_TRANSCRIPTION_FAILED';
-        else if (orHasImage) {
-          // 2026-10-18：config 人工声明优先于目录发现——图片能力是公开静态事实，
-          // 运行时目录查询在发消息关键路径上失败曾致连续阻断（证据只存进程内存、重启清零）
-          const declaredVision = d.config.openrouter.vision_supported_models.includes(orEnvelope.model);
-          let vision: boolean | null = declaredVision ? true : visionSupportCached(orEnvelope.model, d.config.openrouter.base_url);
-          if (vision === null && !declaredVision && d.runnerSelection.status === 'ok' && d.runnerSelection.runner.kind === 'openrouter') {
-            vision = await refreshVisionSupport(d.config.openrouter.base_url, orEnvelope.model);
-          }
-          if (vision !== true) mediaBlockedCode = 'MODEL_VISION_UNAVAILABLE';
-        }
+        else if (orHasImage && !await this.modelSupportsImages(orEnvelope.model, dv?.kind)) mediaBlockedCode = 'MODEL_VISION_UNAVAILABLE';
       }
       if (mediaBlockedCode !== null) {
         d.logger.warn('media_gate_blocked', { turn_id: turnId, code: mediaBlockedCode, model: orEnvelope.model, has_image: orHasImage });
@@ -2739,60 +3369,75 @@ export class TurnSupervisor {
         conversationId: turn.conversation_id, windowId: window.id,
         turnId, attemptId: attempt.id, controller: runToken.controller,
         trajectoryRebuiltThisTurn: trajInitializedThisTurn,
-        onEvent: handleEvent, seenSequence: orSeenHighWater,
-        seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions, // D13：流式发布即时入视野
+        onEvent: handleEvent,
+        flushChatTail: () => {
+          if (!runToken.token.cancelled) {
+            const tail = segmenter.flushTail();
+            if (tail) publishSegments([tail]);
+          }
+        },
+        seenSequence: orSeenHighWater,
+        seenMessages: orSeenBase, liveSeenAdditions: turnManifestAdditions,
+        completionManifest: [
+          ...catchupManifest,
+          ...(inputMessage ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue' as const, visible: true }] : []),
+        ],
         previousEnvelope: orPreviousPayloadEnvelope,
       });
       result = loop.result;
       orFinalMessages = loop.finalMessages;
       orLastSentMessages = loop.lastSentMessages;
       orToolSeen = loop.toolSeen;
-      }
-    } else if (tailProjection.hasVoiceWithoutTranscript) {
-      result = { outcome: 'error', errorClassified: null, errorCode: 'MEDIA_TRANSCRIPTION_FAILED', errorMessage: '当前驱动没有可读取的转写或听觉工具', sessionId: null, requestId: null };
-    } else if (d.media && inputMessage && d.media.listMessageAttachments(inputMessage.id, effective.revision).some((a) => a.presentation === 'image' || a.presentation === 'sticker')) {
-      // AUD-04 P1：SDK 分支有图=视觉门阻断（消息已保存、零模型请求、不静默丢图/换模型）
-      d.logger.warn('media_gate_blocked', { turn_id: turnId, code: 'MODEL_VISION_UNAVAILABLE', driver: 'claude-agent-sdk' });
-      result = { outcome: 'error', errorClassified: null, errorCode: 'MODEL_VISION_UNAVAILABLE', errorMessage: 'SDK 驱动不支持图片输入——消息已保存', sessionId: null, requestId: null };
-      orFinalMessages = null; orLastSentMessages = null; orToolSeen = [];
-    } else {
-      // SDK 分支：既有单请求路径（§11：不合作 runner 的有界终止——宽限只在 abort 之后才计时）
-      try {
-        result = await Promise.race([
-          runner.run({ prompt: sdkPrompt, options: built!.assembled, resumeSessionId, abortController: runToken.controller, onEvent: handleEvent,
-            onBeforeDispatch: async () => {
-              if (runToken.controller.signal.aborted) throw new ContractError('CANCELLED_BEFORE_DISPATCH');
-              this.admitProgramFact(turnId, turn.conversation_id);
-              if (inputMessage) {
-                if (d.messages.getMessage(inputMessage.id)?.current_revision !== effective.revision) throw new ContractError('INPUT_REVISION_SUPERSEDED');
-                d.voiceObservations?.commitProjection({ messageId: inputMessage.id, revision: effective.revision }, turnId, 'sdk:' + attempt.id, tailProjection.observations);
-              }
-            },
-          }),
-          new Promise<never>((_, reject) => {
-            const arm = (): void => {
-              setTimeout(() => reject(new Error('RUNNER_GRACE_TIMEOUT')), RUNNER_GRACE_MS).unref?.();
-            };
-            if (runToken.controller.signal.aborted) arm();
-            else runToken.controller.signal.addEventListener('abort', arm, { once: true });
-          }),
-        ]);
-      } catch (err) {
-        const isGrace = String((err as Error)?.message ?? '').includes('RUNNER_GRACE_TIMEOUT');
-        if (isGrace) {
-          // 不变式：grace 超时离开 await 时 runner 可能仍活着——旧代一律 fence + abort（迟到回调不得再发布）
-          runToken.token.cancelled = true;
-          runToken.controller.abort();
-        }
-        d.logger.error(isGrace ? 'runner_grace_exceeded' : 'runner_threw', { turn_id: turnId, attempt_id: attempt.id, code: stableCode(err) });
-        result = { outcome: isGrace ? 'interrupted' : 'error', errorClassified: null, errorCode: isGrace ? 'RUNNER_GRACE_TIMEOUT' : 'RUNNER_THREW', errorMessage: String((err as Error)?.message ?? err), sessionId: null, requestId: null };
+      orPendingToolSeen = loop.pendingToolSeen;
       }
     }
     this.active.delete(turnId);
 
-    // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口；
-    // fresh_session 重跑完成后改绑新 session（旧 session 因含被替代输入而弃用）
-    if (result.sessionId && !resumeSessionId) {
+    // B3（2026-11-04）：SDK 会话衔接诊断日志——resume 决策四值枚举 + 锚生命周期 + 错误安全字段。
+    // 只含 ID/哈希口径的计数与状态（AUD-28 同口径：错误证据为白名单标量，无正文/token/key）。
+    if (result.resumeDiagnosis) {
+      d.logger.info('sdk_resume_decision', {
+        turn_id: turnId, attempt_id: attempt.id, window_id: window.id,
+        decision: result.resumeDiagnosis.decision,
+        anchor_session: result.resumeDiagnosis.anchorSessionId ? (result.resumeDiagnosis.anchorSessionId === result.sessionId ? 'same' : 'changed') : null,
+        anchor_msgs: result.resumeDiagnosis.anchorMessageCount ?? null,
+        sent_msgs: result.resumeDiagnosis.sentMessageCount ?? null,
+        anchor_outcome: result.resumeDiagnosis.anchorOutcome ?? null,
+        outcome: result.outcome, error_code: result.errorCode,
+      });
+    }
+    if (result.errorCode && result.errorEvidence) {
+      // 日志字段为标量合同：安全证据逐键展开（evidence 本身已是白名单标量键）
+      d.logger.warn('sdk_error_evidence', { turn_id: turnId, attempt_id: attempt.id, code: result.errorCode, ...result.errorEvidence });
+    }
+    // B4：一次性程序事实核销——本 attempt 有真实派发证据即核销（模型已见过该事实；
+    // 失败/中断但不曾派发=保留待下一轮重试，不丢事实也不重复发送）。D05/D06 同口径。
+    if (pendingFacts.length > 0 && d.db.prepare('SELECT 1 FROM provider_requests WHERE attempt_id=? AND dispatch_started_at IS NOT NULL LIMIT 1').get(attempt.id)) {
+      const consumeNow = new Date().toISOString();
+      tx(d.db, () => {
+        d.db.prepare(`UPDATE pending_program_facts SET consumed_at=? WHERE id IN (${pendingFacts.map(() => '?').join(',')}) AND consumed_at IS NULL`)
+          .run(consumeNow, ...pendingFacts.map((f) => f.id));
+      });
+    }
+
+    // A native SDK turn can consume tools before a later subscription rejection.
+    // Preserve that actual protocol work so the next OR turn cannot replay it.
+    // C03（四仓审计 20261106）：OR 工具轮失败同样保留已发协议（failedLoop 现在对
+    // 普通轮也给出 finalMessages）——续轮 503/失败后，下一普通输入接续已发前缀与
+    // 真实工具结果，未执行工具以显式记录收尾，不重放副作用。
+    if (result.outcome !== 'completed' && orFinalMessages && d.trajectory && (dv?.kind === 'claude-agent-sdk' ? result.activityStarted : true)) {
+      if (!runToken.token.cancelled) publishSegments([segmenter.flushTail()].filter(Boolean) as string[]);
+      const base = d.trajectory.forWindow(window.id)?.manifest ?? [];
+      const input: ManifestEntry[] = inputMessage ? [{ id: inputMessage.id, revision: effective.revision, seq: inputMessage.sequence, origin: 'dialogue', visible: true }] : [];
+      const pending = orPendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }));
+      d.trajectory.replace(window.id, orFinalMessages, tailBoundaryOf(orLastSentMessages ?? orFinalMessages),
+        [...base, ...catchupManifest, ...input, ...turnManifestAdditions, ...orToolSeen, ...pending]);
+    }
+
+    // session 绑定（AUD-03）：首轮把观察到的 session 持久化到窗口（bindSession 的
+    // WHERE sdk_session_id IS NULL 使 resume 轮天然幂等）；fresh_session 重跑完成后
+    // 改绑新 session（旧 session 因含被替代输入而弃用）
+    if (result.sessionId) {
       if (attempt.fresh_session) d.windows.rebindSession(window.id, window.sdk_session_id, result.sessionId);
       else d.windows.bindSession(window.id, result.sessionId);
     }
@@ -2802,8 +3447,7 @@ export class TurnSupervisor {
     if (runToken.token.cancelled && routeSignalHandled) {
       segmenter.drop();
       if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
-      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'route_owner_pending', generation } });
-      return; // attempt/turn 已在 handleRouteSignal 的事务里置 route_owner_pending
+      return; // handleRouteSignal 已发布实际终态；再次 flag 的 failed 不被 pending 覆盖。
     }
     if (runToken.token.cancelled || result.outcome === 'interrupted') {
       segmenter.drop();
@@ -2816,6 +3460,14 @@ export class TurnSupervisor {
         d.db.prepare("UPDATE turns SET state = 'interrupted', completed_at = ? WHERE id = ?").run(now, turnId);
       });
       d.events.publish('turn.interrupted', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, ...(fallbackSwitched ? { reason: 'MODEL_FALLBACK_SWITCHED' } : {}) } });
+      // ALB-08（审计 2026-11-08，R23"投递后停止不恢复一次设置"）：被停止/中断的回合若
+      // 本窗的 chat 请求已实际发出（sent_at 非空），携带图与留言已被模型收到——
+      // next_once 照常消费，不因停止复活为待带入。
+      const delivered = d.db.prepare("SELECT 1 FROM provider_requests WHERE window_id = ? AND purpose = 'chat' AND sent_at IS NOT NULL AND outcome IS NOT 'SUPERSEDED_BY_RETRY' LIMIT 1").get(window.id);
+      if (delivered) {
+        void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
+        this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id)); // ALB-11：已投递即收口
+      }
       return;
     }
     if (result.outcome === 'error' || result.outcome === 'no_final_result') {
@@ -2823,25 +3475,33 @@ export class TurnSupervisor {
       d.reasoning.markAttemptFinal({ attemptId: attempt.id, final: 'failed', generation });
       if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
       const reasonCode = result.outcome === 'no_final_result' ? 'NO_FINAL_RESULT' : (result.errorCode ?? 'RUNNER_ERROR');
+      // ALB-11：错误收尾但请求可能已实际发出（部分投递）——有证据即收口，无证据保持待发
+      const errDelivered = d.db.prepare('SELECT 1 FROM provider_requests WHERE turn_id = ? AND sent_at IS NOT NULL LIMIT 1').get(turnId);
+      if (errDelivered) this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id));
       const blockedReason = `${reasonCode}:${result.errorClassified ?? 'unknown'}`;
       tx(d.db, () => {
         d.db.prepare('UPDATE attempts SET state = ?, blocked_reason = ?, completed_at = ? WHERE id = ?').run('failed', blockedReason, now, attempt.id);
         d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('failed', now, turnId);
       });
-      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'failed', reason: reasonCode } });
+      // DBG-01（包2 2026-11-16）：失败事件带上脱敏的具体原因与证据字段（旧实现只发错误码，
+      // errorMessage/errorEvidence 全程未发布——前端拿不到"为什么"）。detail 有界；证据沿
+      // runner 白名单口径（不含消息正文/凭据）。
+      const failDetail = (result.errorMessage ?? '').slice(0, 200) || null;
+      d.events.publish('turn.status', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, entityRef: attempt.id, payload: { state: 'failed', reason: reasonCode, ...(failDetail ? { detail: failDetail } : {}), ...(result.errorEvidence ? { evidence: result.errorEvidence } : {}) } });
       d.logger.warn('attempt_failed', { turn_id: turnId, attempt_id: attempt.id, code: reasonCode });
       return;
     }
 
-    // completed（仅当观察到 success result，runner 契约保证）
-    publishSegments(([segmenter.flushTail()].filter(Boolean) as string[]));
+    // Already published segments survive a deliberate finish. Do not publish
+    // an uncommitted trailing segment as an automatic final reply.
+    if (readTurnCompletion(d.db, attempt.id, turnId)) segmenter.drop();
+    else publishSegments([segmenter.flushTail()].filter(Boolean) as string[]);
     d.reasoning.markAttemptStreamEnded({ attemptId: attempt.id }); // 仍 streaming 的块 → complete/stream_only（无完整块核对，不伪装已核对）
     if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: turn.conversation_id, turnId, attemptId: attempt.id, generation });
-    tx(d.db, () => {
-      d.db.prepare("UPDATE attempts SET state = 'completed', completed_at = ? WHERE id = ?").run(now, attempt.id);
-      d.db.prepare('UPDATE turns SET state = ?, completed_at = ? WHERE id = ?').run('completed', now, turnId);
-    });
-    d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
+    const markCompleted = (conn: Db): void => {
+      conn.prepare("UPDATE attempts SET state = 'completed', completed_at = ?, completion_recovery_json=NULL WHERE id = ?").run(now, attempt.id);
+      conn.prepare("UPDATE turns SET state = 'completed', completed_at = ? WHERE id = ?").run(now, turnId);
+    };
     // §2.2/§7：成功回合才推进协议轨迹（append-only）+ 实际已见 manifest（F06：本轮输入与
     // 已发布助手消息入清单——下一轮范围/书签从这份证据出发）；新已发送边界=本轮末 text 块
     if (orFinalMessages !== null && d.trajectory) {
@@ -2855,11 +3515,19 @@ export class TurnSupervisor {
       // F18：G 候选=本轮实际发送的最后一个 text 块（生成的最终 assistant 尚未随任何请求发出，
       // 不得作为"已发送边界"；它将在下一轮真实发送后才成为候选）
       const boundaryBase = orLastSentMessages ?? orFinalMessages;
-      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase), [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions, ...orToolSeen]);
+      const pending = orPendingToolSeen.map(entry => ({ ...entry, visible: false, pending_dispatch: true as const }));
+      d.trajectory.replace(window.id, trajMessages, tailBoundaryOf(boundaryBase),
+        [...baseManifest, ...catchupManifest, ...inputEntry, ...turnManifestAdditions, ...orToolSeen, ...pending], markCompleted);
       // 自动浮现：成功轨迹落正本后 retain（真实 manifest 确认，不是入库 ready
       // 就算送达——docs/04 retained 语义）；失败回合不假标 coverage。
       if (surfacingAugment) d.surfacing?.markRetained(surfacingAugment);
+    } else {
+      tx(d.db, () => markCompleted(d.db));
     }
+    // 初始携带及到期通知按实际请求成功事实收口。
+    void this.consumeCarryNextOnceOnSuccess(window.id).catch(() => undefined);
+    this.d.archives?.confirmNoticesDelivered(pendingNoticeBatch.map((n) => n.id));
+    d.events.publish('turn.completed', { conversationId: turn.conversation_id, turnId, attemptId: attempt.id, payload: { generation, session_id: result.sessionId } });
     // 原文线：助手气泡已正式发布 → 同步 drain（独立于模型结果；失败不影响 turn 终态）
     void d.archiveSync?.drainOnce().catch((err) => {
       d.logger.warn('archive_sync_after_turn_failed', { turn_id: turnId, code: stableCode(err) });
@@ -2875,24 +3543,6 @@ export class TurnSupervisor {
   }
 
   // AUD-15/37（§9）：启动调度恢复——数据库是真源，committed-but-not-dispatched 一律重新入队
-  static recoverSchedule(deps: SupervisorDeps): { redispatched: number } {
-    const rows = deps.db
-      .prepare("SELECT t.id FROM turns t JOIN attempts a ON a.turn_id = t.id WHERE t.state = 'pending' AND a.state IN ('pending','ready_after_route')")
-      .all() as Array<{ id: string }>;
-    for (const r of rows) deps.supervisor!.enqueue(r.id);
-    const recoverable = deps.db.prepare(`SELECT DISTINCT s.conversation_id FROM context_selections s
-      JOIN conversations c ON c.id=s.conversation_id
-      WHERE s.rotation_cause IS NOT NULL AND
-        (s.status='confirmed' OR (s.status='consumed' AND s.target_window_id=c.active_window_id))
-        AND EXISTS (SELECT 1 FROM turns t JOIN attempts a ON a.turn_id=t.id
-          WHERE t.conversation_id=s.conversation_id AND t.state='blocked' AND a.state='blocked'
-          AND (a.blocked_reason LIKE 'CONTEXT_SELECTION_REQUIRED%' OR a.blocked_reason LIKE 'CONTEXT_ROTATION_REQUIRED%'))`).all() as Array<{ conversation_id: string }>;
-    for (const row of recoverable) void deps.supervisor!.resumeAfterSelectionConfirm(row.conversation_id).catch(() => {
-      deps.logger.warn('selection_recovery_failed', { code: 'ROTATION_RECOVERY_FAILED' });
-    });
-    return { redispatched: rows.length };
-  }
-
   private blockAttempt(attemptId: string, turnId: string, conversationId: string, reason: string, turnState: 'blocked' | 'route_owner_pending'): void {
     const now = new Date().toISOString();
     tx(this.d.db, () => {
@@ -2948,6 +3598,10 @@ function assistantProtocolMessage(text: string, result: import('./runner.ts').Ru
   if (driver === 'deepseek' && typeof result.reasoningContent === 'string') message.reasoning_content = result.reasoningContent;
   if (driver === 'openrouter' && result.reasoningFrames?.length) message.reasoning_details = result.reasoningFrames.flatMap(f => Array.isArray(f) ? f : [f]);
   return message;
+}
+
+function hasAssetImage(messages: OrMessage[]): boolean {
+  return messages.some(message => Array.isArray(message.content) && message.content.some(block => block?.type === 'asset_image'));
 }
 
 function hasStorageImageRedaction(value: unknown): boolean {

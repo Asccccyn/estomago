@@ -32,6 +32,8 @@ import { ManualSelectionService } from '../../apps/host/src/context/manual-selec
 import { RotationReviewService } from '../../apps/host/src/context/rotation-review.ts';
 import { HoldCheckpointService } from '../../apps/host/src/memory/hold-checkpoint.ts';
 import { MediaService } from '../../apps/host/src/media/assets.ts';
+import { ArchiveService } from '../../apps/host/src/modules/archives/service.ts';
+import { HeartbeatRuntime } from '../../apps/host/src/modules/heartbeat/runtime.ts';
 import { OpenRouterRunner, type OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { BackgroundSettingsService } from '../../apps/host/src/runtime/background-settings.ts';
 import { BackgroundScheduler } from '../../apps/host/src/runtime/background-scheduler.ts';
@@ -41,6 +43,11 @@ const enc = new TextEncoder();
 const MODEL = 'anthropic/claude-test-1';
 const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
+const isHeartbeat = (payload: Record<string, unknown>): boolean => {
+  const messages = payload.messages as Array<{ role: string; content: unknown }>;
+  const latest = messages.findLast(message => message.role === 'user');
+  return JSON.stringify(latest?.content ?? '').includes('[心跳唤醒]');
+};
 
 function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }, sleepEnabled = false, retryMax = 0) {
   writeApprovedIdentity(root);
@@ -54,14 +61,20 @@ function compose(root: string, transport: OrTransport, nowRef: { nowMs: number }
   const messages = new MessageService(db, null, activity);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const alerts = new SystemAlertService(db, events);
   const media = new MediaService(db, paths.mediaDir, config);
   const trajectory = new WindowTrajectoryService(db);
   const selections = new ManualSelectionService(db);
   const runner = new OpenRouterRunner({ providerOnly: ['anthropic'], allowFallbacks: false, requireParameters: true, retryMax }, transport);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), archiveSync: null, media: media, messages: messages, events: events });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, now: () => nowRef.nowMs });
+  const archives = new ArchiveService({ db, contentClient: null, contentOps: null, logger });
+  const heartbeat = new HeartbeatRuntime(db, null, media, archives, messages, events);
+  heartbeat.sources.choose = async (conversationId) => Array.from({ length: 10 }, (_, index) => ({
+    kind: 'moments', namespace: 'content', id: 'fixture-' + (index + 1), revision: 1,
+    identity: 'content:moments:fixture-' + (index + 1), permissionScope: conversationId,
+  }));
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db, alerts), routing, windows, logger, alerts, media, trajectory, selections, tools, activity, heartbeat, now: () => nowRef.nowMs });
   messages.ensureConversation('c1');
   const bgSettings = new BackgroundSettingsService(db, config);
   return { root, db, config, messages, supervisor, alerts, media, tools, bgSettings, trajectory, windows, activity, events };
@@ -143,7 +156,7 @@ function completeProtocol(messages:any[]){
 }
 
 test('FA-F01 zero-dispatch budget refusal never appends an unseen host event to canonical history',async t=>{
- let calls=0;const now={nowMs:Date.now()};const ctx=compose(tempRoot('fa-zero-dispatch-'),async p=>{if(JSON.stringify(p).includes('Cache keepalive'))calls++;return response(chatBody('seed'));},now);cleanup(t,ctx);
+ let calls=0;const now={nowMs:Date.now()};const ctx=compose(tempRoot('fa-zero-dispatch-'),async p=>{if(isHeartbeat(p))calls++;return response(chatBody('seed'));},now);cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const before=ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!.messages;const{run}=readySleepBoundaryRun(ctx,now);
  ctx.bgSettings.applyUpdate({expectedRevision:1,patch:{keepwarm_daily_cost_cap_usd:0.0000001}});
  const result=await ctx.supervisor.enqueueBackground('c1',run);
@@ -154,11 +167,10 @@ test('FA-F01 zero-dispatch budget refusal never appends an unseen host event to 
 
 test('FA-F02 next-round capacity refusal preserves a prior formal publication and complete tool protocol',async t=>{
  let background=true,n=0;const now={nowMs:Date.now()};const published='large-publication-'.repeat(300);const payloads:any[]=[];
- const ctx=compose(tempRoot('fa-capacity-protocol-'),async p=>{payloads.push(structuredClone(p));if(background&&JSON.stringify(p).includes('Cache keepalive')){n++;return response(toolCallBody([{id:'large-send',name:'chat_send_text',args:JSON.stringify({text:published,idempotency_key:'large'})}]));}return response(chatBody('seed'));},now);cleanup(t,ctx);
+ const ctx=compose(tempRoot('fa-capacity-protocol-'),async p=>{payloads.push(structuredClone(p));if(background&&isHeartbeat(p)){n++;return response(toolCallBody([{id:'large-send',name:'chat_send_text',args:JSON.stringify({text:published,idempotency_key:'large'})}]));}return response(chatBody('seed'));},now);cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const{run}=readySleepBoundaryRun(ctx,now);const win=ctx.windows.activeWindow('c1')!.id;const before=ctx.trajectory.forWindow(win)!;
- const tail={role:'user',content:[{type:'text',text:'Cache keepalive (host event, not Qiaosheng). Reply 1 by default; you may choose otherwise and use available tools.'}]};
  ctx.config.windows.tool_input_reserve_tokens=0;ctx.config.windows.review_reserve_tokens=0;ctx.config.windows.safety_reserve_tokens=0;
- ctx.config.windows.model_context_capacity=Math.ceil(JSON.stringify({messages:[...before.messages,tail],tools:(ctx.supervisor as any).windowTools(win)}).length/2.5)+ctx.config.openrouter.max_output_tokens+200;
+ ctx.config.windows.model_context_capacity=Math.ceil(JSON.stringify({messages:before.messages,tools:(ctx.supervisor as any).windowTools(win)}).length/2.5)+ctx.config.openrouter.max_output_tokens+200;
  const result=await ctx.supervisor.enqueueBackground('c1',run);assert.equal(result.result_code,'CAPACITY_BLOCKED_HARD_TOOL_ROUND');assert.equal(n,1);
  const tr=ctx.trajectory.forWindow(win)!;completeProtocol(tr.messages);assert.ok(JSON.stringify(tr.messages).includes(published));
  assert.ok((ctx.db.prepare("SELECT trajectory_committed_at FROM background_runs WHERE id='sleep-run'").get()as any).trajectory_committed_at);
@@ -167,17 +179,21 @@ test('FA-F02 next-round capacity refusal preserves a prior formal publication an
 
 test('FA-F03 known same-key content conflict becomes a paired tool error and does not strand the turn',async t=>{
  let n=0;const now={nowMs:Date.now()};const ctx=compose(tempRoot('fa-known-conflict-'),async p=>{
-  if(JSON.stringify(p).includes('Cache keepalive')&&++n===1)return response(toolCallBody([{id:'one',name:'chat_send_text',args:JSON.stringify({text:'original publication',idempotency_key:'same'})},{id:'conflict',name:'chat_send_text',args:JSON.stringify({text:'different publication',idempotency_key:'same'})}]));return response(chatBody(n?'1':'seed'));
+  if(isHeartbeat(p)&&++n===1)return response(toolCallBody([{id:'one',name:'chat_send_text',args:JSON.stringify({text:'original publication',idempotency_key:'same'})},{id:'conflict',name:'chat_send_text',args:JSON.stringify({text:'different publication',idempotency_key:'same'})}]));return response(chatBody(n?'1':'seed'));
  },now);cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const{run}=readySleepBoundaryRun(ctx,now);const result=await ctx.supervisor.enqueueBackground('c1',run);assert.equal(result.outcome,'completed');
- const bg=ctx.db.prepare("SELECT * FROM background_runs WHERE id='sleep-run'").get()as any;assert.equal(bg.published_message_count,1);assert.ok(bg.trajectory_committed_at);
+ const bg=ctx.db.prepare("SELECT * FROM background_runs WHERE id='sleep-run'").get()as any;assert.equal(bg.published_message_count,2);assert.ok(bg.trajectory_committed_at);
+ const speech = ctx.db.prepare(`SELECT r.content FROM messages m JOIN message_revisions r
+   ON r.message_id=m.id AND r.revision=m.current_revision WHERE m.turn_id=? AND m.speaker='assistant' ORDER BY m.sequence`)
+   .all(bg.turn_id).map(row => row.content);
+ assert.deepEqual(speech, ['original publication', '1']);
  assert.equal((ctx.db.prepare('SELECT state FROM attempts WHERE turn_id=?').get(bg.turn_id)as any).state,'completed');
  const tr=ctx.trajectory.forWindow(ctx.windows.activeWindow('c1')!.id)!;completeProtocol(tr.messages);
  const conflict=tr.messages.find((m:any)=>m.role==='tool'&&m.tool_call_id==='conflict')as any;assert.equal(JSON.parse(conflict.content).error_code,'IDEMPOTENCY_CONFLICT');
 });
 
 test('FA-F04 attempted tool exception is unknown; later tools are explicitly unexecuted and publication survives',async t=>{
- const now={nowMs:Date.now()};let invoked=0;const ctx=compose(tempRoot('fa-unknown-tool-'),async p=>JSON.stringify(p).includes('Cache keepalive')?response(toolCallBody([{id:'unknown-send',name:'chat_send_text',args:JSON.stringify({text:'saved before lost result',idempotency_key:'unknown'})},{id:'not-started',name:'tool_catalog',args:'{}'}])):response(chatBody('seed')),now);cleanup(t,ctx);
+ const now={nowMs:Date.now()};let invoked=0;const ctx=compose(tempRoot('fa-unknown-tool-'),async p=>isHeartbeat(p)?response(toolCallBody([{id:'unknown-send',name:'chat_send_text',args:JSON.stringify({text:'saved before lost result',idempotency_key:'unknown'})},{id:'not-started',name:'tool_catalog',args:'{}'}])):response(chatBody('seed')),now);cleanup(t,ctx);
  await seedChatTurn(ctx,'base');const execute=ctx.tools.execute.bind(ctx.tools);ctx.tools.execute=async(name,args,context)=>{invoked++;const result=await execute(name,args,context);if(name==='chat_send_text')throw new Error('synthetic receipt loss after real local publication');return result;};
  const{run}=readySleepBoundaryRun(ctx,now);const result=await ctx.supervisor.enqueueBackground('c1',run);assert.equal(result.outcome,'unknown');assert.equal(result.result_code,'TOOL_EXECUTION_OUTCOME_UNKNOWN');assert.equal(invoked,1);
  const bg=ctx.db.prepare("SELECT * FROM background_runs WHERE id='sleep-run'").get()as any;assert.equal(bg.published_message_count,1);assert.ok(bg.trajectory_committed_at);
@@ -207,11 +223,11 @@ test('FA-F06 retained unread tool fragments stay pending until a later real disp
  const ctx=compose(tempRoot('fa-pending-source-'),async p=>{
   payloads.push(structuredClone(p));
   if(phase==='background'){
-   if(++backgroundRound===1)return response(toolCallBody([{id:'source-read',name:'conversation_read',args:JSON.stringify({from_sequence:1,to_sequence:1})}]));
+   if(++backgroundRound===1)return response(toolCallBody([{id:'source-read',name:'conversation_read',args:JSON.stringify({anchor:{speaker:'宿主用户',quote:'合成原文片段'}})}]));
    return {status:500,headers:new Headers(),body:Readable.from([])};
   }
   if(phase==='chat_failure')return {status:500,headers:new Headers(),body:Readable.from([])};
-  if(phase==='next_success'&&++nextRound===1)return response(toolCallBody([{id:'probe-seen',name:'conversation_read',args:JSON.stringify({from_sequence:2,to_sequence:2})}]));
+  if(phase==='next_success'&&++nextRound===1)return response(toolCallBody([{id:'probe-seen',name:'conversation_read',args:JSON.stringify({latest:true})}]));
   return response(chatBody('seed'));
  },now);cleanup(t,ctx);
  const source=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成原文片段'.repeat(4000),clientMessageId:'old-unseen-source'}).message;
@@ -233,21 +249,31 @@ test('FA-F06 retained unread tool fragments stay pending until a later real disp
  assert.equal(JSON.stringify(payloads).includes('pending_dispatch'),false,'pending source metadata remains host-only');
 });
 
-test('FA-F07 a pure heartbeat can confirm previously pending sources without appending its temporary branch',async t=>{
+ test('FA-F07 a no-text refusal confirms previously pending sources and retains its own tool receipt',async t=>{
  let phase='seed',round=0;const now={nowMs:Date.now()};
- const ctx=compose(tempRoot('fa-pending-pure-'),async p=>{
-  if(phase==='read'){if(++round===1)return response(toolCallBody([{id:'read',name:'conversation_read',args:'{"from_sequence":1,"to_sequence":1}'}]));return {status:500,headers:new Headers(),body:Readable.from([])};}
-  return response(chatBody(phase==='pure'?'1':'seed'));
+ const ctx=compose(tempRoot('fa-pending-heartbeat-'),async p=>{
+  if(phase==='read'){if(++round===1)return response(toolCallBody([{id:'read',name:'conversation_read',args:JSON.stringify({anchor:{speaker:'宿主用户',quote:'pending source for later'}})}],{prompt_tokens:500,completion_tokens:10,prompt_tokens_details:{cached_tokens:400,cache_write_tokens:100},cost:0.001}as any));return {status:500,headers:new Headers(),body:Readable.from([])};}
+  if(phase==='decline')return response(toolCallBody([{id:'confirm-and-decline',name:'background_complete',args:'{"outcome":"noop"}'}]));
+  return response(chatBody('seed'));
  },now);cleanup(t,ctx);
- const source=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'pending source for later pure heartbeat',clientMessageId:'source'}).message;
+ const source=ctx.messages.submitUserMessageWithTurn({conversationId:'c1',content:'pending source for later heartbeat',clientMessageId:'source'}).message;
  await seedChatTurn(ctx,'base');const{scheduler,run}=readySleepBoundaryRun(ctx,now);phase='read';const first=await ctx.supervisor.enqueueBackground('c1',run);
  // This unit fixture invokes the executor directly; mirror scheduler terminal
  // bookkeeping before admitting a later occurrence for the same actor.
  ctx.db.prepare("UPDATE background_runs SET state=?,result_code=? WHERE id='sleep-run'").run(first.outcome,first.result_code??null);
  const win=ctx.windows.activeWindow('c1')!.id;const before=ctx.trajectory.forWindow(win)!;assert.equal(before.pendingManifest[0].id,source.id);
- ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('second-pure','sleep-task','c1','jiaming','keepwarm',1,'second-pure','running','now','now')").run();
- phase='pure';const result=await ctx.supervisor.enqueueBackground('c1',()=>ctx.supervisor.runBackgroundTurn({kind:'keepwarm',runId:'second-pure',conversationId:'c1',payload:{},isCancelRequested:()=>false,registerAbort:()=>{},maxModelRequests:4,recordDispatch:info=>scheduler.recordDispatchStart({runId:'second-pure',...info,capabilityName:info.capabilityName??null})}));
- assert.equal(result.result_code,'ack_only');const after=ctx.trajectory.forWindow(win)!;
- assert.deepEqual(after.messages,before.messages);assert.deepEqual(after.lastBoundary,before.lastBoundary);
+ now.nowMs=Date.now()+3_005_000;const secondIso=new Date(now.nowMs).toISOString();
+ ctx.db.prepare("INSERT INTO background_runs(id,task_id,conversation_id,actor_id,kind,task_revision,occurrence_key,state,created_at,updated_at) VALUES ('second-heartbeat','sleep-task','c1','jiaming','keepwarm',1,'second-heartbeat','running',?,?)").run(secondIso,secondIso);
+ phase='decline';const result=await ctx.supervisor.enqueueBackground('c1',()=>ctx.supervisor.runBackgroundTurn({kind:'keepwarm',runId:'second-heartbeat',conversationId:'c1',payload:{},isCancelRequested:()=>false,registerAbort:()=>{},maxModelRequests:4,recordDispatch:info=>scheduler.recordDispatchStart({runId:'second-heartbeat',...info,capabilityName:info.capabilityName??null})}));
+ assert.equal(result.result_code,'complete:noop');const after=ctx.trajectory.forWindow(win)!;
+ const added=after.messages.slice(before.messages.length);
+ const receipts=added.filter(message=>message.role==='tool'&&message.tool_call_id==='confirm-and-decline');
+ assert.equal(receipts.length,1);
+ assert.deepEqual(JSON.parse(receipts[0]!.content as string),{completed:true,outcome:'noop'});
+ const assistant=added.filter(message=>message.role==='assistant');
+ assert.equal(assistant.length,1,'the refusal is the only assistant protocol entry');
+ assert.equal((assistant[0]!.tool_calls as Array<{id:string}>)[0]?.id,'confirm-and-decline');
+ assert.ok(after.messages.length>before.messages.length,'已发协议追加（C08）');
+ assert.deepEqual(after.messages.slice(0,before.messages.length),before.messages,'原前缀逐字不变（append-only）');
  assert.equal(after.pendingManifest.length,0);assert.equal(after.manifest?.find(m=>m.id===source.id)?.visible,true);
 });

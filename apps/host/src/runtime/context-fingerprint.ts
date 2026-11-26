@@ -29,6 +29,10 @@ export type ContextFingerprint = {
   boundaries: Array<{ m: number; c: number }>;
 };
 
+export function toolsFingerprint(tools: readonly OrTool[]): string {
+  return sha256Hex(JSON.stringify(tools ?? null)).slice(0, 12);
+}
+
 export function contextFingerprintOf(input: {
   round: number;
   tools: OrTool[];
@@ -41,7 +45,7 @@ export function contextFingerprintOf(input: {
   return {
     round_no: round,
     tools_n: Array.isArray(tools) ? tools.length : 0,
-    tools_hash: hashOf(tools ?? null),
+    tools_hash: toolsFingerprint(tools),
     system_a_hash: messages[0]?.role === 'system' ? hashOf(messages[0]) : null,
     boot_hash: fixedSystemCount(messages) >= 2 ? hashOf(messages[1]!) : null,
     sys_count: sysCount,

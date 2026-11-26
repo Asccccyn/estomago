@@ -22,10 +22,10 @@ export const TRANSCRIPT_READ_DEFINITION: HostToolSpec = {
     parameters: {
       type: 'object',
       properties: {
-        audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '语音消息块里的原声引用' },
+        audio_ref: { type: 'string', pattern: '^est:[A-Za-z0-9_-]{1,128}$', description: '可选：目标语音引用；省略=当前这条语音（唯一目标时宿主自动定位）' },
         cursor: { type: 'string', minLength: 8, maxLength: 200, description: '上页 next_cursor（首页省略）' },
       },
-      required: ['audio_ref'], additionalProperties: false,
+      required: [], additionalProperties: false,
     },
   },
 };
@@ -35,7 +35,7 @@ export const CALL_CONTROL_DEFINITION: HostToolSpec = {
   type: 'function',
   function: {
     name: 'call_control',
-    description: '通话控制（协议①2026-10-24）：action=invite 给当前会话的她发出来电邀请（她页面会显示来电；她可以接听或拒接——拒接就是拒接，不自动补打）。邀请过期由服务端管理；她没接≠她拒绝。action=status 查询当前邀请状态。普通聊天与通话内均可用于接通相关控制；不能用于其他业务动作。',
+    description: '发起、接听或管理当前房间的通话。invite 可主动邀请；拒接不自动重拨，后续明确再次邀请仍按原通话规则处理。未接、拒接和过期各按真实状态返回。',
     parameters: {
       type: 'object',
       properties: {
@@ -47,7 +47,7 @@ export const CALL_CONTROL_DEFINITION: HostToolSpec = {
   },
 };
 
-export type VoiceModuleDeps = { db: Db; sirenCall: SirenAdapter | null; media?: import('../../media/assets.ts').MediaService; messages?: import('../../messages/service.ts').MessageService };
+export type VoiceModuleDeps = { db: Db; sirenCall: SirenAdapter | null; media?: import('../../media/assets.ts').MediaService; messages?: import('../../messages/service.ts').MessageService; surfacing?: import('../../memory-surfacing/service.ts').SurfacingService | null };
 
 /** chat_send_voice 定义唯一正本（GLM_VOICE_UNIFICATION 04§5.3，A05）：
  *  char主动决定用语音说某句时的唯一出口（P08：不自动朗读文字）。 */
@@ -55,13 +55,13 @@ export const CHAT_SEND_VOICE_DEFINITION: HostToolSpec = {
   type: 'function',
   function: {
     name: 'chat_send_voice',
-    description: '把一句话用你的语音发给她（生成真实语音消息，她会听到你的声音）。只在两种情况使用：她明确说想听你说/听这条内容；你自己决定这句话用语音说更合适。普通回复默认文字，不要每条都用。text=她将看到的正文（与语音一致）。',
+    description: '向当前房间发送一条真实语音消息。可回应她想听语音的请求，也可自主选择语音表达；普通回复默认文字。text 是消息正文，tts_script 可补充合成表达。',
     parameters: {
       type: 'object',
       properties: {
         text: { type: 'string', minLength: 1, maxLength: 4000, description: '语音消息的正文（她会看到这段字，也是合成的源文本）' },
         tts_script: { type: 'string', maxLength: 8000, description: '可选：交给 TTS 的表达文本（可含情绪标记），缺省用 text' },
-        emotion: { type: 'string', description: '可选：情绪风格（如 softly/warm，按合成服务支持）' },
+        emotion: { type: 'string', enum: ['neutral', 'warm', 'happy', 'sad', 'angry', 'teasing', 'sleepy', 'excited', 'surprised'], description: '可选：情绪风格，闭集枚举（合成服务合同）：neutral 平常 / warm 温柔温暖 / happy 开心 / sad 低落 / angry 生气 / teasing 调侃 / sleepy 困倦 / excited 兴奋 / surprised 惊讶。缺省用音色档案默认（warm）。枚举外值会被拒绝' },
         speed: { type: 'number', minimum: 0.5, maximum: 2, description: '可选：语速（0.5-2，缺省 1）' },
       },
       required: ['text'], additionalProperties: false,
@@ -95,6 +95,7 @@ export function registerVoiceCapabilities(registry: { register(d: CapabilityDesc
     });
     registry.register({
       id: 'chat_send_voice',
+      heartbeatAction: 'chat',
       owner: 'voice',
       baselineOrder: 26,
       definition: () => CHAT_SEND_VOICE_DEFINITION,
@@ -104,7 +105,7 @@ export function registerVoiceCapabilities(registry: { register(d: CapabilityDesc
       quote: (db) => quoteBackgroundTool(db, 'chat_send_voice'),
       parse: (raw, frozenSpec) => validateArgsAgainstSchema(raw, frozenSpec.function.parameters as { properties?: Record<string, never>; required?: string[] }) as { ok: true; value: Record<string, unknown> } | { ok: false; code: string; detail: string },
       run: (input, ctx) => sender.send(input as never, ctx) as never,
-      toModel: (value) => value,
+      toModel: ({ sequence: _sequence, ...value }) => value,
     });
   }
   const calls = new VoiceCallService(deps);

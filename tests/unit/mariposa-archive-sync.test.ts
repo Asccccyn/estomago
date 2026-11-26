@@ -335,3 +335,33 @@ test('memory.hold 客户端：operation_id 必带、回执形状校验、holdSta
   const unknown = await client.holdStatus('op-none');
   assert.ok(unknown.ok && unknown.receipt === undefined, '无记录只代表尚无提交证据，不当成失败也不当没写过');
 });
+
+test('G4-F10（2026-11-03）：SOURCE_SELECTION_TOO_LARGE → 旧冻结批真正退出，减半批界下重组新批', async () => {
+  const root = tempRoot('mtoolarge-');
+  const { transport } = fakeServer();
+  let rejectFirst = true;
+  const sentOps: string[] = [];
+  const wrapping: MariposaTransport = async (cap, payload) => {
+    const r = await transport(cap, payload);
+    if (r.ok && cap === 'source.ingest' && rejectFirst) {
+      rejectFirst = false;
+      return { ok: false, code: 'SOURCE_SELECTION_TOO_LARGE', httpStatus: 413 };
+    }
+    if (r.ok && cap === 'source.ingest') sentOps.push((payload as unknown as IngestRequest).operation_id);
+    return r;
+  };
+  const ctx = compose(root, wrapping);
+  ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '甲', clientMessageId: 'a' });
+  ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '乙', clientMessageId: 'b' });
+  const s1 = await ctx.sync.drainOnce();
+  assert.ok(s1.retry_later >= 1, '超限按可重试收口');
+  // 旧批已解绑并死亡：行 batch_id=NULL、批 dead——冻结恢复不再原样重放
+  const bound = ctx.db.prepare("SELECT COUNT(*) n FROM outbox WHERE batch_id IS NOT NULL").get() as { n: number };
+  assert.equal(bound.n, 0, 'G4-F10：行解绑，不再冻结在旧批');
+  const oldBatch = ctx.db.prepare("SELECT COUNT(*) n FROM ingest_batches").get() as { n: number };
+  assert.ok(oldBatch.n <= 1, '旧批行已清（重批=同内容新身份）');
+  const s2 = await ctx.sync.drainOnce();
+  assert.equal(s2.acked, 2, '减半批界下重组新批并 ACK');
+  assert.equal(sentOps.length, 1, '第二轮只发新批一次');
+  ctx.db.close();
+});

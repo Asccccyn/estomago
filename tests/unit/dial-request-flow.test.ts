@@ -21,6 +21,7 @@ import { UsageCollector } from '../../apps/host/src/usage/collector.ts';
 import { RoutingService } from '../../apps/host/src/routing/service.ts';
 import { WindowManager } from '../../apps/host/src/windows/manager.ts';
 import { TurnSupervisor } from '../../apps/host/src/runtime/supervisor.ts';
+import { recoveryPass, recoverSchedule } from '../../apps/host/src/runtime/recovery.ts';
 import { DeepSeekRunner } from '../../apps/host/src/runtime/runner-deepseek.ts';
 import type { OrTransport } from '../../apps/host/src/runtime/runner-openrouter.ts';
 import { ModelToolBridge, type ToolExecContext } from '../../apps/host/src/capabilities/model-bridge.ts';
@@ -61,15 +62,15 @@ function compose(root: string, transport: OrTransport) {
   messages.ensureConversation('primary');
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
+  const windows = new WindowManager(db, identity, config) // 合并对齐：handoffsDir 已随 handoff 退役移除（集成侧 2026-10-24 裁定）;
   const { tools: tools } = assembleTestTools({ db: db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages: messages });
   const trajectory = new WindowTrajectoryService(db);
   const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing, windows, logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory });
   const deps = { config, db, events, messages, supervisor, paths, logger: new Logger(path.join(root, 'logs')), auth: { isAuthorized: () => true, verifyToken: () => true, originAllowed: () => true } } as never;
-  const call = async (route: string, method = 'GET', body?: unknown): Promise<{ status: number; body: Record<string, unknown> }> => {
+  const call = async (route: string, method = 'GET', body?: unknown, headers: Record<string, string> = {}): Promise<{ status: number; body: Record<string, unknown> }> => {
     const res = new FakeRes();
     const req = Readable.from(body ? [Buffer.from(JSON.stringify(body))] : []) as Readable & { headers?: Record<string, string>; method?: string; url?: string };
-    req.headers = {}; req.method = method; req.url = route;
+    req.headers = headers; req.method = method; req.url = route;
     await handleRequest(req as never, res as never, deps);
     await new Promise((r) => setTimeout(r, 30));
     res.flushTail();
@@ -79,6 +80,78 @@ function compose(root: string, transport: OrTransport) {
 }
 
 const ctx = (over: Partial<ToolExecContext> = {}): ToolExecContext => ({ roomId: 'primary', windowId: 'w', turnId: 't1', purpose: 'chat', activeReviewId: null, seenSequence: 1, seenMessages: [], requestId: 'dial', ...over });
+
+test('F01（审计 P1）：停止排队轮→重开 DB→恢复零派发；未停 pending 正常恢复', async () => {
+  let transportCalls = 0;
+  let releaseFirst: (() => void) | null = null;
+  const transport: OrTransport = async () => {
+    transportCalls++;
+    if (transportCalls === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'f01', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) };
+  };
+  const root = tempRoot('f01-stop-');
+  const c = compose(root, transport);
+  try {
+    const t1 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '第一轮', clientMessageId: 'f01a' });
+    c.supervisor.enqueue(t1.turnId);
+    await pause(150); // 第一轮占用执行位（transport 挂起或准备中——不影响排队事实）
+    const t2 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '将被停止', clientMessageId: 'f01b' });
+    c.supervisor.enqueue(t2.turnId); // 排队（attempt=pending，串行链未到达）
+    await pause(60);
+    assert.equal(c.supervisor.stop(t2.turnId).stopped, true, 'stop 确认');
+    assert.equal((c.db.prepare("SELECT state FROM turns WHERE id=?").get(t2.turnId) as { state: string }).state, 'failed', '停止即持久终态');
+    const before = transportCalls;
+    c.db.close(); // 进程退出（不释放队列——审计复现口径）
+    // ── 重启：同一 DB 新进程 ──
+    const c2 = compose(root, transport);
+    try {
+      const { TurnSupervisor } = await import('../../apps/host/src/runtime/supervisor.ts');
+      recoveryPass(c2.db, c2.supervisor['d'] ? (c2.supervisor['d'] as { logger: never }).logger : (c2.supervisor as unknown as { d: { logger: never } }).d.logger);
+      const redispatched = recoverSchedule({ db: c2.db, supervisor: c2.supervisor, logger: (c2.supervisor as unknown as { d: { logger: never } }).d.logger } as never);
+      assert.equal(redispatched.redispatched, 0, '已停止排队轮不再被恢复派发（旧实现=1，审计复现）');
+      await pause(200);
+      assert.equal(transportCalls, before, '恢复后零新增模型派发');
+      const a = c2.db.prepare("SELECT state, blocked_reason FROM attempts WHERE turn_id=?").get(t2.turnId) as { state: string; blocked_reason: string };
+      assert.equal(a.state, 'failed');
+      assert.equal(a.blocked_reason, 'CANCELLED_BEFORE_DISPATCH', '停止原因持久');
+      assert.ok(c2.messages.getMessage(t2.message.id), '用户输入仍保存（不丢话）');
+      // 对照：未停止的新轮正常完成（恢复/执行能力未被误伤）
+      releaseFirst?.();
+      await c2.supervisor.waitIdle();
+      const t3 = c2.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '不停的一轮', clientMessageId: 'f01c' });
+      c2.supervisor.enqueue(t3.turnId);
+      await c2.supervisor.waitIdle();
+      assert.equal((c2.db.prepare("SELECT state FROM turns WHERE id=?").get(t3.turnId) as { state: string }).state, 'completed', '未停止轮正常完成');
+    } finally { releaseFirst?.(); await c2.supervisor.stopAll().catch(() => {}); c2.close(); }
+  } finally {
+    releaseFirst?.();
+    await c.supervisor.stopAll().catch(() => {});
+    try { c.close(); } catch { /* db 已在"进程退出"步骤手动关闭 */ }
+  }
+});
+
+test('F02 链A：多段发布后 manifest 修订随追加推进（引用不再按旧修订截断）', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(
+    sse({ id: 'm1', choices: [{ delta: { content: '第一段内容。' } }] }) +
+    sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('f02-rev-'), transport);
+  try {
+    const t1 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '说两段', clientMessageId: 'f02a' });
+    c.supervisor.enqueue(t1.turnId);
+    await c.supervisor.waitIdle();
+    const assistant = c.db.prepare("SELECT m.id, m.current_revision FROM messages m WHERE m.turn_id=? AND m.speaker='assistant' ORDER BY m.sequence DESC LIMIT 1").get(t1.turnId) as { id: string; current_revision: number } | undefined;
+    assert.ok(assistant, '助手消息已发布');
+    // DS 全量事件=单段单修订；流式多段（append→rev2）的 manifest 推进由 6f9a050 的
+    // entry.revision 推进逻辑保证——本 DS harness 的 normalizer 会把多 delta 合并为一次
+    // 全量发布，无法在此触发真实分段（如实说明：流式场景待 SDK 流/自然流量验证）。
+    assert.ok(assistant.current_revision >= 1, '发布产生修订');
+    const manifestRow = c.db.prepare("SELECT manifest_json FROM window_trajectories WHERE window_id=(SELECT active_window_id FROM conversations WHERE id='primary')").get() as { manifest_json: string };
+    const manifest = JSON.parse(manifestRow.manifest_json) as Array<{ id: string; revision: number }>;
+    const entry = manifest.find((e) => e.id === assistant.id);
+    assert.ok(entry, '助手消息进入已见 manifest');
+    assert.equal(entry.revision, assistant.current_revision, 'manifest 修订=当前修订（追加分段时由推进逻辑同步）');
+  } finally { await c.supervisor.stopAll().catch(() => {}); c.close(); }
+});
 
 test('她发起→char收到事实轮并 decline_call：请求 declined+他同轮的话落会话', async () => {
   const prompts: string[] = [];
@@ -118,6 +191,192 @@ test('她发起→char收到事实轮并 decline_call：请求 declined+他同�
     assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='owner'").get() as { n: number }).n, ownerBefore);
     console.log(JSON.stringify({ case: 'dial_declined', reply: reply.content }));
   } finally { await c.supervisor.stopAll(); c.close(); }
+});
+
+test('F01：通话结束事实归确认终态共同出口（S-first/UI-first/对账补齐/幂等/消费核销）', async () => {
+  const prompts: string[] = [];
+  const transport: OrTransport = async (payload: any) => {
+    prompts.push(JSON.stringify(payload.messages));
+    return { status: 200, headers: new Map(), body: frameStream(sse({ id: 'ce', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) };
+  };
+  const c = compose(tempRoot('call-end-fact-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const lifecycle = (callId: string) => c.call(`/v1/calls/${callId}`, 'DELETE', undefined, { authorization: 'Bearer synthetic-ingress' });
+  const factRow = (callId: string) => c.db.prepare("SELECT kind, consumed_at FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string; consumed_at: string | null } | undefined;
+  try {
+    const now = new Date().toISOString();
+    // ── 场景 A（审计复现）：lifecycle 先到（Siren 确认终态），前端后到 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-s-first','primary','active',?,?,'ordinary')").run(now, now);
+    assert.equal((await lifecycle('call-s-first')).status, 200);
+    assert.equal(factRow('call-s-first')?.kind, 'call_end', 'S-first：lifecycle 确认终态登记事实（旧实现此路径漏登记）');
+    await c.call('/api/v1/calls/call-s-first', 'DELETE'); // 前端后到
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id='call_end:call-s-first'").get() as { n: number }).n, 1, '重复到达不重复登记');
+    assert.equal((await lifecycle('call-s-first')).status, 200, 'lifecycle 幂等重放仍 200');
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id='call_end:call-s-first'").get() as { n: number }).n, 1, '幂等：仍恰一条');
+
+    // ── 场景 B（真假事实修正）：前端挂断命令先到——意图不登记事实 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-ui-first','primary','active',?,?,'ordinary')").run(now, now);
+    const ui = await c.call('/api/v1/calls/call-ui-first', 'DELETE');
+    assert.equal(ui.status, 200);
+    assert.equal(ui.body['state'], 'ended', '前端端点仍本端收口投影');
+    assert.equal(factRow('call-ui-first'), undefined, 'F01：挂断命令（linger 意图）不登记"通话已结束"事实');
+    await lifecycle('call-ui-first'); // S 稍后确认终态
+    assert.equal(factRow('call-ui-first')?.kind, 'call_end', '确认终态到达后补登记');
+
+    // ── 场景 C（回调丢失）：对账发现正本 ended → 补齐 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-reconcile','primary','active',?,?,'ordinary')").run(now, now);
+    const { reconcileVoiceCallsOnStartup } = await import('../../apps/host/src/integrations/siren/reconcile.ts');
+    const out = await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false }) } as never);
+    assert.equal(out.ended, 1, '对账收口 call-reconcile');
+    assert.equal(factRow('call-reconcile')?.kind, 'call_end', '对账确认终态补登记事实');
+
+    // ── 消费链：事实随下一次正常文字轮附带并核销 ──
+    const turn = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '回来了', clientMessageId: 'm-after-call' });
+    c.supervisor.enqueue(turn.turnId);
+    await c.supervisor.waitIdle();
+    assert.ok(prompts.some((p) => p.includes('语音通话已结束')), '结束事实随正常轮附带');
+    for (const id of ['call-s-first', 'call-ui-first', 'call-reconcile']) {
+      assert.ok(factRow(id)?.consumed_at, `已派发即核销：${id}`);
+    }
+    // 核销后不重复附带（历史轨迹恰一次）
+    const turn2 = c.messages.submitUserMessageWithTurn({ conversationId: 'primary', content: '嗯嗯', clientMessageId: 'm-after-call-2' });
+    c.supervisor.enqueue(turn2.turnId);
+    await c.supervisor.waitIdle();
+    const occurrences = prompts.slice(-1)[0]!.split('语音通话已结束').length - 1;
+    assert.equal(occurrences, 3, `核销后仅历史留存（三通各一次，实际 ${occurrences}）`);
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
+});
+
+test('F01-R1/R2 复核返修：UI先收口+回调丢失→对账补事实；未连接预留到期→零事实', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'r12', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('call-end-r1r2-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const factRow = (callId: string) => c.db.prepare("SELECT kind FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string } | undefined;
+  try {
+    const now = new Date().toISOString();
+    const { reconcileVoiceCallsOnStartup } = await import('../../apps/host/src/integrations/siren/reconcile.ts');
+    let statusCalls = 0;
+    const siren = { callStatus: async () => { statusCalls++; return { dbStatus: 'ended', sessionActive: false }; } } as never;
+
+    // ── R1：UI 先收口（真实前端 DELETE）→ lifecycle 通知丢失（无调用）→ 对账补齐 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-r1','primary','active',?,?,'ordinary')").run(now, now);
+    const ui = await c.call('/api/v1/calls/call-r1', 'DELETE');
+    assert.equal(ui.body['state'], 'ended');
+    assert.equal(factRow('call-r1'), undefined, '挂断命令不登记事实');
+    const before = statusCalls;
+    const out1 = await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(statusCalls - before, 1, 'R1：ended 缺事实的行**确有**被对账查询（旧实现=0）');
+    assert.equal(factRow('call-r1')?.kind, 'call_end', '对账确认 S 终态后补登记');
+    // 补齐后不再重复查（幂等收敛）
+    const out2 = await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(out2.ended, 0, '已补事实行不再进入候选');
+
+    // ── R2：未连接预留到期 → 投影收口但零结束事实 ──
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES ('call-r2','primary','active',?,?,'ordinary')").run(now, new Date(Date.now() - 1000).toISOString());
+    const out3 = await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(out3.ended, 1, '孤儿预留仍被收口（投影清理保留）');
+    assert.equal(factRow('call-r2'), undefined, 'R2：未连接预留**不产生**通话结束事实');
+    // 对照：真正连接过的通话结束=恰一条
+    c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,connected_at,analysis_mode) VALUES ('call-r2b','primary','active',?,?,'ordinary')").run(now, now);
+    await reconcileVoiceCallsOnStartup(c.db, siren);
+    assert.equal(factRow('call-r2b')?.kind, 'call_end', '连接过的通话结束=恰一条');
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
+});
+
+test('生命周期重构 R3：register 丢失但真实话轮/结束回调/S 权威事实——结束事实不漏记（整链）', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'r3', choices: [{ delta: { content: '在' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('call-r3-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const factRow = (callId: string) => c.db.prepare("SELECT kind FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string } | undefined;
+  const lifecycle = (callId: string) => c.call(`/v1/calls/${callId}`, 'DELETE', undefined, { authorization: 'Bearer synthetic-ingress' });
+  // 正式建呼入口的产物=预留行（SirenAdapter 未配置时 POST /api/v1/calls 会 503——
+  // 预留行字段与 dial.ts/call-service 建呼写入一致；connected_at 留空=register 丢失）
+  const reserve = (callId: string) => c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,'primary','active',?,?,'ordinary')").run(callId, new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  const realTurn = async (callId: string, turnKey: string) => {
+    await c.call('/v1/chat/stream', 'POST', { conversation_id: 'primary', call_id: callId, turn_id: turnKey, modality: 'voice_call', text: '喂？能听到吗？' }, { authorization: 'Bearer synthetic-ingress', 'content-type': 'application/x-ndjson' }).catch(() => null);
+    await c.supervisor.waitIdle();
+  };
+  try {
+    // ── 链1（R3 主场景）：register 丢失 → 真实话轮 → 结束回调 → 事实恰一条 ──
+    reserve('call-r3a');
+    await realTurn('call-r3a', 't1');
+    assert.equal(c.db.prepare("SELECT state FROM voice_stream_turns WHERE call_id='call-r3a' AND turn_key='t1'").get()?.state, 'completed', '真实话轮完成');
+    assert.equal((await lifecycle('call-r3a')).status, 200, '结束回调到达');
+    assert.equal(factRow('call-r3a')?.kind, 'call_end', 'R3：真实话轮+结束回调→事实登记（旧实现漏记）');
+    await lifecycle('call-r3a');
+    assert.equal((c.db.prepare("SELECT COUNT(*) n FROM pending_program_facts WHERE id LIKE 'call_end:call-r3a%'").get() as { n: number }).n, 1, '重复回调仍恰一条');
+
+    // ── 链2（R3+恢复）：register 丢失 → 真实话轮 → UI 先收口 → 回调也丢 → 对账按 S 权威事实补记 ──
+    reserve('call-r3b');
+    await realTurn('call-r3b', 't1');
+    const ui = await c.call('/api/v1/calls/call-r3b', 'DELETE');
+    assert.equal(ui.body['state'], 'ended');
+    assert.equal(factRow('call-r3b'), undefined, '挂断命令不登记（意图≠终态）');
+    const { reconcileVoiceCallsOnStartup } = await import('../../apps/host/src/integrations/siren/reconcile.ts');
+    const out = await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false, startedAt: 1793800000000 }) } as never);
+    assert.equal(factRow('call-r3b')?.kind, 'call_end', '对账按 S started_at 补记（本地无 register 证据）');
+
+    // ── 链3（零话轮零 register 的真实会话）：仅 S 权威事实证明 ──
+    reserve('call-r3c');
+    await c.call('/api/v1/calls/call-r3c', 'DELETE'); // UI 收口（无证据）
+    await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false, startedAt: 1793800000001 }) } as never);
+    assert.equal(factRow('call-r3c')?.kind, 'call_end', 'S 说会话真实建立过→登记');
+
+    // ── 链4（R2 保留）：未连接预留到期，S 无会话事实 → 零事实 ──
+    c.db.prepare("UPDATE voice_calls SET reserved_until=? WHERE call_id='call-r3d'").run(new Date(Date.now() - 1000).toISOString()) ;
+    reserve('call-r3d');
+    c.db.prepare("UPDATE voice_calls SET reserved_until=? WHERE call_id='call-r3d'").run(new Date(Date.now() - 1000).toISOString());
+    const out2 = await reconcileVoiceCallsOnStartup(c.db, { callStatus: async () => ({ dbStatus: 'ended', sessionActive: false, startedAt: null }) } as never);
+    assert.equal(out2.ended >= 1, true, '孤儿预留仍收口');
+    assert.equal(factRow('call-r3d'), undefined, 'R2：未连接预留零结束事实');
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
+});
+
+test('RV02 复审：end 回调按 S 正本 had_session 判定——未连接预留取消不产生真实通话结束事实', async () => {
+  const transport: OrTransport = async () => ({ status: 200, headers: new Map(), body: frameStream(sse({ id: 'rv02', choices: [{ delta: { content: '好' } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 5, completion_tokens: 1 } }) + DONE) });
+  const c = compose(tempRoot('call-rv02-'), transport);
+  const oldToken = process.env.ESTOMAGO_VOICE_INGRESS_TOKEN;
+  process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = 'synthetic-ingress';
+  const factRow = (callId: string) => c.db.prepare("SELECT kind FROM pending_program_facts WHERE id=?").get(`call_end:${callId}`) as { kind: string } | undefined;
+  const lifecycle = (callId: string, body?: unknown) => c.call(`/v1/calls/${callId}`, 'DELETE', body, { authorization: 'Bearer synthetic-ingress' });
+  const reserve = (callId: string) => c.db.prepare("INSERT INTO voice_calls(call_id,conversation_id,state,started_at,reserved_until,analysis_mode) VALUES (?,'primary','active',?,?,'ordinary')").run(callId, new Date().toISOString(), new Date(Date.now() + 60_000).toISOString());
+  try {
+    // ── 反例（复审 siren-reaudit 见证）：从未连 WS 的预留取消，S end 通知 had_session=false ──
+    reserve('call-rv02a');
+    const ended = await lifecycle('call-rv02a', { had_session: false });
+    assert.equal(ended.status, 200, '终态收口照常');
+    assert.equal((c.db.prepare("SELECT state FROM voice_calls WHERE call_id='call-rv02a'").get() as { state: string }).state, 'ended', '投影收口');
+    assert.equal(factRow('call-rv02a'), undefined, 'RV02：未连接预留取消不登记"真实通话已结束"事实');
+
+    // ── 对照1：真实会话 onDestroyed（had_session=true）→ 事实登记（register 丢失也有正本事实） ──
+    reserve('call-rv02b');
+    await lifecycle('call-rv02b', { had_session: true });
+    assert.equal(factRow('call-rv02b')?.kind, 'call_end', 'S 正本会话事实→登记');
+
+    // ── 对照2：无 body 旧形态（无 had_session）→ 不凭 end 通知冒充；connected_at 证据仍生效 ──
+    reserve('call-rv02c');
+    await lifecycle('call-rv02c');
+    assert.equal(factRow('call-rv02c'), undefined, '无事实的 end 通知不单独登记');
+    c.db.prepare("UPDATE voice_calls SET state='active' WHERE call_id='call-rv02c'").run();
+    c.db.prepare('UPDATE voice_calls SET connected_at=? WHERE call_id=?').run(new Date().toISOString(), 'call-rv02c');
+    await lifecycle('call-rv02c');
+    assert.equal(factRow('call-rv02c')?.kind, 'call_end', 'connected_at 真实连接证据→登记');
+  } finally {
+    if (oldToken === undefined) delete process.env.ESTOMAGO_VOICE_INGRESS_TOKEN; else process.env.ESTOMAGO_VOICE_INGRESS_TOKEN = oldToken;
+    await c.supervisor.stopAll(); c.close();
+  }
 });
 
 test('她取消后再 accept_call：DIAL_SUPERSEDED 如实（不建通话）', async () => {

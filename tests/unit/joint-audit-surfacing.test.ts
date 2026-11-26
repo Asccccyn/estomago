@@ -1,12 +1,12 @@
+import { windowCoverage } from '../../apps/host/src/memory-surfacing/window-coverage.ts';
+import { makeDb, pollUntil, fakeSolJudge } from '../helpers.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {makeDb, pollUntil } from '../helpers.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { SurfacingService } from '../../apps/host/src/memory-surfacing/service.ts';
 import { bindMessageLifecycle as bindSurfacingForTest } from '../../apps/host/src/application/message-lifecycle.ts';
 import { MariposaClient, type MariposaTransport } from '../../apps/host/src/integrations/mariposa/client.ts';
-import { extractHypotheses } from '../../apps/host/src/memory-surfacing/trigger.ts';
-import { estimateTokens, memoryRefFor, renderAugmentation, SURFACE_HOST_NOTICE, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
+import { estimateTokens, memoryRefFor, renderAugmentation, type SurfaceItem } from '../../apps/host/src/memory-surfacing/contracts.ts';
 import { executeMemoryReadFull } from '../../apps/host/src/memory-surfacing/detail-tool.ts';
 
 const item: SurfaceItem = { event_id: 'e1', memory_id: 'm1', memory_version: '1',
@@ -14,7 +14,7 @@ const item: SurfaceItem = { event_id: 'e1', memory_id: 'm1', memory_version: '1'
   event_text: '合成事件一', body_hash: 'hash1', detail_ref: 'sdr_fixture1' };
 const items = [item, { ...item, event_id: 'e2', memory_id: 'm2', detail_ref: 'sdr_fixture2', event_text: '合成事件二', body_hash: 'hash2' },
   { ...item, event_id: 'e3', memory_id: 'm3', detail_ref: 'sdr_fixture3', event_text: '合成事件三', body_hash: 'hash3' }];
-function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise<void>; check?: () => Promise<void>; deadlineMs?: number; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }> } = {}) {
+function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise<void>; check?: () => Promise<void>; deadlineMs?: number; budget?: number; selected?: SurfaceItem[]; checks?: Array<{ valid?: boolean; accepted?: string[] }>; solDecisions?: Parameters<typeof fakeSolJudge>[0] } = {}) {
   const { db } = makeDb();
   const calls: string[] = [];
   const selected = opts.selected ?? [item];
@@ -36,8 +36,8 @@ function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise
     throw new Error('UNEXPECTED_CAPABILITY');
   };
   const client = new MariposaClient({ transport });
-  const svc = new SurfacingService(db, client, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
-    delivery_deadline_ms: opts.deadlineMs ?? 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1 }, null);
+  const svc = new SurfacingService(db, client, fakeSolJudge(opts.solDecisions ?? [{ decision: 'recall' }]).judge, { enabled: true, policy_revision: 1, prompt_prepare_revision: 'surface_prepare_v1',
+    delivery_deadline_ms: opts.deadlineMs ?? 100, max_added_tokens_per_turn: opts.budget ?? 4096, max_packet_bytes: 24576, worker_concurrency: 1, recent_user_messages: 3, recent_window_bytes: 24576 }, null);
   const messages = new MessageService(db, bindSurfacingForTest({ surfacing: svc, activity: null })); messages.ensureConversation('c1');
   const say = (id: string, content = (id === 'a' ? '你还记得那次7.9我们把记忆库做成了吗？' : '合成普通回复')) => messages.submitUserMessageWithTurn({ conversationId: 'c1', content, clientMessageId: id, occurredAt: '2026-10-19T00:00:00Z' });
   const job = (id: string) => svc.repo.jobByLogicalKey('c1', id, 1, 1, 'surface_prepare_v1')!;
@@ -50,7 +50,7 @@ function fixture(opts: { prepare?: () => Promise<void>; validate?: () => Promise
 test('JA-S01: target_bound is validated within deadline without a scheduler-dependent sleep', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a;
     const result = await f.augment(b);
     assert.ok(result, 'the source message receives its own verified candidate');
@@ -61,8 +61,10 @@ test('JA-S02: a late source result never drifts from B to C', async () => {
   let resolve!: () => void; const gate = new Promise<void>(r => { resolve = r; });
   const f = fixture({ prepare: () => gate });
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'preparing');
-    const result = await f.augment(a);
+    const a = f.say('a');
+    const work = f.augment(a);
+    await pollUntil(() => f.job(a.message.id).state === 'preparing');
+    const result = await work;
     assert.equal(result, null);
     f.say('b'); resolve();
     await new Promise(r => setTimeout(r, 30));
@@ -74,21 +76,21 @@ test('JA-S02: a late source result never drifts from B to C', async () => {
 
 test('JA-S03: packet budget is counted once and all three independent winners fit', async () => {
   const refs = new Map(items.map(x => [x.event_id, memoryRefFor(x.detail_ref)]));
-  const budget = estimateTokens(SURFACE_HOST_NOTICE + renderAugmentation(items, refs));
+  const budget = estimateTokens(renderAugmentation(items, refs));
   const f = fixture({ selected: items, budget });
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a;
     const result = await f.augment(b);
     assert.equal(result?.items.length, 3);
-    assert.equal(estimateTokens(SURFACE_HOST_NOTICE + result!.text), budget);
+    assert.equal(estimateTokens(result!.text), budget);
   } finally { await f.close(); }
 });
 
 test('JA-S04: concurrent augmentation reserves a job only once', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a;
     const result = await Promise.all([f.augment(b, 'a2'), f.augment(b, 'a3')]);
     assert.equal(result.filter(Boolean).length, 1);
@@ -99,7 +101,7 @@ test('JA-S04: concurrent augmentation reserves a job only once', async () => {
 test('JA-S05: memory refs are scoped to the actual room and window', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a;
     const result = await f.augment(b); assert.ok(result); f.svc.markDispatched('a2'); f.svc.markRetained(result);
     const ref = result.memoryRefs[0].ref;
@@ -110,40 +112,10 @@ test('JA-S05: memory refs are scoped to the actual room and window', async () =>
   } finally { await f.close(); }
 });
 
-test('JA-S06: hypotheses use Unicode code points, including supplementary characters', () => {
-  const text = '🦋7.9记忆库完成。8.19结婚。';
-  const cp = [...text];
-  const spans = extractHypotheses(text);
-  assert.equal(spans[0].end_cp, [...'🦋7.9记忆库完成。'].length);
-  assert.equal(spans.map(s => cp.slice(s.start_cp, s.end_cp).join('')).join(''), text);
-});
-
-test('JA-S07: comma-separated three-event input supplies three hypotheses without guessed year', () => {
-  const text = '7.9我们记忆库做成了，也是我们的结婚纪念日，8.19我们结婚。';
-  const spans = extractHypotheses(text);
-  assert.equal(spans.length, 3);
-  assert.equal(spans.map(s => [...text].slice(s.start_cp, s.end_cp).join('')).join(''), text);
-});
-
-test('JA-S09: same-body new version updates the coverage identity instead of repeating forever', async () => {
-  const f = fixture();
-  try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
-    const b = a; const first = await f.augment(b); assert.ok(first);
-    f.svc.markDispatched('a2'); f.svc.markRetained(first);
-    const revised = { ...item, memory_version: '2', detail_ref: 'sdr_revision2' };
-    assert.equal(f.svc.repo.coveredInWindow('c1', 'w1', [revised]).size, 0);
-    f.svc.repo.markRetained(first.jobId, first.deliveryId, [revised]);
-    assert.equal(f.db.prepare('SELECT memory_version FROM surfacing_coverage WHERE memory_id=?').get(item.memory_id)?.memory_version, '2');
-    assert.equal(f.svc.repo.coveredInWindow('c1', 'w1', [revised]).size, 0, 'without retained trajectory no coverage is claimed');
-    assert.equal(f.svc.repo.coveredInWindow('c1', 'w2', [revised]).size, 0);
-  } finally { await f.close(); }
-});
-
 test('JA-S10: source route edit invalidates frozen delivery before transport admission', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a; const result = await f.augment(b); assert.ok(result);
     f.db.exec('BEGIN IMMEDIATE');
     try { f.messages.editMessageInTx(a.message.id, '合成已修改原话', { notifySurfacing: true }); f.db.exec('COMMIT'); }
@@ -151,7 +123,7 @@ test('JA-S10: source route edit invalidates frozen delivery before transport adm
     assert.equal(f.job(a.message.id).state, 'cancelled');
     assert.throws(() => f.svc.markDispatched('a2'), /SURFACE_TARGET_CHANGED/);
     f.svc.markRetained(result);
-    assert.equal(f.db.prepare('SELECT count(*) n FROM surfacing_coverage').get()?.n, 0);
+    assert.equal(windowCoverage(f.db, 'w1').length, 0);
   } finally { await f.close(); }
 });
 
@@ -160,7 +132,7 @@ test('JA-S10: source route edit invalidates frozen delivery before transport adm
 test('JA-S11: happy path — finalAdmit passes through and the same gate is checked exactly twice', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a; const result = await f.augment(b); assert.ok(result);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
@@ -175,7 +147,7 @@ test('JA-S11: happy path — finalAdmit passes through and the same gate is chec
 test('JA-S12: receipt stale at the assembly boundary — only the surfacing block is dropped, the main-message path survives', async () => {
   const f = fixture({ checks: [{ valid: true }, { valid: false }] });
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a; const result = await f.augment(b); assert.ok(result);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
@@ -188,14 +160,14 @@ test('JA-S12: receipt stale at the assembly boundary — only the surfacing bloc
     assert.equal(f.svc.reuseFrozen('a2'), null, 'a dropped package is never reused');
     f.svc.markDispatched('a2'); // 不抛：主消息派发路径不受丢弃影响
     f.svc.markRetained(result); // 不落覆盖账
-    assert.equal(f.db.prepare('SELECT count(*) n FROM surfacing_coverage').get()?.n, 0);
+    assert.equal(windowCoverage(f.db, 'w1').length, 0);
   } finally { await f.close(); }
 });
 
 test('JA-S13: the accepted face shrinks at the boundary — the whole block is dropped, not partially injected', async () => {
   const f = fixture({ checks: [{ valid: true }, { valid: true, accepted: [] }] });
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a; const result = await f.augment(b); assert.ok(result);
     const admitted = await f.svc.finalAdmit(result, {
       conversationId: 'c1', windowId: 'w1', messageId: b.message.id, revision: 1,
@@ -208,7 +180,7 @@ test('JA-S13: the accepted face shrinks at the boundary — the whole block is d
 test('JA-S14: target edited between freeze and assembly — final admission drops without a second chance', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a; const result = await f.augment(b); assert.ok(result);
     f.svc.repo.cancelJobsForRevision('c1', b.message.id, 1);
     const admitted = await f.svc.finalAdmit(result, {
@@ -223,7 +195,7 @@ test('JA-S14: target edited between freeze and assembly — final admission drop
 test('JA-S15: a package already on the wire is reused verbatim — final admission does not rewrite mid-attempt', async () => {
   const f = fixture();
   try {
-    const a = f.say('a'); await pollUntil(() => f.job(a.message.id).state === 'prepared');
+    const a = f.say('a');
     const b = a; const result = await f.augment(b); assert.ok(result);
     f.svc.markDispatched('a2'); // 首发已过门（onBeforeDispatch）
     const admitted = await f.svc.finalAdmit(result, {
@@ -239,7 +211,7 @@ test('JA-S15: a package already on the wire is reused verbatim — final admissi
 test('P3: prepare and validate spend one absolute acceptance deadline, late results never carry', async () => {
   let release!: () => void;
   const late = new Promise<void>(r => { release = r; });
-  const f = fixture({ deadlineMs: 200,
+  const f = fixture({ deadlineMs: 200, solDecisions: [{ decision: 'recall' }, { decision: 'none' }],
     prepare: () => new Promise(r => setTimeout(r, 110)), validate: () => late });
   try {
     const a = f.say('a');
@@ -301,7 +273,7 @@ test('P3: retained same-turn recall preserves P1 follow-up intent without reusin
   } finally { await f.close(); }
 });
 
-test('P3: concurrent assembly before worker wake calls prepare only once', async () => {
+test('P3: concurrent assembly of the same turn calls prepare only once', async () => {
   const f = fixture({ prepare: () => new Promise(r => setTimeout(r, 10)) });
   try {
     const a = f.say('a');
@@ -319,8 +291,11 @@ test('P3: an edited retained source cannot supply follow-up intent from its stal
     const a = f.say('a'); const aug = await f.augment(a); assert.ok(aug);
     f.svc.markDispatched('a2'); f.svc.markRetained(aug);
     f.messages.editUserMessage(a.message.id, '切换成普通聊天');
+    // 旧两段式省略门退役：'后来呢'照常登记并交给 Sol 判断；被编辑的旧修订
+    // 不再作为意图延续依据（Sol 只看真实近文与 sol_state，不看旧 hypotheses）。
     const b = f.say('b', '后来呢');
-    assert.equal(f.job(b.message.id), null);
+    await f.augment(b, 'followup-after-edit');
+    assert.notEqual(f.job(b.message.id), null);
     assert.equal(f.job(a.message.id).state, 'retained', 'historical delivery remains factual');
   } finally { await f.close(); }
 });

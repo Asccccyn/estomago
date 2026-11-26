@@ -42,12 +42,12 @@ test('A04 catalog during call lists only memory and control tools', async () => 
     const before = await f.tools.execute('tool_catalog', { }, f.ctx());
     assert.equal(before.ok, true);
     const beforeNames = ((before.output as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
-    assert.ok(beforeNames.includes('wishstar_list_offers'), '非通话目录含业务工具（冻结目录本身不变）');
+    assert.ok(beforeNames.includes('wishstar_offer_star'), '非通话目录含业务工具（冻结目录本身不变；offer_star=现行业务工具）');
     f.startCall();
     const during = await f.tools.execute('tool_catalog', { }, f.ctx());
     assert.equal(during.ok, true);
     const duringNames = ((during.output as { tools: Array<{ name: string }> }).tools).map((t) => t.name);
-    assert.ok(!duringNames.includes('wishstar_list_offers'), '通话内新 catalog 不列非记忆业务工具');
+    assert.ok(!duringNames.includes('wishstar_offer_star'), '通话内新 catalog 不列非记忆业务工具');
     assert.ok(!duringNames.includes('oido_find'), '重型 oído find 不在通话热路径');
     const reg = (f.tools as unknown as { getCapabilityRegistry(): { get(id: string): { memoryOnlyAllowed: boolean } | null } }).getCapabilityRegistry();
     for (const n of duringNames) assert.ok(reg?.get(n)?.memoryOnlyAllowed === true, `目录项 ${n} 必须在通话许可（registry 条目元数据）`);
@@ -61,10 +61,10 @@ test('A04 define/invoke/direct execution all gated during call; recovery after h
     f.startCall();
     const ctx = f.ctx();
     // D39（审计 B1 修复后）：define/invoke/直接执行同一通话资格门——非记忆工具 define 本身拒绝
-    const def = await f.tools.execute('tool_define', { name: 'wishstar_list_offers' }, ctx);
+    const def = await f.tools.execute('tool_define', { name: 'wishstar_offer_star' }, ctx);
     assert.equal(def.ok, false, '非记忆工具 define 在通话内必须拒绝（定义不得进入下一模型请求）');
     assert.equal((def.output as { error_code: string }).error_code, 'TOOL_UNAVAILABLE_IN_CALL');
-    const inv = await f.tools.execute('tool_invoke', { name: 'wishstar_list_offers', definition_id: 'synthetic', arguments: {} }, ctx);
+    const inv = await f.tools.execute('tool_invoke', { name: 'wishstar_offer_star', definition_id: 'synthetic', arguments: {} }, ctx);
     assert.equal(inv.ok, false);
     assert.equal((inv.output as { error_code: string }).error_code, 'TOOL_UNAVAILABLE_IN_CALL');
     // 记忆工具 define 在通话内保留（memory_read_full 等仍可发现）

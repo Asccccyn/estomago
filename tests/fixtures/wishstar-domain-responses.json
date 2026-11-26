@@ -1,0 +1,356 @@
+{
+  "source": {
+    "source_commit": "3079cb6515905db71dbc054bee554cbfb7392f06",
+    "source_files": {
+      "app/config.py": "9f3bcec1b01077a29f5ca741486efc94a91a1fd8f36be5ac5e2f464dd9e74f92",
+      "app/api/routes.py": "62e6870d0aa40128ed64969383b0444264fce6a001369c0820db4961592b25a8",
+      "app/services/star_service.py": "c6ed9796e803c64d775392a25c2dd8b7ad75b30181ce29b5f40dc811a00dddcb"
+    },
+    "limits": {
+      "content": 2000,
+      "mood": 100,
+      "note": 500,
+      "message": 200
+    }
+  },
+  "verified_rejections": [
+    "wrong_recipient",
+    "duplicate_accept",
+    "content_limit",
+    "unresponded_star"
+  ],
+  "responses": {
+    "wishstar_write_star": {
+      "id": "star_fe9f7a03c884",
+      "author_id": "jiaming",
+      "recipient_id": "qiaosheng",
+      "content": "SYNTHETIC_MY_STAR AbC  原生空格。",
+      "mood_type": null,
+      "mood_text": null,
+      "note": null,
+      "visibility": "hidden",
+      "state": "SEALED",
+      "written_at": "2026-11-04T17:51:35",
+      "shared_at": null,
+      "opened_at": null,
+      "opened_by": null,
+      "first_view_at": null,
+      "first_view_by": null,
+      "open_mode": null,
+      "shared_origin": null,
+      "cycle_id": null,
+      "created_at": "2026-11-04T17:51:35",
+      "updated_at": "2026-11-04T17:51:35"
+    },
+    "wishstar_hidden_stars": {
+      "items": [
+        {
+          "id": "star_5ae1968b119c",
+          "author_id": "jiaming",
+          "recipient_id": "qiaosheng",
+          "content": "SYNTHETIC_PRIVATE_REMAINING",
+          "mood_type": null,
+          "mood_text": null,
+          "note": null,
+          "visibility": "hidden",
+          "state": "SEALED",
+          "written_at": "2026-11-04T17:51:35",
+          "shared_at": null,
+          "opened_at": null,
+          "opened_by": null,
+          "first_view_at": null,
+          "first_view_by": null,
+          "open_mode": null,
+          "shared_origin": null,
+          "cycle_id": null,
+          "created_at": "2026-11-04T17:51:35",
+          "updated_at": "2026-11-04T17:51:35",
+          "being_offered": false,
+          "waiting_random_delivery": false,
+          "in_active_session": false
+        },
+        {
+          "id": "star_fe9f7a03c884",
+          "author_id": "jiaming",
+          "recipient_id": "qiaosheng",
+          "content": "SYNTHETIC_MY_STAR AbC  原生空格。",
+          "mood_type": null,
+          "mood_text": null,
+          "note": null,
+          "visibility": "hidden",
+          "state": "OFFERED",
+          "written_at": "2026-11-04T17:51:35",
+          "shared_at": null,
+          "opened_at": null,
+          "opened_by": null,
+          "first_view_at": null,
+          "first_view_by": null,
+          "open_mode": null,
+          "shared_origin": null,
+          "cycle_id": null,
+          "created_at": "2026-11-04T17:51:35",
+          "updated_at": "2026-11-04T17:51:35",
+          "being_offered": true,
+          "waiting_random_delivery": false,
+          "in_active_session": false
+        }
+      ]
+    },
+    "wishstar_special_dates": {
+      "items": [
+        {
+          "id": "sd_e7ce74ef2f0e",
+          "name": "合成特殊日",
+          "month": 11,
+          "day": 4,
+          "year": null,
+          "type": "custom",
+          "active": 1,
+          "created_by": "qiaosheng",
+          "created_at": "2026-11-04T17:51:35"
+        }
+      ]
+    },
+    "wishstar_list_offers": {
+      "incoming": [
+        {
+          "id": "off_ad6beeb901b3",
+          "sender_id": "qiaosheng",
+          "recipient_id": "jiaming",
+          "status": "offered",
+          "offered_at": "2026-11-04T17:51:35",
+          "opened_at": null,
+          "message": null
+        }
+      ],
+      "outgoing": [
+        {
+          "id": "off_ff3cc37cc2ec",
+          "star_id": "star_fe9f7a03c884",
+          "sender_id": "jiaming",
+          "recipient_id": "qiaosheng",
+          "status": "offered",
+          "offered_at": "2026-11-04T17:51:35",
+          "opened_at": null,
+          "message": "SYNTHETIC_OFFER"
+        }
+      ]
+    },
+    "wishstar_notifications": {
+      "items": [
+        {
+          "id": "ntf_83441356d99c",
+          "recipient_id": "jiaming",
+          "type": "HIDDEN_STAR_ADDED",
+          "title": "SYNTHETIC_qiaosheng的瓶子里又多了星星",
+          "body": null,
+          "star_id": null,
+          "created_at": null,
+          "is_read": 0
+        },
+        {
+          "id": "ntf_a262acc9dff1",
+          "recipient_id": "jiaming",
+          "type": "STAR_OFFERED",
+          "title": "SYNTHETIC_qiaosheng递给你一颗星星。",
+          "body": "接住它，正文才会展开。",
+          "star_id": null,
+          "is_read": 0,
+          "created_at": "2026-11-04T17:51:35"
+        }
+      ],
+      "unread_count": 2,
+      "consumed": 0
+    },
+    "wishstar_requests": {
+      "incoming": [
+        {
+          "id": "req_95dd0c42d0cb",
+          "requester_id": "qiaosheng",
+          "owner_id": "jiaming",
+          "status": "pending",
+          "requested_at": "2026-11-04T17:51:35",
+          "responded_at": null,
+          "allocated_at": null,
+          "opened_at": null
+        }
+      ],
+      "outgoing": []
+    },
+    "wishstar_offer_star": {
+      "id": "off_ff3cc37cc2ec",
+      "star_id": "star_fe9f7a03c884",
+      "sender_id": "jiaming",
+      "recipient_id": "qiaosheng",
+      "status": "offered",
+      "offered_at": "2026-11-04T17:51:35",
+      "opened_at": null,
+      "message": "SYNTHETIC_OFFER"
+    },
+    "wishstar_accept_offer": {
+      "id": "star_c1f7e618039e",
+      "author_id": "qiaosheng",
+      "recipient_id": "jiaming",
+      "content": "SYNTHETIC_ACCEPT_BODY AbC\n第二行",
+      "mood_type": null,
+      "mood_text": null,
+      "note": null,
+      "visibility": "hidden",
+      "state": "SHARED",
+      "written_at": "2026-11-04T17:51:35",
+      "shared_at": "2026-11-04T17:51:35",
+      "opened_at": "2026-11-04T17:51:35",
+      "opened_by": "jiaming",
+      "first_view_at": "2026-11-04T17:51:35",
+      "first_view_by": "jiaming",
+      "open_mode": "author_offer",
+      "shared_origin": "revealed_by_offer",
+      "cycle_id": null,
+      "created_at": "2026-11-04T17:51:35",
+      "updated_at": "2026-11-04T17:51:35",
+      "author_name": "SYNTHETIC_qiaosheng",
+      "opened_by_name": "SYNTHETIC_jiaming",
+      "first_view_by_name": "SYNTHETIC_jiaming",
+      "source_label": "作者主动递出后拆开",
+      "responses": [],
+      "new_response_ids": [],
+      "views": [
+        {
+          "viewer_id": "jiaming",
+          "count": 1,
+          "viewer_name": "SYNTHETIC_jiaming"
+        }
+      ]
+    },
+    "wishstar_request_star": {
+      "id": "req_95dd0c42d0cb",
+      "requester_id": "qiaosheng",
+      "owner_id": "jiaming",
+      "status": "pending",
+      "requested_at": "2026-11-04T17:51:35",
+      "responded_at": null,
+      "allocated_at": null,
+      "opened_at": null
+    },
+    "wishstar_respond_request": {
+      "request": {
+        "id": "req_95dd0c42d0cb",
+        "requester_id": "qiaosheng",
+        "owner_id": "jiaming",
+        "status": "approved",
+        "requested_at": "2026-11-04T17:51:35",
+        "responded_at": "2026-11-04T17:51:35",
+        "allocated_at": "2026-11-04T17:51:35",
+        "opened_at": null
+      },
+      "note": null
+    },
+    "wishstar_start_session": {
+      "id": "sess_4854de12c5c3",
+      "type": "special_day",
+      "special_date_id": "sd_e7ce74ef2f0e",
+      "initiated_by": "jiaming",
+      "confirmed_by": null,
+      "status": "waiting_confirmation",
+      "started_at": null,
+      "ended_at": null,
+      "actor_a_count": null,
+      "actor_b_count": null,
+      "quota_cutoff_at": null
+    },
+    "wishstar_confirm_session": {
+      "id": "sess_4854de12c5c3",
+      "type": "special_day",
+      "special_date_id": "sd_e7ce74ef2f0e",
+      "initiated_by": "jiaming",
+      "confirmed_by": "qiaosheng",
+      "status": "active",
+      "started_at": "2026-11-04T17:51:35",
+      "ended_at": null,
+      "actor_a_count": 1,
+      "actor_b_count": 1,
+      "quota_cutoff_at": null
+    },
+    "wishstar_take_star": {
+      "id": "star_f2c486f66503",
+      "author_id": "qiaosheng",
+      "recipient_id": "jiaming",
+      "content": "SYNTHETIC_TAKE_BODY AbC  原生空格。",
+      "mood_type": null,
+      "mood_text": null,
+      "note": null,
+      "visibility": "hidden",
+      "state": "SHARED",
+      "written_at": "2026-11-04T17:51:35",
+      "shared_at": "2026-11-04T17:51:35",
+      "opened_at": "2026-11-04T17:51:35",
+      "opened_by": "jiaming",
+      "first_view_at": "2026-11-04T17:51:35",
+      "first_view_by": "jiaming",
+      "open_mode": "special_day",
+      "shared_origin": "revealed_by_special_day",
+      "cycle_id": "sess_4854de12c5c3",
+      "created_at": "2026-11-04T17:51:35",
+      "updated_at": "2026-11-04T17:51:35",
+      "author_name": "SYNTHETIC_qiaosheng",
+      "opened_by_name": "SYNTHETIC_jiaming",
+      "first_view_by_name": "SYNTHETIC_jiaming",
+      "source_label": "特殊日一起拆开",
+      "responses": [],
+      "new_response_ids": [],
+      "views": [
+        {
+          "viewer_id": "jiaming",
+          "count": 1,
+          "viewer_name": "SYNTHETIC_jiaming"
+        }
+      ]
+    },
+    "wishstar_finish_session": {
+      "id": "sess_4854de12c5c3",
+      "type": "special_day",
+      "special_date_id": "sd_e7ce74ef2f0e",
+      "initiated_by": "jiaming",
+      "confirmed_by": "qiaosheng",
+      "status": "completed",
+      "started_at": "2026-11-04T17:51:35",
+      "ended_at": "2026-11-04T17:51:35",
+      "actor_a_count": 1,
+      "actor_b_count": 1,
+      "quota_cutoff_at": null
+    },
+    "wishstar_shared_stars": {
+      "items": [
+        {
+          "id": "star_21545ae0d3a4",
+          "author_id": "qiaosheng",
+          "recipient_id": "jiaming",
+          "content": "SYNTHETIC_SHARED_VISIBLE",
+          "mood_type": null,
+          "mood_text": null,
+          "note": null,
+          "visibility": "visible",
+          "state": "SHARED",
+          "written_at": "2026-11-25T22:10:09",
+          "shared_at": "2026-11-25T22:10:09",
+          "opened_at": "2026-11-25T22:10:09",
+          "opened_by": "qiaosheng",
+          "first_view_at": null,
+          "first_view_by": null,
+          "open_mode": "visible_from_start",
+          "shared_origin": "visible_from_start",
+          "cycle_id": null,
+          "created_at": "2026-11-25T22:10:09",
+          "updated_at": "2026-11-25T22:10:09",
+          "author_name": "宿主用户",
+          "being_offered": false,
+          "waiting_random_delivery": false,
+          "in_active_session": false,
+          "new_response_ids": [],
+          "responses": [],
+          "views": []
+        }
+      ]
+    }
+  }
+}

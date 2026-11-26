@@ -1,9 +1,3 @@
-// memory_hold 勾选式话语（她 2026-10-18 裁定）：quotes 只报消息序号
-// （可细到 from/to 句范围），宿主从已见原文直接抄录——一字不差是构造
-// 出来的，不再逐字比对；说话人按来源自动映射（owner=qiaosheng /
-// assistant=jiaming）；引用按 mariposa 不决定事件原文范围（收据齐
-// 全才发）。序号未见过/句范围无效/未同步=如实拒绝且零副作用。
-// 假 transport/假 Mariposa，零网络。
 import { test } from 'node:test';
 import { assembleTestTools, readyRuntimePatch, tempRoot, validateToolArgs, writeApprovedIdentity } from '../helpers.ts';
 import assert from 'node:assert/strict';
@@ -36,7 +30,7 @@ const sse = (obj: unknown): string => `data: ${JSON.stringify(obj)}\n\n`;
 const DONE = 'data: [DONE]\n\n';
 const textBody = (id: string, text: string) => sse({ id, choices: [{ delta: { content: text } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
 const toolBody = (id: string, callId: string, args: Record<string, unknown>) =>
-  sse({ id, choices: [{ delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: 'memory_hold', arguments: JSON.stringify(args) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
+  sse({ id, choices: [{ delta: { tool_calls: [{ index: 0, id: callId, type: 'function', function: { name: args.quotes ? 'memory_words_write' : 'memory_hold', arguments: JSON.stringify(args.quotes ? { action: 'add', memory_id: 'mem-existing', refs: args.quotes } : args) } }] } }] }) + sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 20, completion_tokens: 3 } }) + DONE;
 const frameStream = (body: string) => Readable.from(body.split('\n\n').filter((s) => s.length > 0).map((s) => enc.encode(`${s}\n\n`)));
 
 type HoldCall = { operationId: string; holdPayload: Record<string, unknown>; sourceSelections: unknown };
@@ -46,7 +40,8 @@ type HoldCall = { operationId: string; holdPayload: Record<string, unknown>; sou
  *  mariposa registry._hold 对每条 source_selection 恰好建一个绑定（1:1）。 */
 function recordingMariposa(calls: HoldCall[]): MariposaTransport {
   return async (capability, payload) => {
-    if (capability === 'memory.hold') {
+    if (capability === 'memory.get') return { ok: true, result: { memory_id: 'mem-existing', version: 1 } };
+    if (capability === 'memory.update' || capability === 'memory.hold') {
       calls.push({ operationId: payload.operation_id as string, holdPayload: payload as Record<string, unknown>, sourceSelections: payload.source_selections ?? null });
       const selCount = Array.isArray(payload.event_source_ranges) ? (payload.event_source_ranges as unknown[]).length : 0;
       return { ok: true, result: { operation_id: payload.operation_id, memory_id: `mem-${calls.length}`, version: 1, binding_ids: Array.from({ length: selCount }, (_, i) => `msb-fake-${calls.length}-${i}`), committed_at: new Date().toISOString() } };
@@ -66,7 +61,7 @@ function compose(root: string, holdArgs: Record<string, unknown>, mariposa: Mari
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: mariposa }), reviews: reviews, checkpoint: checkpoint });
@@ -103,11 +98,11 @@ function seedReceipt(ctx: ReturnType<typeof compose>, messageId: string, revisio
   ).run(messageId, revision, srcConv, srcMsg, sha256Hex(content), new Date().toISOString(), new Date().toISOString());
 }
 
-test('真实顺序：提交→收据就位→hold 勾选句范围→our_words 直接抄录+说话人+不决定事件原文范围', async () => {
+test('真实顺序：提交→收据就位→补写原话勾选句范围→our_words 直接抄录+说话人+不决定事件原文范围', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq2-');
   const userText = '她今天路过花店。突然好想你。';
-  const holdArgs = { original_title: '路过花店想他', creation_mode: 'contemporaneous', categories: ['sweet'], text: '她在回家路上路过花店时想起了char', quotes: [{ seq: 1, from: 2, to: 2 }] };
+  const holdArgs = { original_title: '路过花店想他', creation_mode: 'contemporaneous', categories: ['sweet'], text: '她在回家路上路过花店时想起了char', quotes: [{ quote: '突然好想你。', speaker: '宿主用户' }] };
   const ctx = compose(root, holdArgs, recordingMariposa(calls));
   // 手动走真实顺序：提交消息（不 enqueue）→ 种收据 → enqueue 驱动
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: userText, clientMessageId: 'q2', occurredAt: T0 });
@@ -118,11 +113,11 @@ test('真实顺序：提交→收据就位→hold 勾选句范围→our_words �
   assert.equal(att.state, 'completed');
   assert.equal(calls.length, 1, '恰好一次 hold');
   const call = calls[0]!;
-  assert.equal((call.holdPayload as { original_title: string }).original_title, '路过花店想他');
-  assert.deepEqual((call.holdPayload as { categories: string[] }).categories, ['sweet']);
-  const ourWords = (call.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
+  assert.equal(call.holdPayload.expected_version, 1);
+  assert.equal(call.holdPayload.text, undefined, '补话不改记忆正文');
+  const ourWords = (call.holdPayload as { our_words_add: Array<Record<string, unknown>> }).our_words_add;
   assert.equal(ourWords.length, 1);
-  assert.equal(ourWords[0]!.speaker, 'qiaosheng', '用户原话→qiaosheng（来源自动映射）');
+  assert.equal(call.holdPayload.memory_id, 'mem-existing');
   assert.equal(ourWords[0]!.text, '突然好想你。', '系统直接抄录第 2 句（构造式一字不差）');
   assert.equal(ourWords[0]!.source_ref, 'source_msg:src-m-1', 'F-J-01：正式来源身份=source_msg:<同步收据 id>');
   assert.equal(call.sourceSelections, null, '引语不建立事件原文绑定');
@@ -133,13 +128,13 @@ test('整条消息勾选（省略 from/to）：全量录入、不带 offset', as
   const calls: HoldCall[] = [];
   const root = tempRoot('hq-whole-');
   const userText = '帮我记住这件事';
-  const ctx = compose(root, { original_title: '整条勾选', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ seq: 1 }] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '整条勾选', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ quote: '帮我记住这件事', speaker: '宿主用户' }] }, recordingMariposa(calls));
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: userText, clientMessageId: 'w1', occurredAt: T0 });
   seedReceipt(ctx, sub.message.id, 1, userText, 'src-conv-w', 'src-m-w');
   ctx.supervisor.enqueue(sub.turnId);
   await ctx.supervisor.waitIdle();
   assert.equal(calls.length, 1);
-  const ourWords = (calls[0]!.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
+  const ourWords = (calls[0]!.holdPayload as { our_words_add: Array<Record<string, unknown>> }).our_words_add;
   assert.equal(ourWords[0]!.text, userText, '整条消息=全文录入');
   assert.equal(calls[0]!.sourceSelections, null, '引语不建立事件原文绑定');
   ctx.db.close();
@@ -149,38 +144,38 @@ test('自审 P2 回归：emoji（增补平面）在句子之前时，offset 按�
   const calls: HoldCall[] = [];
   const root = tempRoot('hq-emoji-');
   // '😀'=1 码点但 2 个 UTF-16 单位：句 2 的码点起点=8，UTF-16 下标会算成 9
-  const userText = '😀今天路过花店。突然好想你。';
-  const ctx = compose(root, { original_title: '带emoji的引用', creation_mode: 'contemporaneous', categories: ['sweet'], text: 'x', quotes: [{ seq: 1, from: 2, to: 2 }] }, recordingMariposa(calls));
+  const userText = '😀今天路过花店。突然好想你。'; // 引语锚点仍走码点口径的区间/重叠计算
+  const ctx = compose(root, { original_title: '带emoji的引用', creation_mode: 'contemporaneous', categories: ['sweet'], text: 'x', quotes: [{ quote: '突然好想你。', speaker: '宿主用户' }] }, recordingMariposa(calls));
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: userText, clientMessageId: 'e1', occurredAt: T0 });
   seedReceipt(ctx, sub.message.id, 1, userText, 'src-conv-e', 'src-m-e');
   ctx.supervisor.enqueue(sub.turnId);
   await ctx.supervisor.waitIdle();
   assert.equal(calls.length, 1, '勾选解析成功');
-  const ourWords = (calls[0]!.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
+  const ourWords = (calls[0]!.holdPayload as { our_words_add: Array<Record<string, unknown>> }).our_words_add;
   assert.equal(ourWords[0]!.text, '突然好想你。');
   assert.equal(calls[0]!.sourceSelections, null, '引语不建立事件原文绑定');
   ctx.db.close();
 });
 
-test('参数门补充：勾选条目缺 seq/非整数/白名单外字段在门口拒绝', () => {
-  const noSeq = validateToolArgs('memory_hold', { original_title: 't', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ from: 1 }] });
-  assert.ok(!noSeq.ok && noSeq.code === 'TOOL_ARG_REQUIRED', '缺 seq 拒收');
-  const badSeq = validateToolArgs('memory_hold', { original_title: 't', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ seq: '一' }] });
-  assert.ok(!badSeq.ok && badSeq.code === 'TOOL_ARG_TYPE', 'seq 非 integer 拒收');
-  const extra = validateToolArgs('memory_hold', { original_title: 't', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ seq: 1, snippet: '原文复述' }] });
+test('参数门补充：勾选条目缺 quote/quote 非字符串/白名单外字段在门口拒绝（包4 引语锚点合同）', () => {
+  const noQuote = validateToolArgs('memory_words_write', { action: 'add', memory_id: 'mem-existing', refs: [{ speaker: '宿主用户' }] });
+  assert.ok(!noQuote.ok, '缺 quote 拒收');
+  const badQuote = validateToolArgs('memory_words_write', { action: 'add', memory_id: 'mem-existing', refs: [{ quote: 1 }] });
+  assert.ok(!badQuote.ok, 'quote 非字符串拒收');
+  const extra = validateToolArgs('memory_words_write', { action: 'add', memory_id: 'mem-existing', refs: [{ quote: '原话', seq: 1 }] });
   assert.ok(!extra.ok && extra.code === 'TOOL_ARG_UNKNOWN', '白名单外字段拒收（不接受复述正文）');
   const badP = validateToolArgs('memory_hold', { original_title: 't', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', plan_ids: [''] });
   assert.ok(!badP.ok && badP.code === 'TOOL_ARG_LENGTH', 'plan_ids 空串条目拒收（mariposa items minLength=1 对齐）');
 });
 
-test('序号未见过：模型勾选了没看过的消息 → QUOTE_REF_SEQ_NOT_SEEN，hold 不发、账本不开（零副作用）', async () => {
+test('序号未见过：模型勾选了没看过的消息 → QUOTE_REF_SEQ_NOT_SEEN，补话不发、账本不开（零副作用）', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq3-');
-  const ctx = compose(root, { original_title: '记录确认', creation_mode: 'contemporaneous', categories: ['daily'], text: '他确认记下了', quotes: [{ seq: 99 }] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '记录确认', creation_mode: 'contemporaneous', categories: ['daily'], text: '他确认记下了', quotes: [{ quote: '这句不在原文里', speaker: '宿主用户' }] }, recordingMariposa(calls));
   const sub = await say(ctx, '帮我记住这件事', 'b1', T0);
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed', '回合照常收口（工具错误是模型可见输出，不是宿主故障）');
-  assert.equal(calls.length, 0, '勾选未见过=hold 不发');
+  assert.equal(calls.length, 0, '勾选未见过=补话不发');
   const effects = ctx.db.prepare('SELECT COUNT(*) n FROM tool_side_effects').get() as { n: number };
   assert.equal(effects.n, 0, '账本也不开 effect（勾选先于 openEffect 收口）');
   ctx.db.close();
@@ -189,26 +184,26 @@ test('序号未见过：模型勾选了没看过的消息 → QUOTE_REF_SEQ_NOT_
 test('句范围无效：超出该消息句数 → QUOTE_REF_RANGE_INVALID 拒绝', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq-range-');
-  const ctx = compose(root, { original_title: '范围无效', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ seq: 1, from: 2, to: 9 }] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '范围无效', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ quote: '路过花店想你了', speaker: '宿主用户' }] }, recordingMariposa(calls)); // 转述非逐字——锚点不命中
   const sub = await say(ctx, '这句话只有一句。', 'r1', T0);
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed');
-  assert.equal(calls.length, 0, '句范围无效=hold 不发');
+  assert.equal(calls.length, 0, '句范围无效=补话不发');
   ctx.db.close();
 });
 
 test('重复勾选同一句 → QUOTE_REF_DUPLICATE 拒绝', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq-dup-');
-  const ctx = compose(root, { original_title: '重复勾选', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ seq: 1, from: 1, to: 1 }, { seq: 1, from: 1, to: 1 }] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '重复勾选', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ quote: '第一句。', speaker: '宿主用户' }, { quote: '第一句。', speaker: '宿主用户' }] }, recordingMariposa(calls));
   const sub = await say(ctx, '第一句。第二句。', 'd1', T0);
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed');
-  assert.equal(calls.length, 0, '重叠勾选=hold 不发');
+  assert.equal(calls.length, 0, '重叠勾选=补话不发');
   ctx.db.close();
 });
 
-test('整句勾选（消息边界）：上一轮已发布的助手回复，第二轮 hold 勾选→jiaming+无 offset', async () => {
+test('整句勾选（消息边界）：上一轮已发布的助手回复，第二轮 补写原话勾选→jiaming+无 offset', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq4-');
   // 自定义 transport：第 1 个请求纯文本回复，之后 hold（不复用 compose 的固定脚本）
@@ -222,7 +217,7 @@ test('整句勾选（消息边界）：上一轮已发布的助手回复，第�
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const { tools: tools } = assembleTestTools({ db: db, mariposa: new MariposaClient({ transport: recordingMariposa(calls) }), reviews: reviews, checkpoint: checkpoint });
@@ -235,7 +230,7 @@ test('整句勾选（消息边界）：上一轮已发布的助手回复，第�
     gen++;
     let body: string;
     if (phase === 0) body = textBody(`g${gen}`, '这是上一轮的原话');
-    else body = hasToolResult ? textBody(`g${gen}`, '记好了') : toolBody(`g${gen}`, `c${gen}`, { original_title: '引用上一轮', creation_mode: 'contemporaneous', categories: ['daily'], text: '补一条引用', quotes: [{ seq: 2 }] });
+    else body = hasToolResult ? textBody(`g${gen}`, '记好了') : toolBody(`g${gen}`, `c${gen}`, { original_title: '引用上一轮', creation_mode: 'contemporaneous', categories: ['daily'], text: '补一条引用', quotes: [{ quote: '这是上一轮的原话', speaker: 'char' }] });
     return { status: 200, headers: new Map<string, string>(), body: frameStream(body) };
   };
   const runner = new DeepSeekRunner({ retryMax: 0 }, transport);
@@ -257,8 +252,8 @@ test('整句勾选（消息边界）：上一轮已发布的助手回复，第�
   supervisor.enqueue(t2.turnId);
   await supervisor.waitIdle();
   assert.equal(calls.length, 1);
-  const ourWords = (calls[0]!.holdPayload as { our_words: Array<Record<string, unknown>> }).our_words;
-  assert.equal(ourWords[0]!.speaker, 'jiaming', '助手原话→jiaming');
+  const ourWords = (calls[0]!.holdPayload as { our_words_add: Array<Record<string, unknown>> }).our_words_add;
+  assert.equal(ourWords[0]!.source_ref, 'source_msg:src-m-2', '说话人由服务端按来源解析');
   assert.equal(ourWords[0]!.text, '这是上一轮的原话');
   assert.equal(calls[0]!.sourceSelections, null, '引语不建立事件原文绑定');
   db.close();
@@ -267,34 +262,35 @@ test('整句勾选（消息边界）：上一轮已发布的助手回复，第�
 test('未同步勾选：消息存在但无来源收据 → QUOTE_NOT_SYNCED 拒绝（不宣称未入库的引用）', async () => {
   const calls: HoldCall[] = [];
   const root = tempRoot('hq5-');
-  const ctx = compose(root, { original_title: '无收据', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ seq: 1 }] }, recordingMariposa(calls));
+  const ctx = compose(root, { original_title: '无收据', creation_mode: 'contemporaneous', categories: ['daily'], text: 'x', quotes: [{ quote: '帮我记住这件事', speaker: '宿主用户' }] }, recordingMariposa(calls));
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '这句还没同步的话先说着', clientMessageId: 'u1', occurredAt: T0 });
   // 不种收据、executor 无 archiveSync → 直接拒
   ctx.supervisor.enqueue(sub.turnId);
   await ctx.supervisor.waitIdle();
-  assert.equal(calls.length, 0, '未同步=不发 hold');
+  assert.equal(calls.length, 0, '未同步=不发补话');
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };
   assert.equal(att.state, 'completed', '回合照常收口（工具错误是模型可见输出，不是宿主故障）');
   ctx.db.close();
 });
 
 
-test('独立事件范围：没有 quotes 仍在 hold 同次发送完整原文 manifest', async () => {
+test('保存记忆不自动摘录或绑定原文，即使来源已同步', async () => {
   const calls: HoldCall[] = [];
-  const ctx = compose(tempRoot('event-no-quotes-'), { original_title: '事件', creation_mode: 'contemporaneous', categories: ['daily'], text: '事件正文', source_ranges: [{start_seq: 1,end_seq: 1}] }, recordingMariposa(calls));
+  const ctx = compose(tempRoot('event-no-quotes-'), { original_title: '事件', creation_mode: 'contemporaneous', categories: ['daily'], text: '事件正文' }, recordingMariposa(calls));
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '完整原文\n第二行', clientMessageId: 'event1', occurredAt: T0 });
   seedReceipt(ctx, sub.message.id, 1, '完整原文\n第二行', 'event-conv', 'event-msg');
   ctx.supervisor.enqueue(sub.turnId); await ctx.supervisor.waitIdle();
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.holdPayload.our_words, undefined);
-  assert.deepEqual(calls[0]!.holdPayload.event_source_ranges, [{conversation_id:'event-conv',members:[{source_message_id:'event-msg',content_hash:sha256Hex('完整原文\n第二行')}]}]);
+  assert.equal(calls[0]!.holdPayload.event_source_ranges, undefined);
   ctx.db.close();
 });
 
-test('事件范围未同步：整次 hold 拒绝，不能用引语或时间补齐', async () => {
+test('原文未同步也能独立保存记忆', async () => {
   const calls: HoldCall[] = [];
-  const ctx = compose(tempRoot('event-unsynced-'), {original_title:'事件', creation_mode:'contemporaneous', categories:['daily'],text:'正文',source_ranges:[{start_seq:1,end_seq:1}]}, recordingMariposa(calls));
+  const ctx = compose(tempRoot('event-unsynced-'), {original_title:'事件', creation_mode:'contemporaneous', categories:['daily'],text:'正文'}, recordingMariposa(calls));
   await say(ctx,'尚未同步','event2',T0);
-  assert.equal(calls.length,0);
+  assert.equal(calls.length,1);
+  assert.equal(calls[0]!.holdPayload.event_source_ranges,undefined);
   ctx.db.close();
 });

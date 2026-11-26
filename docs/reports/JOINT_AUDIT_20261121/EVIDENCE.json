@@ -1,0 +1,3817 @@
+{
+  "baseline": "dd6430ab5022ac714ca1f6518de8e097206e2deb",
+  "timezone": "Asia/Shanghai",
+  "synthetic_samples": [
+    {
+      "lane": "api",
+      "protocol": "deferred",
+      "ending": "silent",
+      "sourceReads": 14,
+      "starWrites": [
+        {
+          "match": true,
+          "fullBytes": 180
+        }
+      ],
+      "memoryWrites": [
+        {
+          "match": true
+        }
+      ],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 342
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 1036
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 3004
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 632
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 395
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "id",
+            "visibility",
+            "state"
+          ],
+          "bytes": 67
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "saved",
+            "memory_id",
+            "version",
+            "source_status"
+          ],
+          "bytes": 83,
+          "memory_id": true
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-11",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 3
+        },
+        {
+          "phase": "heart",
+          "tools": 3
+        },
+        {
+          "phase": "heart",
+          "tools": 3
+        },
+        {
+          "phase": "heart",
+          "tools": 3
+        },
+        {
+          "phase": "heart",
+          "tools": 3
+        },
+        {
+          "phase": "after",
+          "tools": 3
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 10,
+        "turn_id": "turn_mwq6ne8s68edf5aebe7af68f"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60273
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "card": true,
+          "system": "aa318824bc04"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10",
+        "audit-11"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "album",
+      "sourceReads": 1,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "error_code",
+            "remaining_numbers",
+            "retry_allowed"
+          ],
+          "bytes": 93,
+          "error": "SOURCE_INVALID"
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 1,
+        "tool_calls_started": 1,
+        "turn_id": "turn_mwpr38lcf26e8df1e46e119c"
+      },
+      "removed": true,
+      "afterRemoval": {
+        "date": "2026-11-21",
+        "mode": "draw",
+        "available_numbers": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "delivered_numbers": [],
+        "source_unavailable_numbers": []
+      },
+      "tried": true,
+      "afterChoice": {
+        "date": "2026-11-21",
+        "mode": "draw",
+        "available_numbers": [
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10
+        ],
+        "delivered_numbers": [],
+        "source_unavailable_numbers": [
+          1
+        ]
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "rejected"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "declined",
+          "messages": 2
+        },
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "declined",
+          "messages": 2
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            }
+          ]
+        },
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "decline"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "budget",
+      "sourceReads": 14,
+      "starWrites": [
+        {
+          "match": true,
+          "fullBytes": 180
+        }
+      ],
+      "memoryWrites": [
+        {
+          "match": true
+        }
+      ],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 93
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "id",
+            "visibility",
+            "state"
+          ],
+          "bytes": 67
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "saved",
+            "memory_id",
+            "version",
+            "source_status"
+          ],
+          "bytes": 83,
+          "memory_id": true
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 93
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "failed",
+        "result_code": "DISPATCH_ADMISSION_REJECTED",
+        "model_requests_started": 4,
+        "tool_calls_started": 10,
+        "turn_id": "turn_mwq6nf2w8dfb8d4b0e8c2a3b"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "clock",
+      "sourceReads": 11,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "off": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 1,
+        "tool_calls_started": 1,
+        "turn_id": "turn_mwqlgcg07451c61ae7a5db4b"
+      },
+      "reopenOnce": 1,
+      "successorEarly": 1,
+      "successorDue": 2,
+      "afterInterruption": 2,
+      "draw": [],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "declined",
+          "messages": 2
+        },
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "declined",
+          "messages": 2
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            }
+          ]
+        },
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "decline"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "short",
+      "sourceReads": 10,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [],
+      "results": [],
+      "factory": [
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "failed",
+        "result_code": "HEARTBEAT_DECK_UNPREPARED",
+        "model_requests_started": 0,
+        "tool_calls_started": 0,
+        "turn_id": null
+      },
+      "readyAgain": true,
+      "afterSourceRepair": 1,
+      "maintenance": {
+        "maintenance_request_id": null
+      },
+      "draw": [],
+      "projections": [],
+      "feed": [],
+      "runRequestStates": [],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [],
+      "requestsEvidence": [],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [],
+      "nextReceiptCount": []
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "text",
+      "sourceReads": 14,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 93
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "error_code",
+            "error"
+          ],
+          "bytes": 118,
+          "error": "TOOL_ARG_REQUIRED"
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 8,
+        "turn_id": "turn_mwq6nfocf4d251c848964f65"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "unknown",
+      "sourceReads": 13,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 93
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "error_code",
+            "delivery"
+          ],
+          "bytes": 66,
+          "error": "HEARTBEAT_CARD_NOT_CONFIRMED"
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "unknown",
+        "result_code": "HEARTBEAT_CARD_DISPATCH_UNKNOWN",
+        "model_requests_started": 3,
+        "tool_calls_started": 7,
+        "turn_id": "turn_mwq6ng90f0c16b06d7b60c8f"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "unknown"
+        }
+      ],
+      "unknownEligible": [
+        false,
+        true
+      ],
+      "projections": [],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "error",
+          "sent": 0
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 1
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "unpriced",
+      "sourceReads": 14,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 93
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 61,
+          "error": "BUDGET_ESTIMATE_UNAVAILABLE"
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 61,
+          "error": "BUDGET_ESTIMATE_UNAVAILABLE"
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "failed",
+        "result_code": "BUDGET_ESTIMATE_UNAVAILABLE",
+        "model_requests_started": 3,
+        "tool_calls_started": 7,
+        "turn_id": "turn_mwq6nfdr4848c3e1c76db9dc"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9"
+      ]
+    },
+    {
+      "lane": "api",
+      "protocol": "direct",
+      "ending": "send",
+      "sourceReads": 14,
+      "starWrites": [
+        {
+          "match": true,
+          "fullBytes": 180
+        }
+      ],
+      "memoryWrites": [
+        {
+          "match": true
+        }
+      ],
+      "sessions": [],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 93
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 96
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "name",
+            "definition_id",
+            "already_available"
+          ],
+          "bytes": 101
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "id",
+            "visibility",
+            "state"
+          ],
+          "bytes": 67
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "saved",
+            "memory_id",
+            "version",
+            "source_status"
+          ],
+          "bytes": 83,
+          "memory_id": true
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "message_id",
+            "published"
+          ],
+          "bytes": 62
+        },
+        {
+          "id": "audit-11",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-12",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "openrouter"
+      ],
+      "requests": [
+        {
+          "phase": "chat",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "heart",
+          "tools": 57
+        },
+        {
+          "phase": "after",
+          "tools": 57
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 11,
+        "turn_id": "turn_mwq6ndnbefcb4850b261eeff"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn",
+          "messages": 3,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "本轮聊天"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "assistant",
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [
+        true
+      ],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "assistant",
+          "n": 1
+        },
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10",
+        "audit-11",
+        "audit-12"
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "text",
+      "sourceReads": 14,
+      "starWrites": [],
+      "memoryWrites": [],
+      "sessions": [
+        {
+          "resume": false,
+          "id": "d09ab5622d"
+        },
+        {
+          "resume": true,
+          "id": "d09ab5622d"
+        },
+        {
+          "resume": true,
+          "id": "d09ab5622d"
+        }
+      ],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 342
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 1036
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 3004
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 632
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 395
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "error_code",
+            "error"
+          ],
+          "bytes": 118,
+          "error": "TOOL_ARG_REQUIRED"
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "claude-agent-sdk"
+      ],
+      "requests": [
+        {
+          "phase": "chat"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "after"
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 8,
+        "turn_id": "turn_mwq6nfyx0fd7e7e168598397"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60273
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "aa318824bc04"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10"
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "deferred",
+      "ending": "send",
+      "sourceReads": 14,
+      "starWrites": [
+        {
+          "match": true,
+          "fullBytes": 180
+        }
+      ],
+      "memoryWrites": [
+        {
+          "match": true
+        }
+      ],
+      "sessions": [
+        {
+          "resume": false,
+          "id": "35cfc0d6cb"
+        },
+        {
+          "resume": true,
+          "id": "35cfc0d6cb"
+        },
+        {
+          "resume": true,
+          "id": "35cfc0d6cb"
+        }
+      ],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 342
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 1036
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 3004
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 632
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 395
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "id",
+            "visibility",
+            "state"
+          ],
+          "bytes": 67
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "saved",
+            "memory_id",
+            "version",
+            "source_status"
+          ],
+          "bytes": 83,
+          "memory_id": true
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "message_id",
+            "published"
+          ],
+          "bytes": 62
+        },
+        {
+          "id": "audit-11",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-12",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "claude-agent-sdk"
+      ],
+      "requests": [
+        {
+          "phase": "chat"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "after"
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "completed",
+        "result_code": "complete:done",
+        "model_requests_started": 4,
+        "tool_calls_started": 11,
+        "turn_id": "turn_mwq6nej1aeaa93fb772bf970"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn",
+          "messages": 3,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "本轮聊天"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 1454,
+        "catalog": 60273
+      },
+      "publishedOrder": [
+        "assistant",
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "aa318824bc04"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "card": true,
+          "system": "aa318824bc04"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [
+        true
+      ],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "assistant",
+          "n": 1
+        },
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10",
+        "audit-11",
+        "audit-12"
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "midnight",
+      "sourceReads": 14,
+      "starWrites": [
+        {
+          "match": true,
+          "fullBytes": 180
+        }
+      ],
+      "memoryWrites": [
+        {
+          "match": true
+        }
+      ],
+      "sessions": [
+        {
+          "resume": false,
+          "id": "9d20c6e1ef"
+        },
+        {
+          "resume": true,
+          "id": "9d20c6e1ef"
+        },
+        {
+          "resume": true,
+          "id": "9d20c6e1ef"
+        }
+      ],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 342
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 1388
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 3356
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 736
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 395
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "id",
+            "visibility",
+            "state"
+          ],
+          "bytes": 67
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "saved",
+            "memory_id",
+            "version",
+            "source_status"
+          ],
+          "bytes": 83,
+          "memory_id": true
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-11",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "claude-agent-sdk"
+      ],
+      "requests": [
+        {
+          "phase": "chat"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "after"
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 10,
+        "turn_id": "turn_mwqlgbo8e61e8cabc0ecf193"
+      },
+      "frozenDay": [
+        {
+          "business_date": "2026-11-21"
+        }
+      ],
+      "actualDay": "2026-11-22",
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10",
+        "audit-11"
+      ]
+    },
+    {
+      "lane": "sdk",
+      "protocol": "direct",
+      "ending": "silent",
+      "sourceReads": 14,
+      "starWrites": [
+        {
+          "match": true,
+          "fullBytes": 180
+        }
+      ],
+      "memoryWrites": [
+        {
+          "match": true
+        }
+      ],
+      "sessions": [
+        {
+          "resume": false,
+          "id": "9c7e278164"
+        },
+        {
+          "resume": true,
+          "id": "9c7e278164"
+        },
+        {
+          "resume": true,
+          "id": "9c7e278164"
+        }
+      ],
+      "results": [
+        {
+          "id": "audit-1",
+          "keys": [
+            "tools"
+          ],
+          "bytes": 5013,
+          "catalog_count": 55,
+          "note": "Full catalog is recorded in CAPABILITIES.md."
+        },
+        {
+          "id": "audit-2",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 342
+        },
+        {
+          "id": "audit-3",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 1388
+        },
+        {
+          "id": "audit-4",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 3356
+        },
+        {
+          "id": "audit-5",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 736
+        },
+        {
+          "id": "audit-6",
+          "keys": [
+            "definition_id",
+            "name",
+            "description",
+            "parameters"
+          ],
+          "bytes": 395
+        },
+        {
+          "id": "audit-7",
+          "keys": [
+            "heartbeat_card"
+          ],
+          "bytes": 189,
+          "cardKeys": [
+            "operation_id",
+            "card_number",
+            "source_kind",
+            "text",
+            "instruction_authority",
+            "image_count"
+          ]
+        },
+        {
+          "id": "audit-8",
+          "keys": [
+            "id",
+            "visibility",
+            "state"
+          ],
+          "bytes": 67
+        },
+        {
+          "id": "audit-9",
+          "keys": [
+            "saved",
+            "memory_id",
+            "version",
+            "source_status"
+          ],
+          "bytes": 83,
+          "memory_id": true
+        },
+        {
+          "id": "audit-10",
+          "keys": [
+            "completed",
+            "outcome"
+          ],
+          "bytes": 35
+        },
+        {
+          "id": "audit-11",
+          "keys": [
+            "error_code",
+            "executed"
+          ],
+          "bytes": 48,
+          "error": "TURN_COMPLETED"
+        }
+      ],
+      "factory": [
+        "claude-agent-sdk"
+      ],
+      "requests": [
+        {
+          "phase": "chat"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "heart"
+        },
+        {
+          "phase": "after"
+        }
+      ],
+      "flags": [],
+      "exceptions": [],
+      "firstChat": "completed",
+      "beforeDue": 0,
+      "run": {
+        "state": "noop",
+        "result_code": "complete:noop",
+        "model_requests_started": 4,
+        "tool_calls_started": 10,
+        "turn_id": "turn_mwq6ndyab94ed8316c8c2281"
+      },
+      "draw": [
+        {
+          "card_number": 1,
+          "state": "delivered"
+        }
+      ],
+      "projections": [
+        {
+          "keys": [
+            "mode",
+            "conversationId",
+            "businessDate",
+            "version",
+            "state",
+            "card",
+            "messages"
+          ],
+          "state": "drawn_no_comment",
+          "messages": 2,
+          "source": "wishstar"
+        }
+      ],
+      "invite": "[心跳唤醒] 可选号：1、2、3、4、5、6、7、8、9、10。 用 heartbeat_draw 选一张，或用 background_complete 的 noop 拒抽。抽到后可以在聊天里回应，也可以不留言。",
+      "feed": [
+        {
+          "kind": "reference",
+          "keys": [
+            "id",
+            "kind",
+            "title",
+            "author",
+            "body",
+            "asset_ids",
+            "created_at",
+            "published_at",
+            "updated_at",
+            "revision",
+            "deleted",
+            "blocks"
+          ],
+          "blocks": [
+            {
+              "label": "1 号 · 许愿星"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "心跳状态"
+            },
+            {
+              "label": "[心跳唤醒]",
+              "outcome": "本轮没有留言。"
+            }
+          ]
+        }
+      ],
+      "runRequestStates": [
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        },
+        {
+          "outcome": "completed",
+          "sent": 1
+        }
+      ],
+      "prefixBytes": {
+        "wireTools": 63797,
+        "catalog": 63640
+      },
+      "publishedOrder": [
+        "invite",
+        "card"
+      ],
+      "requestsEvidence": [
+        {
+          "roles": [
+            "user",
+            "assistant",
+            "user"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "tool",
+            "tool"
+          ],
+          "card": false,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "tool",
+            "assistant",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        },
+        {
+          "roles": [
+            "assistant",
+            "tool",
+            "tool"
+          ],
+          "card": true,
+          "system": "a53d8a12fb06"
+        }
+      ],
+      "nextChat": "completed",
+      "paired": true,
+      "chatTextMatch": [],
+      "samePrefix": true,
+      "terminal": [
+        {
+          "speaker": "system",
+          "n": 2
+        }
+      ],
+      "nextReceiptCount": [
+        "audit-1",
+        "audit-2",
+        "audit-3",
+        "audit-4",
+        "audit-5",
+        "audit-6",
+        "audit-7",
+        "audit-8",
+        "audit-9",
+        "audit-10",
+        "audit-11"
+      ]
+    }
+  ],
+  "browser": {
+    "status": [
+      "home-click-to-album",
+      "photo-saved-refreshed-preview",
+      "same-photo-two-collections-and-independent-gif",
+      "removed-photo-preserved-sticker",
+      "heartbeat-create-edit-refresh-delete",
+      "moments-create-edit-refresh-delete"
+    ],
+    "uploads": 3,
+    "retry": {
+      "uploads": 1,
+      "requests": 2,
+      "sameKey": true
+    },
+    "errorDisplayed": "上传失败（asset_type_unsupported） 无法识别的文件类型（魔数校验失败）",
+    "worksControls": [
+      ""
+    ],
+    "providerRequests": 0,
+    "turns": 0,
+    "reusedPurpose": {
+      "statuses": [
+        201,
+        201
+      ],
+      "sameId": true
+    },
+    "oldCreation": {
+      "status": 201,
+      "kind": "image",
+      "listed": true
+    },
+    "media": [
+      {
+        "mime_type": "image/gif",
+        "m_sync_state": "synced",
+        "n": 2
+      },
+      {
+        "mime_type": "image/png",
+        "m_sync_state": "synced",
+        "n": 1
+      }
+    ]
+  },
+  "gif": {
+    "evidence": "A14 fake MCP / API / SDK replay",
+    "mcp": [
+      {
+        "type": "text"
+      },
+      {
+        "type": "image",
+        "mimeType": "image/gif",
+        "bytes": 67
+      }
+    ],
+    "api": [
+      "text",
+      "image"
+    ],
+    "sdk_replay": [
+      "text",
+      "image"
+    ],
+    "persistent_history_has_base64": false
+  },
+  "focused_repository_tests": {
+    "integration/heartbeat-v12-orchestration": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 11,
+      "pass": 11,
+      "fail": 0
+    },
+    "integration/completion-r33-recovery": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0
+    },
+    "unit/turn-completion-sdk": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 2,
+      "pass": 2,
+      "fail": 0
+    },
+    "integration/cache-maintenance-c07-c09": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0
+    },
+    "integration/heartbeat-note-delete-race": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "integration/background-product-chain": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 2,
+      "pass": 2,
+      "fail": 0
+    },
+    "integration/sdk-host-continuity": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 2,
+      "pass": 2,
+      "fail": 0
+    },
+    "integration/content-source-revisions": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "unit/content-moments-http": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 2,
+      "pass": 2,
+      "fail": 0
+    },
+    "unit/zashidele-moments": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "unit/heartbeat-cards": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0
+    },
+    "unit/heartbeat-audio-sources": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "integration/native-mcp-direct": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "unit/tool-task-discovery": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "unit/album-upload": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "unit/static-svg-media": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "unit/image-creation-migration-plan": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "integration/album-image-delivery": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 2,
+      "pass": 2,
+      "fail": 0
+    },
+    "unit/carry-alias-identity": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    },
+    "unit/carry-hash-authority": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0
+    },
+    "integration/home-chat-navigation": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 4,
+      "pass": 4,
+      "fail": 0
+    },
+    "unit/wake-keepwarm": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 15,
+      "pass": 15,
+      "fail": 0
+    },
+    "unit/keepwarm-sleep": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "unit/full-audit-tool-budget": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0
+    },
+    "unit/wishstar-integration": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 8,
+      "pass": 8,
+      "fail": 0
+    },
+    "unit/content-carry": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0
+    },
+    "unit/carry-images": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 7,
+      "pass": 7,
+      "fail": 0
+    },
+    "unit/exec-v1-wp4-executor": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 11,
+      "pass": 11,
+      "fail": 0
+    },
+    "unit/native-tool-snapshot": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 3,
+      "pass": 3,
+      "fail": 0
+    },
+    "unit/imagegen": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 21,
+      "pass": 21,
+      "fail": 0
+    },
+    "integration/frozen-tool-package": {
+      "exit": 0,
+      "process_group_empty": true,
+      "tests": 1,
+      "pass": 1,
+      "fail": 0
+    }
+  }
+}

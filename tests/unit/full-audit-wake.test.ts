@@ -210,7 +210,7 @@ test('F-W18 same-due appointments precede keepwarm, share FIFO with later user w
   new MessageService(f.db).ensureConversation('primary');
   f.db.prepare("INSERT INTO windows(id,conversation_id,status,created_at,updated_at) VALUES ('fair-win','primary','ACTIVE',?,?)").run(iso, iso);
   new ConversationActivityService(f.db).noteRealPublication('primary', 'synthetic', 1, new Date(Date.parse(tasks[0]!.scheduled_at!) - 3_000_000).toISOString());
-  const supervisor = new TurnSupervisor({ db: f.db, config: f.config, logger: { info() {}, warn() {}, error() {} } } as unknown as SupervisorDeps);
+  const supervisor = new TurnSupervisor({ db: f.db, config: f.config, runnerSelection: { status: 'blocked', reasons: ['queue-only fixture'] }, logger: { info() {}, warn() {}, error() {} } } as unknown as SupervisorDeps);
   let release!: () => void; let entered!: () => void; let active = 0, maxActive = 0;
   const started = new Promise<void>(resolve => { entered = resolve; });
   const order: string[] = [];

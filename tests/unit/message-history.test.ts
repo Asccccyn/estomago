@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {makeDb } from '../helpers.ts';
-import { openDatabase, readSnapshot, type Db } from '../../apps/host/src/db/connection.ts';
+import { openDatabase, readSnapshot, tx, type Db } from '../../apps/host/src/db/connection.ts';
 import { MessageService } from '../../apps/host/src/messages/service.ts';
 import { EventService } from '../../apps/host/src/events/service.ts';
 import { shanghaiDayRange } from '../../apps/host/src/server/calendar-routes.ts';
@@ -108,4 +108,36 @@ test('只读快照将消息页与事件水位绑定：并发提交留给水位�
     assert.ok(f.events.maxSequence() > snapshot.event_cursor);
     assert.equal(f.messages.listMessagePage({ conversationId: 'c1', latest: true }).messages.at(-1)!.id, newMessageId);
   } finally { writer.close(); }
+});
+
+test('history and live publication locate text added after media without creating new message IDs', t => {
+  const { messages } = fixture(t);
+  const { turnId } = messages.submitUserMessageWithTurn({conversationId:'c1',content:'合成请求',clientMessageId:'turn-parts'});
+  const first = messages.publishAssistantMessage({conversationId:'c1',turnId,content:'先说🌙'});
+  const voice = messages.publishAssistantMessage({conversationId:'c1',turnId,kind:'voice',content:'合成语音'});
+  const appended = messages.appendAssistantPublication(first.id, '后续文字')!;
+  assert.equal(appended.id, first.id);
+  assert.deepEqual(appended.publication_breaks?.map(c => ({...c})), [{before_message_id:voice.id,end_char:3}]);
+  const page = messages.listMessagePage({conversationId:'c1',latest:true});
+  assert.deepEqual(page.messages.find(m => m.id === first.id)?.publication_breaks, appended.publication_breaks);
+  assert.equal(messages.getMessage(first.id)?.publication_breaks, undefined);
+  assert.equal(voice.publication_breaks, undefined);
+});
+
+test('heartbeat publications retain their presentation role across live and paginated reads', t => {
+  const { db, messages } = fixture(t);
+  const conversationId = 'c1', turnId = 'heartbeat-turn', runId = 'heartbeat-run';
+  db.prepare("INSERT INTO turns(id,conversation_id,trigger,state,created_at) VALUES (?,?,'cache_keepalive','running',?)")
+    .run(turnId, conversationId, new Date().toISOString());
+  const [invite, reveal] = tx(db, () => [
+    messages.publishHeartbeatInTx({ conversationId, turnId, runId, part: 'invite', content: '合成邀请' }),
+    messages.publishHeartbeatInTx({ conversationId, turnId, runId, part: 'card', content: '合成揭牌' }),
+  ]);
+  const reply = messages.publishAssistantMessage({ conversationId, turnId, content: '合成消息' });
+  assert.equal(invite!.heartbeat, 'invite');
+  assert.equal(reveal!.heartbeat, 'progress');
+  assert.equal(reply.heartbeat, 'assistant');
+  assert.deepEqual(messages.getMessageAtRevision(conversationId, reveal!.id, 1)?.heartbeat_card, { run_id: runId });
+  const latest = messages.listMessagePage({ conversationId, latest: true, limit: 1 });
+  assert.deepEqual(latest.messages.map(message => [message.id, message.heartbeat]), [[reply.id, 'assistant']]);
 });

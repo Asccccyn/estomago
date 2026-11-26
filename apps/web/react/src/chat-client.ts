@@ -1,14 +1,25 @@
 import { canSend, buildOutgoingDraft } from '../../src/composer-logic.js'
 import type { SystemAlert } from './SystemAlerts'
-export type Step = { kind: 'think' | 'tool'; text: string }
-export type Media = { kind: 'voice' | 'image'; src: string; text?: string }
-export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; thinkSecs?: number; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; kind?: 'voice' | 'image'; src?: string; dur?: number; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean }
+export type Step = { kind: 'think' | 'tool'; text: string; id?: string; sequence?: number; at?: string; label?: string; state?: 'running' | 'completed' | 'failed' }
+export type Media = { kind: 'voice' | 'image' | 'work'; src: string; text?: string; assetId?: string }
+export type ChatMessage = { id: string; role: 'user' | 'ai'; text: string; time: string; dateKey?: string; dateLabel?: string; tokens?: number; publicationBreaks?: { before_message_id: string; end_char: number }[]; thinkSecs?: number; thinking?: boolean; steps?: Step[]; pending?: boolean; streaming?: boolean; system?: boolean; heartbeat?: boolean; kind?: 'voice' | 'image' | 'work'; src?: string; media?: Media[]; turnId?: string; replyState?: string; canRetry?: boolean; retryReason?: string; canEdit?: boolean; editPending?: boolean; editUnconfirmed?: boolean; lateMedia?: boolean }
 export type Attachment = { id: string; file: Blob; name: string; kind: 'image' | 'voice'; assetId?: string; status: 'uploading' | 'transcribing' | 'ready' | 'failed' | 'uncertain'; error?: string; operationId: string; transcriptionId?: string; busy?: boolean }
 export type WorkItem = { id: string; t: string; d: string; at: string; icon?: string; href?: string }
 export type ActivityItem = { id: string; at: string; t: string; d: string }
 type Json = Record<string, any>
+// A card drawn while chatting does not turn that ordinary turn into a heartbeat turn.
+const isHeartbeatMessage = (message: Json) => Boolean(message.heartbeat
+  || (message.heartbeat_card?.run_id && message.heartbeat_card.origin !== 'chat'))
 class LifecycleEnded extends Error {}
 const terminalStates = new Set(['completed','failed','blocked','interrupted','cancelled'])
+// Host errors guaranteed to occur strictly BEFORE message acceptance (http-leaf / conversations pre-validation).
+// Network errors, 500s, and unclassified errors are excluded so unknown-delivery retries keep their original key & payload.
+const preAcceptanceRejectionCodes = new Set([
+  'payload_too_large', 'invalid_json', 'missing_idempotency', 'bad_content',
+  'blank_content', 'invalid_occurred_at', 'conversation_not_found',
+  'too_many_attachments', 'bad_attachment', 'attachment_mix_invalid',
+  'asset_not_found', 'asset_not_ready', 'asset_type_unsupported',
+])
 type Dependencies = { fetch?: typeof fetch; eventSource?: (url: string) => EventSource; redirect?: () => void }
 export type Snapshot = {
   messages: ChatMessage[]; draft: string; composing: boolean; sending: boolean; attachments: Attachment[];
@@ -51,7 +62,7 @@ const operationId = () => {
   const hex = [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('')
   return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`
 }
-export const shortModel = (x: string) => x.split('/').pop()!.replace(/^claude-/, '').replace(/(opus|sonnet|haiku|fable)-(?=\d)/g, '$1')
+export const shortModel = (x: string) => x.split('/').pop()!.replace(/^claude-/, '').replace(/(opus|sonnet|haiku|fable)-(?=\d)/g, '$1').replace(/(\d)-(\d)/g, '$1.$2')
 export class EstomagoClient {
   private transport: typeof fetch
   private sourceFactory: (url: string) => EventSource
@@ -74,7 +85,7 @@ export class EstomagoClient {
   private generation = 0
   private cursor = 0
   private draftRevision = 0
-  private pending: { id: string; draft: string; revision: number; entries: Attachment[]; body: Json } | null = null
+  private pending: { id: string; draft: string; revision: number; entries: Attachment[]; body: Json; confirmedUnsent: boolean } | null = null
   private edits = new Map<string,EditOperation>()
   private editBusy = new Set<string>()
   private replyRefreshes = new Map<string,{dirty:boolean;busy:boolean}>()
@@ -133,18 +144,22 @@ export class EstomagoClient {
   private json(method: string, body: unknown, headers: Record<string,string> = {}): RequestInit {
     return {method,headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(body)}
   }
+  // —— SOL_RECALL_REFACTOR（2026-10-30）：自动浮现设置面（SurfacingSettings 用；凭据只显示状态）——
+  surfacingSettings = (): Promise<Json> => this.request('/memory-surfacing/settings')
+  surfacingPutSettings = (patch: Json): Promise<Json> =>
+    this.request('/memory-surfacing/settings', this.json('PUT', patch))
   // —— WAKE_KEEPWARM_V1（2026-10-22）：后台设置/预约管理面（BackgroundControls 用；独立拉取不进主 Snapshot）——
   backgroundSettings = (): Promise<Json> => this.request('/background/settings')
   backgroundPutSettings = (ifMatch: number, patch: Json, opKey: string): Promise<Json> =>
     this.request('/background/settings', this.json('PUT', patch, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
   backgroundTasks = (cursor?: string | null): Promise<Json> => this.request('/background/tasks' + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''))
   backgroundTaskDetail = (id: string): Promise<Json> => this.request('/background/tasks/' + encodeURIComponent(id))
-  backgroundCreateWake = (body: Json, opKey: string): Promise<Json> =>
-    this.request('/background/tasks', this.json('POST', body, {'Idempotency-Key':opKey}))
   backgroundUpdateTask = (id: string, ifMatch: number, body: Json, opKey: string): Promise<Json> =>
     this.request('/background/tasks/' + encodeURIComponent(id), this.json('PUT', body, {'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}))
   backgroundCancelTask = (id: string, ifMatch: number, opKey: string): Promise<Json> =>
     this.request('/background/tasks/' + encodeURIComponent(id), {method:'DELETE',headers:{'If-Match':`"${ifMatch}"`,'Idempotency-Key':opKey}})
+  backgroundResumeHeartbeat = (opKey: string): Promise<Json> =>
+    this.request('/background/heartbeat/resume', {method:'POST',headers:{'Idempotency-Key':opKey}})
   backgroundRuns = (cursor?: string | null): Promise<Json> => this.request('/background/runs' + (cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''))
   backgroundStopRun = (id: string, opKey: string): Promise<Json> =>
     this.request('/background/runs/' + encodeURIComponent(id) + '/stop', {method:'POST',headers:{'Idempotency-Key':opKey}})
@@ -171,7 +186,7 @@ export class EstomagoClient {
   private replacePage(data:Json,mode:'latest'|'date',date:string|null) {
     this.raw.clear();this.blocks.clear();this.toolSteps.clear();this.detailsLoaded.clear();this.running.clear()
     for(const message of data.messages??[])this.absorb(message,false)
-    for(const turn of data.active_turns??[]){if(['pending','running'].includes(turn.state))this.running.add(turn.turn_id)}
+    for(const turn of data.active_turns??[]){if(turn.trigger!=='cache_keepalive'&&['pending','running'].includes(turn.state))this.running.add(turn.turn_id)}
     const floor=number(data.event_cursor)
     if(floor!==null&&Number.isSafeInteger(floor)&&floor>=0){
       this.viewSnapshotFloor=floor
@@ -241,7 +256,17 @@ export class EstomagoClient {
         &&['completed','failed','blocked','interrupted'].includes(previous.state)&&['pending','running'].includes(next.state)
       const mutation=old.mutation_status?.reason==='MESSAGE_ALREADY_DISPATCHED'?old.mutation_status:(dto.mutation_status??old.mutation_status)
       const reply=next&&!regresses?next:previous
-      if(JSON.stringify(previous)!==JSON.stringify(reply)||JSON.stringify(old.mutation_status)!==JSON.stringify(mutation)){this.raw.set(dto.id,{...old,reply_status:reply,mutation_status:mutation});return true}
+      // B2（2026-11-04）：同修订号附件合并——晚到的通话回复音频不改正文，只补附件。
+      // 迟到旧快照的空附件数组不能撤销已合并的附件（空≠已删除；删除走修订/既有删除合同）。
+      const oldAtt=old.revision.attachments??[]
+      const dtoAtt=Array.isArray(dto.revision.attachments)?dto.revision.attachments:null
+      const attChanged=dtoAtt&&dtoAtt.length>0&&JSON.stringify(oldAtt)!==JSON.stringify(dtoAtt)
+      if(JSON.stringify(previous)!==JSON.stringify(reply)||JSON.stringify(old.mutation_status)!==JSON.stringify(mutation)||attChanged){
+        this.raw.set(dto.id,{...old,reply_status:reply,mutation_status:mutation,
+          revision:{...old.revision,attachments:attChanged?dtoAtt:oldAtt},
+          late_media:attChanged?true:old.late_media})
+        return true
+      }
       return false
     }
     this.raw.set(dto.id,dto)
@@ -268,38 +293,51 @@ export class EstomagoClient {
     }catch{/* Unknown retry eligibility stays disabled; never discard message text. */}
     finally{entry.busy=false}
   }
+  private turnDetails(id: string) {
+    const blocks = this.blocks.get(id) ?? []
+    const tools = this.toolSteps.get(id) ?? []
+    const steps: Step[] = blocks.map(block => ({
+      id: block.id, at: block.created_at, kind: 'think' as const,
+      text: block.text || ({redacted:'已删隐',omitted:'未返回可读摘要',no_block:'本轮未返回可读摘要'} as Json)[block.visibility] || '',
+    })).filter(step => step.text)
+    steps.push(...tools)
+    steps.sort((a,b) => a.at && b.at ? a.at.localeCompare(b.at) : 0)
+    const ms = blocks.reduce((total, b) => total + (Math.max(0, Date.parse(b.updated_at) - Date.parse(b.created_at)) || 0), 0)
+    return { steps, thinking: blocks.some(b => b.visibility === 'summary' && b.state === 'streaming'),
+      thinkSecs: ms > 0 ? Math.max(1, Math.round(ms / 1000)) : undefined }
+  }
   private render() {
     const messages: ChatMessage[]=[]
     const latestOwner=this.latestOwner()?.id
-    const latestSequence=Math.max(0,...[...this.raw.values()].map(m=>m.sequence))
-    for(const m of [...this.raw.values()].sort((a,b)=>a.sequence-b.sequence)){
+    const rows=[...this.raw.values()]
+    const latestSequence=Math.max(0,...rows.map(m=>m.sequence))
+    const heartbeatTurns=new Set(rows.filter(isHeartbeatMessage).map(m=>m.turn_id))
+    for(const m of rows.sort((a,b)=>a.sequence-b.sequence)){
       if(!['owner','assistant','system'].includes(m.speaker))continue
+      if(m.speaker==='system'&&(m.heartbeat==='progress'||m.heartbeat_card?.run_id))continue
+      const heartbeat=heartbeatTurns.has(m.turn_id)
       const media:Media[]=(m.revision.attachments??[]).map((a:Json)=>({
-        kind:a.presentation==='voice'?'voice':'image',src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+'/content',text:a.derived_text??'',
+        // M02（包1 2026-11-15）：work=SVG/HTML 代码作品——用已有沙箱 /preview 隔离展示，
+        // 不走 /content（Content-Disposition 附件下载头，旧映射把作品当图片渲染成坏图）。
+        kind:a.presentation==='voice'?'voice':a.presentation==='work'?'work':'image',
+        src:'/api/v1/assets/'+encodeURIComponent(a.asset_id)+(a.presentation==='work'?'/preview':'/content'),
+        text:a.derived_text??'',assetId:String(a.asset_id),
       }))
-      const blocks=this.blocks.get(m.turn_id)??[]
-      const thinkMs=blocks.length?Math.max(0,new Date(blocks[blocks.length-1]!.updated_at).getTime()-new Date(blocks[0]!.created_at??blocks[0]!.updated_at).getTime()):0
-      const steps:Step[]=[
-        ...blocks.map(b=>({kind:'think' as const,text:b.text||({redacted:'已删隐',omitted:'未返回可读摘要',no_block:'本轮未返回可读摘要'} as Json)[b.visibility]||''})).filter(b=>b.text),
-        ...(this.toolSteps.get(m.turn_id)??[]),
-      ]
       messages.push({id:m.id,role:m.speaker==='owner'?'user':'ai',text:m.revision.content||media.find(a=>a.kind==='voice')?.text||'',
         time:time(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateKey:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),dateLabel:historyDay(m.created_at??m.revision.occurred_at,this.snapshot.historyTimezone),tokens:m.speaker==='assistant'&&m.revision.content?Math.ceil([...m.revision.content].length/2.5):undefined,
-        steps,turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,
+        publicationBreaks:m.publication_breaks,...(heartbeat?{heartbeat}:this.turnDetails(m.turn_id)),turnId:m.turn_id,system:m.speaker==='system',kind:media[0]?.kind,src:media[0]?.src,media,lateMedia:m.late_media===true,
         replyState:m.reply_status?.state,
         canEdit:m.speaker==='owner'&&m.mutation_status?.can_edit===true,
         canRetry:m.speaker==='owner'&&Boolean(this.edits.has(m.id)?this.edits.get(m.id)!.resend:(m.id===latestOwner&&m.sequence===latestSequence&&m.reply_status?.can_retry&&!this.running.size)),
         retryReason:retryReasons[m.reply_status?.reason]??undefined,editPending:this.editBusy.has(m.id),editUnconfirmed:this.edits.has(m.id)&&!this.editBusy.has(m.id),
-        thinkSecs:thinkMs>0?Math.max(1,Math.round(thinkMs/1000)):undefined})
+      })
     }
     for(const id of this.running){
+      if(heartbeatTurns.has(id))continue
       if(this.snapshot.historyMode==='date'&&!messages.some(m=>m.turnId===id))continue
       const last=messages.filter(m=>m.turnId===id&&m.role==='ai'&&!m.system).at(-1)
       if(last){last.streaming=true;continue}
-      messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,steps:[
-        ...(this.blocks.get(id)??[]).filter(b=>b.text).map(b=>({kind:'think' as const,text:b.text})),
-        ...(this.toolSteps.get(id)??[]),
-      ]})
+      messages.push({id:'pending:'+id,turnId:id,role:'ai',text:'',time:'',pending:true,...this.turnDetails(id)})
     }
     this.patch({messages})
   }
@@ -318,11 +356,12 @@ export class EstomagoClient {
       if(current&&attempt&&current.attempt&&attempt!==current.attempt){
         if(data.kind!=='turn.started'||this.retiredAttempts.has(id+':'+attempt))return
         this.retiredAttempts.add(id+':'+current.attempt)
+        this.blocks.delete(id); this.toolSteps.delete(id); this.detailsLoaded.delete(id)
       }
       if(current&&terminalStates.has(current.state)&&(!attempt||attempt===current.attempt)&&['running','pending'].includes(state))return
       if(state)this.turnStates.set(id,{attempt:attempt??current?.attempt,state})
     }
-    if(['message.persisted','message.published','message.edited'].includes(data.kind)&&data.message){
+    if(['message.persisted','message.published','message.edited','message.media.updated'].includes(data.kind)&&data.message){
       const message=data.message
       const visible=this.raw.has(message.id)
       const min=Math.min(...[...this.raw.values()].map(m=>m.sequence))
@@ -330,7 +369,7 @@ export class EstomagoClient {
       if(visible||(this.snapshot.historyMode==='latest'&&(!Number.isFinite(min)||message.sequence>=min))){
         if(this.absorb(message))this.render()
         if(message.speaker==='owner')void this.refreshReply(message.id)
-      }else if(data.kind!=='message.edited'&&message.sequence>max)this.patch({newMessages:true,hasLater:this.raw.size>0})
+      }else if(data.kind!=='message.edited'&&data.kind!=='message.media.updated'&&message.sequence>max)this.patch({newMessages:true,hasLater:this.raw.size>0})
     }
     if(id&&data.kind==='turn.started'){this.running.add(id);this.markReplyState(id,'running',data.attempt_id);this.render()}
     if(id&&data.kind==='turn.status'){
@@ -340,10 +379,14 @@ export class EstomagoClient {
         this.running.delete(id)
         if(data.state==='blocked'||data.state==='failed'){
           const reason=typeof data.reason==='string'?data.reason:''
+          // DBG-01（包2 2026-11-16）：有脱敏具体原因（detail）时直接展示——不再一律"可在活动日志查看状态"
+          const detail=typeof data.detail==='string'&&data.detail.trim()?data.detail.trim():''
           this.notify(reason.split(':')[0]==='DS_PROTOCOL_HISTORY_REQUIRES_NEW_WINDOW'
             ?'旧窗口缺少此前已发送的模型协议内容。请通过正常手动换窗选择原文后继续；已有历史保持不变，本轮没有发出模型请求。'
             :reason.split(':')[0]==='MODEL_VISION_UNAVAILABLE'
             ?'暂时无法核实模型的图片能力，本轮未发送；消息已保存，请稍后重试。'
+            :detail
+            ?`本轮暂未完成：${detail}`
             :'本轮暂未完成，可在活动日志查看状态')
           // The context event endpoint omits turn.status; retain failures from live
           // events and SSE replay so opening the activity panel does not hide them.
@@ -356,24 +399,89 @@ export class EstomagoClient {
       this.refreshLatestReply(id)
     }
     if(id&&['turn.completed','turn.interrupted'].includes(data.kind)){this.running.delete(id);this.markReplyState(id,data.kind==='turn.completed'?'completed':'interrupted',data.attempt_id);this.render();this.refreshLatestReply(id);if(this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id);void this.loadContext()}
-    if(id&&data.kind?.startsWith('reasoning.')&&this.visibleTurn(id))this.refreshReasoning(id,data.attempt_id)
+    if(id&&data.kind?.startsWith('reasoning.')&&this.visibleTurn(id))this.applyReasoning(id,data)
     if(id&&data.kind==='turn.tool'){
-      const label=String(data.label??data.tool??'')
-      if(label&&this.visibleTurn(id)){const arr=this.toolSteps.get(id)??[];arr.push({kind:'tool',text:label+(data.ok===false?'（失败）':'')});this.toolSteps.set(id,arr);this.render()}
+      if(this.visibleTurn(id)){this.updateToolStep(id,data);this.render()}
     }
     if(id&&data.kind==='usage.updated'&&this.visibleTurn(id))void this.loadUsage(id)
     if(data.kind==='route.pending')this.patch({route:data})
+    if(data.kind==='route.observed'&&data.already_switched===true&&data.scope!=='local')this.notify('Anthropic 已将本轮路由到其他型号，本轮已暂停。')
     if(data.kind==='route.resolved'){this.patch({route:null});if(data.message){this.absorb(data.message);this.render()}}
     if(data.kind==='system.alert.changed')void this.loadAlerts(this.alertsOpen)
     if(data.kind==='context.warning')void this.loadContext()
     if(data.kind==='window.rotated'){void this.loadRuntime();void this.loadContext()}
   }
-  private visibleTurn(id:string) {return [...this.raw.values()].some(message=>message.turn_id===id)}
+  private visibleTurn(id:string) {
+    const messages=[...this.raw.values()].filter(message=>message.turn_id===id)
+    return messages.length>0&&!messages.some(isHeartbeatMessage)
+  }
+  private updateToolStep(turnId:string,data:Json) {
+    const id=[data.attempt_id??'',data.request_id??'',data.tool_call_id??data.event_id??data.sequence].join(':')
+    const steps=this.toolSteps.get(turnId)??[]
+    const index=steps.findIndex(step=>step.id===id)
+    if(index>=0&&(steps[index].sequence??0)>(data.sequence??0))return
+    const tool=String(data.effective_tool??data.tool??'')
+    // Historical lifecycle events can still carry the former Chinese label.
+    const anchor=tool==='identity_milestone_write'
+    const label=anchor ? (data.tool==='tool_define'?'读取工具定义 · ':'')+'我们的锚点'
+      : String(data.label??data.effective_tool??data.tool??'工具')
+    const state=data.phase==='error'||data.ok===false?'failed':data.phase==='result'&&data.ok===true?'completed':'running'
+    const errors:Record<string,string>={TOOL_ARG_TYPE:'参数格式错误',TOOL_ARG_INVALID:'参数无效',TOOL_ARG_MISSING:'缺少参数',TOOL_ARG_UNKNOWN:'包含未知参数',TOOL_DEFINITION_NOT_SEEN:'尚未读取工具定义',TOOL_NOT_IN_ALLOWLIST:'本窗口未开放此工具',TOOL_UNAVAILABLE_IN_CALL:'通话期间不可用',I_FORBIDDEN:'无权访问该项',CANCELLED:'已取消'}
+    const reason=data.error_code?(errors[data.error_code]?`${errors[data.error_code]}（${data.error_code}）`:String(data.error_code)):''
+    const status=state==='failed'?'失败'+(reason?'：'+reason:''):state==='completed'?'完成':'进行中'
+    const step:Step={id,sequence:data.sequence??0,at:steps[index]?.at??data.occurred_at,kind:'tool',state,label,text:label+(!anchor&&tool&&tool!==label?' · '+tool:'')+' · '+status}
+    if(index<0)steps.push(step);else steps[index]=step
+    this.toolSteps.set(turnId,steps)
+  }
   private markReplyState(turnId:string,state:string,attemptId?:string) {
     for(const [id,m] of this.raw){if(m.speaker==='owner'&&m.turn_id===turnId){
       this.raw.set(id,{...m,reply_status:{...m.reply_status,state,attempt_id:attemptId??m.reply_status?.attempt_id,can_retry:false}})
       const refresh=this.replyRefreshes.get(id);if(refresh)refresh.dirty=true
     }}
+  }
+  private applyReasoning(id: string, event: Json) {
+    const blocks = this.blocks.get(id) ?? []
+    const current = blocks.find(b => b.id === event.block_id)
+    const revision = event.block_revision
+    const change = event.payload
+    // Complete-only provider packets and older events can omit the text.
+    // Recover those (and gaps on reconnect) from the existing turn endpoint.
+    if (!event.block_id || !Number.isSafeInteger(revision) || !change ||
+        (!current && event.kind !== 'reasoning.started' && event.kind !== 'reasoning.snapshot' && !(event.kind === 'reasoning.delta' && revision === 2)) ||
+        (current && revision > current.revision + 1 && event.kind !== 'reasoning.snapshot')) {
+      this.refreshReasoning(id, event.attempt_id)
+      return
+    }
+    if (current && (revision < current.revision ||
+        (revision === current.revision && (event.kind === 'reasoning.delta' || event.kind === 'reasoning.started')))) return
+    const block = current ?? { id: event.block_id, attempt_id: event.attempt_id, visibility: 'summary', text: '', created_at:event.occurred_at }
+    if (event.occurred_at) block.updated_at = event.occurred_at
+    block.eventSequence = event.sequence
+    block.revision = revision
+    block.state = change.state ?? 'streaming'
+    if (change.visibility) block.visibility = change.visibility
+    if (block.visibility !== 'summary') block.text = ''
+    else if (event.kind === 'reasoning.delta') block.text += change.delta
+    else if (event.kind === 'reasoning.snapshot') block.text = change.text
+    if (!current) this.blocks.set(id, [...blocks, block])
+    this.render()
+  }
+  private acceptReasoningSnapshot(id: string, data: Json, readCursor: number, attempt?: string) {
+    const activeAttempt = this.turnStates.get(id)?.attempt
+    if (attempt && activeAttempt && attempt !== activeAttempt) return
+    // An HTTP read begun before a stream update must not rewind the visible
+    // prefix, resurrect a finished block, or remove a newly started one.
+    const latest = new Map((this.blocks.get(id) ?? []).filter(b => !attempt || b.attempt_id === attempt).map(b => [b.id, b]))
+    const merged = (data.blocks ?? []).map((incoming: Json) => {
+      const live = latest.get(incoming.id)
+      latest.delete(incoming.id)
+      if (live && (incoming.revision < live.revision ||
+          (incoming.revision === live.revision && (live.eventSequence > readCursor || (incoming.state === 'streaming' && live.state !== 'streaming'))))) return live
+      return incoming
+    })
+    this.blocks.set(id, [...merged, ...latest.values()])
+    for (const tool of data.tools ?? []) this.updateToolStep(id, tool)
+    this.render()
   }
   private refreshReasoning(id:string,attempt?:string) {
     let entry=this.refreshes.get(id)
@@ -382,7 +490,14 @@ export class EstomagoClient {
     if(entry.busy)return
     entry.busy=true
     void (async()=>{
-      try {while(entry!.dirty&&this.started){entry!.dirty=false;const epoch=this.historyEpoch;const result=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(entry!.attempt?'?attempt_id='+encodeURIComponent(entry!.attempt):''));if(epoch===this.historyEpoch&&this.visibleTurn(id)&&JSON.stringify(this.blocks.get(id)??[])!==JSON.stringify(result.blocks??[])){this.blocks.set(id,result.blocks??[]);this.render()}}}
+      try {
+        while (entry!.dirty && this.started) {
+          entry!.dirty = false
+          const epoch = this.historyEpoch, readCursor = this.cursor, attempt = entry!.attempt
+          const result = await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(attempt?'?attempt_id='+encodeURIComponent(attempt):''))
+          if (epoch === this.historyEpoch && this.visibleTurn(id)) this.acceptReasoningSnapshot(id, result, readCursor, attempt)
+        }
+      }
       catch {/* A failed projection does not discard saved messages. */}
       finally{entry!.busy=false;if(entry!.dirty&&this.started)this.refreshReasoning(id,entry!.attempt)}
     })()
@@ -395,9 +510,11 @@ export class EstomagoClient {
   loadTurnDetails = async (id:string):Promise<void> => {
     if(this.detailsLoaded.has(id)||!this.visibleTurn(id))return
     const epoch=this.historyEpoch
-    const data=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning')
-    if(epoch!==this.historyEpoch||!this.visibleTurn(id))return
-    this.blocks.set(id,data.blocks??[]);this.detailsLoaded.add(id);this.render()
+    const currentAttempt=this.turnStates.get(id)?.attempt, readCursor=this.cursor
+    const attempt=this.running.has(id)?currentAttempt:undefined
+    const data=await this.request('/turns/'+encodeURIComponent(id)+'/reasoning'+(attempt?'?attempt_id='+encodeURIComponent(attempt):''))
+    if(epoch!==this.historyEpoch||!this.visibleTurn(id)||currentAttempt!==this.turnStates.get(id)?.attempt)return
+    this.acceptReasoningSnapshot(id,data,readCursor,attempt);this.detailsLoaded.add(id)
     await this.loadUsage(id)
   }
   private async extendHistory(direction:'before'|'after'):Promise<boolean> {
@@ -437,7 +554,11 @@ export class EstomagoClient {
   // R5（2026-10-23）：无转写语音可发——ASR failed/uncertain 的语音附件照常发送（服务端
   // 持可信状态：无转写走按需深听路径；unknown 绝不自动重放转写防双收费）。图片仍须 ready。
   private sendableAttachments = () => this.snapshot.attachments.filter(a => a.kind !== 'voice' ? a.status === 'ready' : a.status !== 'uploading' && a.status !== 'transcribing' && Boolean(a.assetId))
-  get canSend() {return this.snapshot.ready&&!this.redirecting&&!this.snapshot.composing&&!this.snapshot.sending&&!this.historyFetching()&&(Boolean(this.pending)||canSend(this.snapshot.draft,{composing:false,hasAttachment:this.sendableAttachments().length>0}))}
+  get canSend() {
+    return this.snapshot.ready && !this.redirecting && !this.snapshot.composing && !this.snapshot.sending && !this.historyFetching()
+      && (Boolean(this.pending && !this.pending.confirmedUnsent)
+        || canSend(this.snapshot.draft, { composing:false, hasAttachment:this.sendableAttachments().length>0 }))
+  }
   send = async () => {
     if(!this.canSend)return
     const draft=this.snapshot.draft
@@ -446,13 +567,22 @@ export class EstomagoClient {
       try{const result=await this.request('/route-decisions/'+encodeURIComponent(this.routeEdit),this.json('POST',{choice:'edit',content:draft}));this.absorb(result.message);this.routeEdit=null;if(revision===this.draftRevision)this.setDraft('');this.patch({route:null});this.render()}catch(e){this.report(e)}finally{this.patch({sending:false})}
       return
     }
-    if(!this.pending||(draft!==''&&draft!==this.pending.draft)){
-      const id=operationId(),entries=this.sendableAttachments()
+    const entries=this.sendableAttachments()
+    const previous=this.pending
+    const changedAfterRejection = previous?.confirmedUnsent && (
+      buildOutgoingDraft(draft, previous.id).content !== previous.body.content
+      || entries.length !== previous.entries.length
+      || entries.some((entry,index) => entry.assetId !== previous.entries[index]?.assetId || entry.kind !== previous.entries[index]?.kind)
+    )
+    if (!previous || changedAfterRejection || (previous.entries.length === 0 && draft !== '' && draft !== previous.draft)) {
+      const id=operationId()
       const body:Json=buildOutgoingDraft(draft,id)
       if(entries.length){delete body.kind;body.attachments=entries.map(a=>({asset_id:a.assetId,presentation:a.kind}))}
-      this.pending={id,draft,revision:this.draftRevision,entries,body}
+      this.pending={id,draft,revision:this.draftRevision,entries,body,confirmedUnsent:false}
     }
-    const pending=this.pending,generation=this.generation;this.patch({sending:true,notice:''})
+    const pending=this.pending!,generation=this.generation
+    pending.confirmedUnsent=false
+    this.patch({sending:true,notice:''})
     try{
       const data=await this.request('/conversations/primary/messages',this.json('POST',pending.body,{'Idempotency-Key':pending.id}))
       if(typeof data.message?.id!=='string'||typeof data.message?.revision?.content!=='string')throw new Error('消息回执不完整，发送结果尚未确认')
@@ -460,7 +590,16 @@ export class EstomagoClient {
       if(this.pending===pending)this.pending=null
       if(this.draftRevision===pending.revision&&this.snapshot.draft===pending.draft)this.setDraft('')
       this.patch({attachments:this.snapshot.attachments.filter(a=>!pending.entries.includes(a))})
-    }catch(e){this.report(e,'；草稿已保留，可以重试')}
+    }catch(e){
+      const error=e as Error & {status?:number;code?:string}
+      if (pending.entries.length > 0 && error.code) {
+        // These Host errors precede message acceptance. An unclassified or
+        // missing receipt keeps the original attachments available for replay.
+        pending.confirmedUnsent = error.status === 503 && error.code === 'asset_master_commit_failed'
+          || error.status !== undefined && error.status >= 400 && error.status < 500 && preAcceptanceRejectionCodes.has(error.code)
+      }
+      this.report(e,'；草稿已保留，可以重试')
+    }
     finally{if(generation===this.generation)this.patch({sending:false})}
   }
   editMessage = async (id:string,content:string,resend=false,expectedRevision?:number):Promise<boolean> => {
@@ -505,15 +644,25 @@ export class EstomagoClient {
     const attachment:Attachment={id:operationId(),file,name,kind,status:'uploading',operationId:operationId()}
     this.patch({attachments:[...this.snapshot.attachments,attachment]});await this.upload(attachment)
   }
-  removeAttachment = (id:string) => {this.patch({attachments:this.snapshot.attachments.filter(a=>a.id!==id)});this.scheduleEstimate()}
-  retryAttachment = async (id:string) => {const a=this.snapshot.attachments.find(a=>a.id===id);if(a)await this.upload(a)}
+  isAttachmentLocked = (id:string) => Boolean(this.pending && !this.pending.confirmedUnsent && this.pending.entries.some(a=>a.id===id))
+  removeAttachment = (id:string) => {
+    if(this.isAttachmentLocked(id))return
+    const removed=this.snapshot.attachments.find(a=>a.id===id)
+    this.patch({attachments:this.snapshot.attachments.filter(a=>a.id!==id)});this.scheduleEstimate()
+    // A staged upload exists only for this draft. The server discards it, or refuses when it was already sent.
+    if(removed?.assetId)this.discard(removed.assetId)
+  }
+  /** An unsent file must not outlive its draft; the server's own sweep covers drafts abandoned by a closed page. */
+  private discard(assetId:string){void this.request('/assets/'+encodeURIComponent(assetId)+'?staged=1',{method:'DELETE'}).catch(()=>{})}
+  retryAttachment = async (id:string) => {const a=this.snapshot.attachments.find(a=>a.id===id);if(a&&!this.isAttachmentLocked(id))await this.upload(a)}
   private async upload(a:Attachment) {
     if(a.busy)return
     a.busy=true;a.status='uploading';this.patch({attachments:[...this.snapshot.attachments]})
     try{
-      if(!a.assetId){const asset=await this.request('/assets?purpose='+(a.kind==='voice'?'chat_voice':'chat_image'),{method:'POST',headers:{'Content-Type':'application/octet-stream','Idempotency-Key':a.operationId},body:a.file});a.assetId=asset.asset_id}
+      // Staged: the file stays on estómago and reaches Mariposa only when the message is actually sent.
+      if(!a.assetId){const asset=await this.request('/assets?purpose='+(a.kind==='voice'?'chat_voice':'chat_image')+'&staged=1',{method:'POST',headers:{'Content-Type':'application/octet-stream','Idempotency-Key':a.operationId},body:a.file});a.assetId=asset.asset_id}
       // Removing an upload invalidates the draft; a late upload receipt must not start paid ASR.
-      if(!this.snapshot.attachments.includes(a))return
+      if(!this.snapshot.attachments.includes(a)){if(a.assetId)this.discard(a.assetId);return}
       if(a.kind==='voice'){
         a.status='transcribing';this.patch({attachments:[...this.snapshot.attachments]})
         a.transcriptionId??=operationId()
@@ -527,23 +676,30 @@ export class EstomagoClient {
       if(e.code&&a.status==='failed')a.transcriptionId=undefined
     }finally{a.busy=false;this.patch({attachments:[...this.snapshot.attachments]});this.scheduleEstimate()}
   }
-  voiceAvailable = async () => {try{const result=await this.request('/voice/status');if(!result.available)this.notify('语音服务尚未配置');return result.available===true}catch(e){this.report(e);return false}}
   loadRuntime = async () => {
     try {
       const data=await this.request('/runtime-settings');this.runtime=data
       const editable=data.driver==='openrouter'
-      let exact=editable?data.or_model?.effective:null
-      if(!editable){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
-      const ids=[...new Set<string>([...(editable?data.model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
-      const efforts:string[]=editable?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]
+      let exact=editable?data.or_model?.effective:data.driver==='claude-agent-sdk'?data.sdk_model:null
+      if(!editable && data.driver!=='claude-agent-sdk'){try{const c=await this.request('/conversations/primary/context-records');if(c.driver===data.driver)exact=c.exactModel}catch{}}
+      const ids=[...new Set<string>([...(editable?data.model_options??[]:data.driver==='claude-agent-sdk'?data.sdk_model_options??[]:[]),exact].filter((x):x is string=>typeof x==='string'&&x.length>0))]
+      const efforts:string[]=(editable || data.driver==='claude-agent-sdk')?(data.effort_options??[]).filter((e:string)=>e!=='default'):[]
       const current=data.reasoning_effort?.override??data.reasoning_effort?.effective??'default'
-      this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable})
+      this.patch({modelIds:ids,models:ids.length?ids.map(shortModel):['未配置'],model:Math.max(0,ids.indexOf(exact)),efforts,effort:efforts.indexOf(current),canConfigure:editable || data.driver==='claude-agent-sdk'})
     }catch(e){this.report(e)}
+  }
+  accessSettings = (): Promise<Json> => this.request('/runtime-settings')
+  accountSettings = (): Promise<Json> => this.request('/auth/account')
+  setAccount = (username: string, password: string, confirmation: string): Promise<Json> =>
+    this.request('/auth/account', this.json('PUT', { username, password, confirm_password: confirmation }))
+  setAccessPolicy = async (policy: 'configured' | 'subscription-first'): Promise<void> => {
+    await this.request('/runtime-settings', this.json('PUT', { access_policy: policy }))
+    await this.loadRuntime()
   }
   setModel = async (index:number) => {
     if(!this.snapshot.canConfigure){this.notify('当前通道不支持此处切换模型');return}
     const id=this.snapshot.modelIds[index];if(!id)return
-    try{await this.request('/runtime-settings',this.json('PUT',{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已切换；下一次发送前可选择携带的历史')}catch(e){this.report(e)}
+    try{await this.request('/runtime-settings',this.json('PUT',this.runtime?.driver==='claude-agent-sdk'?{sdk_model:id}:{or_model:id}));this.estimateGeneration++;await this.loadRuntime();this.notify('模型已选择，下一次回复使用；当前上下文继续保留')}catch(e){this.report(e)}
   }
   setEffort = async (index:number) => {
     if(!this.snapshot.canConfigure)return
@@ -564,8 +720,8 @@ export class EstomagoClient {
       }else{
         const data=await this.request('/conversations/primary/context-records/events?last=1&limit=30')
         if(request!==this.panelRequest)return
-        const labels:Json={'archive.sync':'原文同步','context.warning':'上下文提示','review.sent':'换窗检查','review.failed':'检查未完成','window.rotated':'已换窗'}
-        const events=(data.events??[]).slice().reverse().map((e:Json)=>({id:e.eventId,at:time(e.occurredAt),t:labels[e.kind]??e.kind,d:typeof e.payload?.state==='string'?e.payload.state:''}))
+        const labels:Json={'archive.sync':'原文同步','context.warning':'上下文提示','review.sent':'换窗检查','review.failed':'检查未完成','window.rotated':'已换窗','system.notice':'系统通知'}
+        const events=(data.events??[]).slice().reverse().map((e:Json)=>({id:e.eventId,at:time(e.occurredAt),t:labels[e.kind]??e.kind,d:typeof e.payload?.state==='string'?e.payload.state:(typeof e.payload?.text==='string'?e.payload.text:'')}))
         const usage=Object.entries(this.snapshot.usage).map(([id,value])=>({id:'usage:'+id,at:'',t:'整轮实际用量',d:`输入 ${value.totals?.input_tokens ?? '未知'} · 输出 ${value.totals?.output_tokens ?? '未知'}`}))
         const failures=[...this.turnFailures.values()].reverse()
         this.patch({activity:[...failures,...events,...usage],panelNote:failures.length||events.length||usage.length?'':'暂无活动记录'})
@@ -573,7 +729,65 @@ export class EstomagoClient {
     }catch(e){if(!(e instanceof LifecycleEnded)&&request===this.panelRequest)this.patch({panelNote:(e as Error).message})}
   }
   beginSelection = () => {this.selectionKey??=operationId();this.patch({selectionMode:true})}
-  select = (id:string) => {const selected=new Set(this.snapshot.selected);selected.has(id)?selected.delete(id):selected.add(id);this.selectionKey??=operationId();this.patch({selected,selectionMode:true})}
+
+  /** 相册整改 R5（复审 2026-11-08）：聊天图片收藏——把消息里的图片收入"我们的相册"
+   *  （important_photos）。逐资产建条目（服务端同 (kind,asset) 幂等）；留言不在此处
+   *  编造，收藏后可在相册里补。失败如实提示，不影响聊天。 */
+  favoriteImages = async (assetIds: string[]) => {
+    if (assetIds.length === 0) { this.notify('这条消息没有可收藏的图片'); return }
+    const key = 'ui-fav:' + operationId()
+    let done = 0
+    for (const assetId of assetIds) {
+      try {
+        const res = await fetch('/api/v1/content/albums/important_photos/entries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `${key}:${assetId}` },
+          body: JSON.stringify({ asset_id: assetId }),
+        })
+        if (res.status === 201 || res.status === 200) done++
+        else {
+          const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } }
+          this.notify(body.error?.message ?? (`收藏未完成（${res.status}）`))
+          return
+        }
+      } catch { this.notify('收藏暂不可达，稍后可重试'); return }
+    }
+    this.notify(done > 0 ? `已收藏 ${done} 张到「我们的相册」` : '收藏未完成')
+  }
+
+  /** 相册重构 P4：把当前多选消息存为对话存档（争吵/甜蜜）。争吵存档服务端会先停止
+   *  正在输出的回复；成功后退出多选并提示一次（03 §3.1/§4：双状态如实分开显示）。 */
+  archiveSelection = async (kind: 'quarrel' | 'sweet') => {
+    const ids = [...this.snapshot.selected]
+    if (ids.length === 0) { this.notify('先选择要存档的消息'); return }
+    const label = kind === 'quarrel' ? '争吵' : '甜蜜'
+    if (!confirm(`把所选 ${ids.length} 条消息存入「${label}存档」？${kind === 'quarrel' ? '未开始派发的回复会停止；已开始生成的按 2026-11-15 裁定跑完（不再中断）。' : ''}`)) return
+    try {
+      const res = await fetch('/api/v1/archives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `ui-archive:${this.selectionKey ?? operationId()}` },
+        body: JSON.stringify({ kind, message_ids: ids }),
+      })
+      const body = (await res.json().catch(() => ({}))) as { error?: { message?: string }; stopped?: boolean }
+      if (res.status !== 201 && res.status !== 200) {
+        this.notify(body.error?.message ?? (`存档未完成（${res.status}）${body.stopped ? '；输出已停止' : ''}`))
+        return
+      }
+      this.notify(`${label}存档已保存（${ids.length} 条）${body.stopped ? '；当前输出已停止' : ''}`)
+      this.patch({ selectionMode: false, selected: new Set() })
+      this.selectionKey = null
+    } catch {
+      this.notify('存档暂不可达，选择已保留——稍后重试')
+    }
+  }
+  select = (id: string | string[]) => {
+    const ids = typeof id === 'string' ? [id] : id
+    const selected = new Set(this.snapshot.selected)
+    const remove = ids.every(key => selected.has(key))
+    for (const key of ids) { if (remove) selected.delete(key); else selected.add(key) }
+    this.selectionKey ??= operationId()
+    this.patch({selected, selectionMode:true})
+  }
   cancelSelection = () => {this.selectionKey=null;this.patch({selected:new Set(),selectionMode:false})}
   /** 手动换窗策略（她 2026-10-19 裁定）：选集确认即换窗——确认返回 rotated=false
    *  （无被阻断输入、窗口还开着）时主动调 /rotate 立即换，不等 600k 软线兜底。 */

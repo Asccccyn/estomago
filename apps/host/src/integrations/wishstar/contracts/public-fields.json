@@ -1,0 +1,14 @@
+{
+  "source_commit": "3079cb6515905db71dbc054bee554cbfb7392f06",
+  "source_files": {
+    "app/config.py": "9f3bcec1b01077a29f5ca741486efc94a91a1fd8f36be5ac5e2f464dd9e74f92",
+    "app/api/routes.py": "62e6870d0aa40128ed64969383b0444264fce6a001369c0820db4961592b25a8",
+    "app/services/star_service.py": "c6ed9796e803c64d775392a25c2dd8b7ad75b30181ce29b5f40dc811a00dddcb"
+  },
+  "limits": {
+    "content": 2000,
+    "mood": 100,
+    "note": 500,
+    "message": 200
+  }
+}

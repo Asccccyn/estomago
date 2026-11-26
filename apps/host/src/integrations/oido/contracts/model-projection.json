@@ -1,8 +1,8 @@
 {
   "source": "oido/contracts",
   "sha256": {
-    "projection": "7ff7ccb9c4e9c2a36b23301dd7a380e3782ad9e0fd98f908bf56b0817c815ebc",
-    "budgets": "6dc37af431fcf5af7c1e895967090821483419c9908ff3f2021a4c6c6678993b"
+    "projection": "dd8b447d39d23bcb134f49aa30926e970490ff58992527f57865ea0d384ad632",
+    "budgets": "e7d7f2f8ac4f563b7fe1f80f8f7305e918c42e232154fcd184c25995d3e731d4"
   },
   "schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -194,6 +194,11 @@
       "evidence_overview": {
         "type": "object",
         "properties": {
+          "readable": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 800
+          },
           "analysis_id": {
             "type": "string",
             "minLength": 1,
@@ -470,6 +475,8 @@
     "media_candidates": 4096,
     "error": 512,
     "analyze_request": 512,
-    "$comment": "UTF-8 紧凑 JSON 字节上限（联合施工包 08）。bytes≠token；token 计数另行用实际运行期 tokenizer 补测。预算失败即 CI 失败；调整须附前后真实样本。"
-  }
+    "$comment": "UTF-8 紧凑 JSON 字节上限（联合施工包 08）。bytes≠token；token 计数另行用实际运行期 tokenizer 补测。预算失败即 CI 失败；调整须附前后真实样本。",
+    "compare_result": 2048
+  },
+  "vendored_note": "2026-11-02 P2：同步 oído evidence_overview 新增 readable（可读投影）字段；sha256 为源文件实测。"
 }

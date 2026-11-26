@@ -24,6 +24,9 @@ export interface BeforeTurnContributor {
   markDispatched?(attemptId: string): void;
   markRetained(value: AugmentResult): void;
   cancelForTurn?(turnId: string): void;
+  finishTurn?(turnId: string): void;
+  /** P3（U05，20261106）：会话进入活动通话——取消在途浮现作业（不迟到注入通话）。 */
+  cancelForActiveCall?(conversationId: string): void;
 }
 
 export interface WindowOpenContributor {

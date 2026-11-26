@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { json } from '../http-leaf.ts';
 import type { RequestDeps } from '../http.ts';
 import type { SseSubscriber } from '../../events/service.ts';
+import { readToolActivity } from '../tool-activity.ts';
 
 const SSE_PAGE_LIMIT = 1000;
 const SSE_MAX_PENDING_BYTES = 8 * 1024 * 1024; // 慢客户端待发字节上限（超限断开，游标重连）
@@ -121,10 +122,11 @@ export function handleSse(req: IncomingMessage, res: ServerResponse, d: RequestD
 // 优先级：Last-Event-ID > query cursor。回放分页追平到连接时高水位后转 live（先订阅后回放，无空洞）。
 // 背压：res.write false → await drain（超时断开）；待发字节超上限断开；客户端按游标重连。
 
-export function toSseDto(row: { sequence: number; kind: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): Record<string, unknown> {
+export function toSseDto(row: { sequence: number; kind: string; occurred_at?: string; payload_ref?: string; payload?: string; conversation_id: string | null; turn_id: string | null; attempt_id: string | null }): Record<string, unknown> {
   const payloadRaw = row.payload_ref ?? row.payload ?? '{}';
   return {
     sequence: row.sequence,
+    ...((row.kind.startsWith('reasoning.') || row.kind === 'turn.tool') && row.occurred_at ? { occurred_at: row.occurred_at } : {}),
     kind: row.kind,
     conversation_id: row.conversation_id,
     turn_id: row.turn_id,
@@ -143,13 +145,16 @@ const reasoning = /^GET \/api\/v1\/turns\/([^/]+)\/reasoning$/.exec(route);
 if (reasoning) {
   const turnId = decodeURIComponent(reasoning[1]!);
   const attemptId = url.searchParams.get('attempt_id');
-  return json(res, 200, { blocks: d.reasoning.listForTurn(turnId, attemptId) });
+  return json(res, 200, { blocks: d.reasoning.listForTurn(turnId, attemptId), tools: readToolActivity(d.db, d.tools?.getCapabilityRegistry() ?? null, turnId, attemptId) });
 }
 
 const stopTurn = /^POST \/api\/v1\/turns\/([^/]+)\/stop$/.exec(route);
 if (stopTurn) {
   const turnId = decodeURIComponent(stopTurn[1]!);
   const result = d.supervisor.stop(turnId);
+  // 她 2026-11-15 裁定：回复已开始生成（请求已派发）→ 本轮跑完，不受理停止
+  if (result.reason === 'GENERATION_IN_FLIGHT')
+    return json(res, 409, { stopped: false, generation: result.generation, error: { code: 'generation_in_flight', message: '回复正在生成，本轮将跑完（开始生成后不再打断）' } });
   return json(res, result.stopped ? 200 : 409, { ...result, note: result.stopped ? '已 fence 当前代并请求中断' : '无活动代（可能已结束）' });
 }
 

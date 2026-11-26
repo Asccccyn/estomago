@@ -56,7 +56,7 @@ function compose(root: string, orTransport: OrTransport) {
   const messages = new MessageService(db);
   const identity = new IdentityService(config, paths);
   const routing = new RoutingService(db, events, messages);
-  const windows = new WindowManager(db, events, identity, config);
+  const windows = new WindowManager(db, identity, config);
   const reviews = new RotationReviewService(db);
   const checkpoint = new HoldCheckpointService(db);
   const mariposa_wire_1 = new MariposaClient({ transport: mariposaOk });
@@ -158,7 +158,9 @@ test('F20：停止后已抵达的 usage 帧仍被记账（不丢已收到的事�
   const sub = ctx.messages.submitUserMessageWithTurn({ conversationId: 'c1', content: '会停的轮', clientMessageId: 's1', occurredAt: T0 });
   ctx.supervisor.enqueue(sub.turnId);
   await new Promise((r) => setTimeout(r, 40));
-  ctx.supervisor.stop(sub.turnId);
+  // 她 2026-11-15 裁定后 stop() 对已派发回合拒绝——中断改经关机路径 stopAll 触发，
+  // "停止后已抵达的 usage 帧仍被记账"的语义不变（关停同样是真实可达路径）
+  void ctx.supervisor.stopAll(2000);
   release();
   await ctx.supervisor.waitIdle();
   const att = ctx.db.prepare('SELECT state FROM attempts WHERE id = ?').get(sub.attemptId) as { state: string };

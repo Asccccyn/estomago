@@ -25,6 +25,16 @@ export type ProviderUsageRow = {
   cache_creation_input_tokens: number | null;
 };
 
+/** Context length is a single request measurement, never a turn/session sum.
+ * Missing output or monetary cost must not hide known input partitions. */
+export function lastRequestUsageForWindow(db: Db, windowId: string): (ProviderUsageRow & { observed_at: string }) | null {
+  return db.prepare(`SELECT u.source,u.input_tokens,u.cache_read_input_tokens,u.cache_creation_input_tokens,u.observed_at
+    FROM usage_observations u LEFT JOIN attempts a ON a.id=u.attempt_id
+    WHERE (u.window_id=? OR a.window_id=?) AND u.scope='request'
+      AND u.request_id IS NOT NULL AND u.completeness IN ('complete','partial')
+    ORDER BY u.observed_at DESC,u.rowid DESC LIMIT 1`).get(windowId, windowId) as (ProviderUsageRow & { observed_at: string }) | undefined ?? null;
+}
+
 /**
  * 按 provider 解释"总输入 token"：
  *  - or_stream / ds_stream：input_tokens 即总输入（内含缓存分类）——分类只展示，不再相加；

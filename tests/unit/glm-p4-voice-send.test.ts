@@ -105,7 +105,7 @@ function compose(root: string, transport: OrTransport, sirenUrl: string) {
   const media = new MediaService(db, paths.mediaDir, config);
   const identity = new IdentityService(config, paths);
   const { tools } = assembleTestTools({ db, mariposa: null, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), messages, media, sirenCall: new SirenAdapter(sirenUrl, 'stub-token') });
-  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing: new RoutingService(db, events, messages), windows: new WindowManager(db, events, identity, config), logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db) });
+  const supervisor = new TurnSupervisor({ db, config, messages, events, identity, capabilities: new CapabilityMatrix(config), runnerSelection: { status: 'ok', runner: new DeepSeekRunner({ retryMax: 0 }, transport) }, reasoning: new ReasoningService(db, events), usage: new UsageCollector(db), routing: new RoutingService(db, events, messages), windows: new WindowManager(db, identity, config), logger: new Logger(path.join(root, 'logs')), tools, reviews: new RotationReviewService(db), checkpoint: new HoldCheckpointService(db), trajectory: new WindowTrajectoryService(db) });
   return { db, messages, media, supervisor, tools, close() { db.close(); fs.rmSync(root, { recursive: true, force: true }); } };
 }
 
@@ -125,6 +125,7 @@ test('A05 模型主动语音：chat_send_voice→真实资产→唯一 assistant
     assert.equal(out.ok, true, JSON.stringify(out.output));
     const v = out.output as Record<string, unknown>;
     assert.equal(v['state'], 'published');
+    assert.ok(!Object.hasOwn(v, 'sequence'));
     const assetId = v['audio_asset_id'] as string;
     // 资产真实存在且 mp3
     const asset = c.db.prepare('SELECT mime_type, state FROM media_assets WHERE id=?').get(assetId) as { mime_type: string; state: string };
@@ -207,6 +208,7 @@ for (const mode of ['drop-persisted', 'drop-body-persisted'] as const) test(`响
     assert.equal(out.ok, true, JSON.stringify(out.output));
     const v = out.output as Record<string, unknown>;
     assert.equal(v['state'], 'published');
+    assert.ok(!Object.hasOwn(v, 'sequence'));
     assert.equal(v['recovered'], true);
     assert.equal(stub.synthCalls, 1, '恢复不重新合成：同操作只有一次 provider 调用');
     // 唯一 assistant 语音消息，附件=取回的同一资产
@@ -238,6 +240,7 @@ test('联合审计 A01-F03：est 已有合成资产（发布前中断）——�
     assert.equal(out.ok, true, JSON.stringify(out.output));
     const v = out.output as Record<string, unknown>;
     assert.equal(v['state'], 'published');
+    assert.ok(!Object.hasOwn(v, 'sequence'));
     assert.equal(v['reused_asset'], true);
     assert.equal(v['audio_asset_id'], saved.id);
     assert.equal(stub.synthCalls, 0, '已有资产：重试零合成');
@@ -255,4 +258,20 @@ test('联合审计 A01：同键异参冲突如实报告（SIREN_OPERATION_CONFLI
     assert.equal(o['error_code'], 'SIREN_OPERATION_CONFLICT');
     assert.equal((c.db.prepare("SELECT COUNT(*) n FROM messages WHERE speaker='assistant' AND kind='voice'").get() as { n: number }).n, 0);
   } finally { await c.supervisor.stopAll(); c.close(); stub.stop(); }
+});
+
+test('P6 追加（11-02 生产根因）：emotion 越界在 est 边界拒绝并给出闭集；合法值照常走合成', async () => {
+  const stub = await startSirenStub();
+  const c = compose(tempRoot('p6-emo-'), quietTransport, stub.url);
+  try {
+    const bad = await c.tools.execute('chat_send_voice', { text: '晚安', emotion: 'softly' }, ctx());
+    assert.equal(bad.ok, false);
+    const b = bad as unknown as { output: { error_code?: string; detail?: string } };
+    assert.ok(['TOOL_ARG_ENUM', 'TOOL_ARG_INVALID'].includes(String(b.output['error_code'])), '边界拒绝（定义层枚举或服务预检）');
+    assert.ok(JSON.stringify(b).includes('warm'), '允许值清单可见');
+    assert.equal(stub.synthCalls, 0, '越界不发请求（省一次注定 400 的往返）');
+    const good = await c.tools.execute('chat_send_voice', { text: '晚安', emotion: 'warm' }, ctx());
+    assert.equal(good.ok, true, '合法枚举照常合成');
+    assert.ok(stub.synthCalls >= 1);
+  } finally { await c.supervisor.stopAll(); await c.close(); stub.stop(); }
 });
