@@ -2,6 +2,9 @@
 // recall 卡最小投影——检索诊断字段内部化、matched_by+matched_fields 合并、保留面不丢。
 // R-04（复审 2026-10-26）：resource_ref 是 M 候选卡出站的唯一操作句柄（否定续查
 // reject_candidate_ref 按工具声明原样回传），从"删除"清单移入"保留"清单。
+// 2026-11-26 裁定（修正 A2）：正文先行（text=卡片正文/首条文本证据/摘录取其一），
+// evidence_kind/field/structured_value 等对账包装与重复的 content_version 字符串
+// 不再出站；操作句柄（memory_id/word_id/version/memory_ref/resource_ref）随正文保留。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { candidates } from '../../apps/host/src/modules/memory/projection.ts';
@@ -18,8 +21,10 @@ const FULL = {
 
 test('candidate whitelist preserves content and operation references, omits retrieval diagnostics',()=>{
  const [c]=candidates([FULL]) as any[];
- for(const k of ['version_receipt','evidence_requirement_met','matched_by','matched_fields','matched','rrf_score']) assert.equal(k in c,false);
- for(const k of ['content_version','memory_id','word_id','speaker','memory_date','excerpt','source_ref','source_binding_version','resource_ref']) assert.deepEqual(c[k],(FULL as any)[k]);
+ for(const k of ['version_receipt','evidence_requirement_met','matched_by','matched_fields','matched','rrf_score','content_version','source_ref','source_binding_version','ordinal']) assert.equal(k in c,false);
+ for(const k of ['memory_id','word_id','speaker','memory_date','resource_ref']) assert.deepEqual(c[k],(FULL as any)[k]);
+ assert.equal(c.text,'原文摘录');
+ assert.equal(c.kind,'event');
 });
 test('only a canonical Mariposa event card exposes an integer edit version', () => {
   const event = { channel: 'event', memory_id: '00051', resource_ref: 'memory:00051', content_version: '3' };
@@ -34,8 +39,20 @@ test('only a canonical Mariposa event card exposes an integer edit version', () 
     { ...event, content_version: String(Number.MAX_SAFE_INTEGER + 1) },
   ]);
   assert.equal(valid!.version, 3);
-  assert.equal(valid!.content_version, '3');
+  assert.equal('content_version' in valid!, false);
   assert.ok(other.every(card => !Object.hasOwn(card, 'version')));
+});
+test('card body, first textual evidence and excerpt each surface exactly once as text',()=>{
+ const [a]=candidates([{memory_id:'m',text:'完整正文',excerpt:'完整正文',evidence:[{evidence_kind:'authored_event',snippet:'完整正文'}]}]) as any[];
+ assert.equal(a.text,'完整正文');assert.equal(a.excerpt,undefined);assert.equal(a.quotes,undefined);
+ const [b]=candidates([{memory_id:'m',excerpt:'甲',evidence:[{evidence_kind:'authored_event',snippet:'乙'}]}]) as any[];
+ assert.equal(b.text,'乙');assert.equal(b.excerpt,'甲');
+});
+test('words-channel quotes keep verbatim/paraphrase/unverified distinction without evidence wrappers',()=>{
+ const [w]=candidates([{resource_ref:'our_word:w9',word_id:'w9',speaker:'jiaming',channel:'words',
+   evidence:[{evidence_kind:'word_paraphrase',snippet:'转述'},{evidence_kind:'word_unverified',snippet:'未核实原话'}]}]) as any[];
+ assert.equal(w.text,'转述');assert.equal(w.paraphrased,true);assert.equal(w.kind,'words');
+ assert.deepEqual(w.quotes,[{text:'未核实原话',unverified:true}]);
 });
 test('new unexpected technical fields cannot leak through candidates',()=>{
  const [c]=candidates([{memory_id:'m',text:'完整正文',new_debug_hash:'hidden',scores:{x:1}}]) as any[];

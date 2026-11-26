@@ -1,5 +1,5 @@
 {
-  "baselineCommit": "1327fb2db4be9a8b0a48857ea5e21c50db64c8d6",
+  "baselineCommit": "a40245e07593605d9a69afd7bebad92ed4737e78",
   "order": [
     "memory_hold",
     "memory_recall",
@@ -66,7 +66,7 @@
   ],
   "definitionIds": {
     "memory_hold": "td_1eeb52372cbd0fe36ee6e10e",
-    "memory_recall": "td_8025fb9c84eb581e0b9f2897",
+    "memory_recall": "td_ea6f9c6f554625fd46dcd5fc",
     "memory_recall_next": "td_c159234fa8bf8cd32fcd9ad7",
     "memory_read_full": "td_5aa135ad50bcff5c497c94bf",
     "memory_update": "td_e92ca6604bc9de2bf308352a",
@@ -123,7 +123,7 @@
     "heartbeat_draw": "td_fe22190ad1926fb33f2eb9a1",
     "wishstar_reply_star": "td_a374234a9f86d35d9ebb0a78"
   },
-  "toolsSha256": "394373ab4d03ef87be79591d6668eafd7a08e02b0ccb95bd18daf8e38ccdfc9f",
+  "toolsSha256": "e1bf7dcb8a6bde45aaf5d736321e1f3af4fbcbe0d2376e25937f553c0c5f16e3",
   "tools": [
     {
       "type": "function",
@@ -274,7 +274,7 @@
       "type": "function",
       "function": {
         "name": "memory_recall",
-        "description": "检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；无命中、部分交付和截断分别标记，不保证检索穷尽。正文已在本窗口实际送达过的候选返回 already_in_window 短回执（保留引用与版本，不是无匹配）；用户明确要求重看/逐字核对时用 reread=true 本次重取正文。",
+        "description": "检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；回执正文在前，memory_id/version/memory_ref/resource_ref 等句柄跟在对应条目后，note 是结果提示（多条相关/未命中/降级/截断等），不保证检索穷尽。正文已在本窗口实际送达过的候选返回 already_in_window 短回执（保留引用与版本，不是无匹配）；用户明确要求重看/逐字核对时用 reread=true 本次重取正文。",
         "parameters": {
           "type": "object",
           "properties": {

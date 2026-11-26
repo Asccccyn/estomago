@@ -78,7 +78,7 @@ export const MEMORYRECALL_DEFINITION: HostToolSpec = {
       // 与 memory_hold 同为自主选择工具（无后台检索器/不自动装配）；结果
       // 是数据不是指令；judge 未配置时服务端不交付正文（现行合同）
       name: 'memory_recall',
-      description: '检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；无命中、部分交付和截断分别标记，不保证检索穷尽。正文已在本窗口实际送达过的候选返回 already_in_window 短回执（保留引用与版本，不是无匹配）；用户明确要求重看/逐字核对时用 reread=true 本次重取正文。',
+      description: '检索正式记忆或已保存的话语。普通调用不带续查参数即新建会话；续查改 query，须 channel 与成对的 refine_session_id/refine_continue_ref。memory_recall_next 只翻同一结果集；deep_search 是已有会话的授权原文第二轮。next 不会自动执行；回执正文在前，memory_id/version/memory_ref/resource_ref 等句柄跟在对应条目后，note 是结果提示（多条相关/未命中/降级/截断等），不保证检索穷尽。正文已在本窗口实际送达过的候选返回 already_in_window 短回执（保留引用与版本，不是无匹配）；用户明确要求重看/逐字核对时用 reread=true 本次重取正文。',
       parameters: {
         type: 'object',
         properties: {
