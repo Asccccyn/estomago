@@ -29,6 +29,7 @@ import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 
 type Step = {
   text?: string;
+  thinking?: string;
   calls?: Array<{ id: string; name: string; args: Record<string, unknown> }>;
   onTransport?: () => void | Promise<void>;
   failTransport?: Error;
@@ -181,6 +182,7 @@ async function createV21Fixture(
               usage: { input_tokens: 600, output_tokens: 4, cache_read_input_tokens: 1500 } } } };
             const calls = step.calls ?? [];
             yield { type: 'assistant', session_id: session, message: { id, content: [
+              ...(step.thinking ? [{ type: 'thinking', thinking: step.thinking }] : []),
               ...(step.text ? [{ type: 'text', text: step.text }] : []),
               ...calls.map(call => ({ type: 'tool_use', id: call.id, name: 'mcp__est__' + call.name, input: call.args })),
             ] } };
@@ -1716,5 +1718,47 @@ test('裁定 2026-11-27 采纳侧：旧口径 Sol 返回 rest+nap_or_wait 也不
   fx.setClock('2026-11-27T14:55:00+08:00');
   await fx.host.scheduler!.tick();
   assert.equal(fx.heartbeatRequests().length, 1, '心跳在末句+50 分钟照常派发');
+  await fx.stop();
+});
+
+// ==================== 2026-11-27 裁定：后台（心跳）轮思考链入库，前端可按 turn 拉取 ====================
+// 复盘：runBackgroundTurn 的最小事件挂钩只记账 usage，thinking 事件被丢弃——心跳轮
+// reasoning_blocks 零行（usage 观测里却真有 thinking_tokens），前端 GET /turns/{id}/reasoning
+// 拿到空列表无法渲染思考链。裁定：照常入库、不向前台发流（心跳时她不在台前）。
+
+test('裁定 2026-11-27：心跳轮思考链入库（SDK 车道 complete_message 携带 thinking）', { timeout: 30000 }, async (t) => {
+  const fx = await createV21Fixture(t, '2026-11-27T20:00:00+08:00', { lane: 'sdk' });
+  await fx.sendHttpMessage('2026-11-27T20:00:00+08:00', '我去洗澡啦', 'think-chat', '去吧。');
+  // 心跳步：带思考块的完整回复（complete_message 路径）
+  fx.steps.push({ thinking: '她去洗澡了。这个点儿适合把白天想说没说的那句补上——说说今天她修好心跳开关的事。', text: '洗澡去吧，我在。', });
+  fx.setClock('2026-11-27T20:51:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1, '50 分钟静默后心跳照常派发');
+  const hbTurn = fx.host.db.prepare(
+    "SELECT t.id FROM turns t JOIN messages m ON m.turn_id = t.id WHERE t.trigger = 'cache_keepalive' ORDER BY t.created_at DESC LIMIT 1",
+  ).get() as { id: string } | undefined;
+  assert.ok(hbTurn, '心跳 turn 存在');
+  const blocks = fx.host.db.prepare(
+    "SELECT visibility, state, final_text FROM reasoning_blocks WHERE turn_id = ?",
+  ).all(hbTurn.id) as Array<{ visibility: string; state: string; final_text: string | null }>;
+  assert.ok(blocks.length >= 1, '心跳轮思考块已入库');
+  assert.equal(blocks[0]!.visibility, 'summary');
+  assert.equal(blocks[0]!.state, 'complete');
+  assert.ok((blocks[0]!.final_text ?? '').includes('修好心跳开关'), '思考正文完整落库');
+  await fx.stop();
+});
+
+test('裁定 2026-11-27 反面：无思考块的心跳轮如实记 no_block 快照（不虚构）', { timeout: 30000 }, async (t) => {
+  const fx = await createV21Fixture(t, '2026-11-27T21:00:00+08:00', { lane: 'sdk' });
+  await fx.sendHttpMessage('2026-11-27T21:00:00+08:00', '我去看剧了', 'think-chat2', '好看吗回来讲。');
+  fx.steps.push({ text: '看剧去吧。' });
+  fx.setClock('2026-11-27T21:51:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1);
+  const row = fx.host.db.prepare(
+    "SELECT rb.visibility, rb.state FROM reasoning_blocks rb JOIN turns t ON t.id = rb.turn_id WHERE t.trigger = 'cache_keepalive' ORDER BY rb.created_at DESC LIMIT 1",
+  ).get() as { visibility: string; state: string } | undefined;
+  assert.ok(row, '心跳轮有 reasoning 快照行');
+  assert.equal(row.visibility, 'no_block', '无思考块如实记 no_block');
   await fx.stop();
 });
