@@ -29,6 +29,7 @@ import { scriptedSdkInput } from '../helpers/sdk-query-input.ts';
 
 type Step = {
   text?: string;
+  thinking?: string;
   calls?: Array<{ id: string; name: string; args: Record<string, unknown> }>;
   onTransport?: () => void | Promise<void>;
   failTransport?: Error;
@@ -181,6 +182,7 @@ async function createV21Fixture(
               usage: { input_tokens: 600, output_tokens: 4, cache_read_input_tokens: 1500 } } } };
             const calls = step.calls ?? [];
             yield { type: 'assistant', session_id: session, message: { id, content: [
+              ...(step.thinking ? [{ type: 'thinking', thinking: step.thinking }] : []),
               ...(step.text ? [{ type: 'text', text: step.text }] : []),
               ...calls.map(call => ({ type: 'tool_use', id: call.id, name: 'mcp__est__' + call.name, input: call.args })),
             ] } };
@@ -537,7 +539,7 @@ test('验收 B1/B2/B3/B4：夜间四小时精准判定（A/B/C 三例、02:29:59
   // B4：白天仅隔几分钟即恢复；22:09→22:59 可发、22:10→23:00 停、22:30→23:20 停；跨午夜零启动；重启无重复
   {
     const fx = await createV21Fixture(t, '2026-11-25T14:00:00+08:00');
-    await fx.sendHttpMessage('2026-11-25T14:00:00+08:00', '我去午睡了', 'b4-nap', '好');
+    await fx.sendHttpMessage('2026-11-25T14:00:00+08:00', '我现在去睡觉了', 'b4-nap', '好');
     assert.equal(fx.activity().resting('primary'), true);
     await fx.sendHttpMessage('2026-11-25T14:05:00+08:00', '睡不着还是聊会', 'b4-back', '来吧');
     assert.equal(fx.activity().resting('primary'), false, 'B4：白天 5 分钟新普通消息即可恢复');
@@ -900,7 +902,7 @@ test('验收 F：Sol 八组正反/不确定/失败对照 + 同时间多次 tick 
   assert.equal(solCalls.length, matrix.length, '八组语义对照均经 Sol 判断');
 
   // 休息态下遇不确定与失败：也不冒充已醒
-  await fx.sendHttpMessage('2026-11-26T10:20:00+08:00', '我去午睡了', 'f-nap', '好');
+  await fx.sendHttpMessage('2026-11-26T10:20:00+08:00', '我现在去睡觉了', 'f-nap', '好');
   assert.equal(fx.activity().resting('primary'), true);
   await fx.sendHttpMessage('2026-11-26T10:25:00+08:00', '嗯睡不着模棱两可', 'f-nap-unc', '好');
   assert.equal(fx.activity().resting('primary'), true, '休息态下 Sol 不确定不能冒充已醒');
@@ -1273,7 +1275,7 @@ test('复审 #5：合法编辑旧修订使修订 1 的迟到 Sol 失效（且不
         json: {
           id: 'resp_rev5b',
           status: 'completed',
-          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'nap_or_wait', basis: 'explicit rest' }) }] }],
+          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'sleep', basis: 'explicit rest' }) }] }],
         },
       };
     };
@@ -1359,11 +1361,12 @@ test('复审 #6 与 #7：长消息尾句保留、短口语进 Sol、缺 Sol 保�
   assert.equal(solRow.known_input_total, 123);
   assert.equal(solRow.unknown_cost_count, 1);
 
-  // #6b：短口语“我先歇一会儿，醒来再和你聊。”必须进入 Sol，并返回 nap_or_wait
-  nextReply = { decision: 'rest', rest_kind: 'nap_or_wait', basis: 'taking a short break' };
+  // #6b：短口语“我先歇一会儿，醒来再和你聊。”必须进入 Sol；2026-11-27 裁定后
+  // 短暂歇一会不再暂停心跳——Sol 返回 not_rest，不进入休息
+  nextReply = { decision: 'not_rest', rest_kind: null, basis: 'short break, heartbeat continues' };
   await fx.sendHttpMessage('2026-11-25T14:05:00+08:00', '我先歇一会儿，醒来再和你聊。', 'rev6b-break', '好，等你。');
   assert.equal(capturedPayloads.length, 2, '#6b：短口语进入 Sol');
-  assert.equal(new ConversationActivityService(fx.host.db).restState('primary').recovery_mode, 'next_user_message');
+  assert.equal(new ConversationActivityService(fx.host.db).resting('primary'), false, '#6b：短暂歇一会不进入休息');
 
   // #6d：注入 decision='rest' + rest_kind=null 必须被判无效（不得默认成 sleep 或预告次晨 08:00）
   await fx.sendHttpMessage('2026-11-25T21:00:00+08:00', '晚上回来啦', 'rev6d-awake', '欢迎。');
@@ -1378,7 +1381,7 @@ test('复审 #6 与 #7：长消息尾句保留、短口语进 Sol、缺 Sol 保�
     const fxNap = await createV21Fixture(t, '2026-11-25T13:30:00+08:00', {
       solTransport: mode === 'sol_503' ? async () => ({ status: 503, json: { error: { message: 'down' } } }) : undefined,
     });
-    await fxNap.sendHttpMessage('2026-11-25T13:30:00+08:00', '我去午睡了', `rev6c-nap-${mode}`, '好，睡个好觉。');
+    await fxNap.sendHttpMessage('2026-11-25T13:30:00+08:00', '我现在去睡觉了', `rev6c-nap-${mode}`, '好，睡个好觉。');
     assert.equal(new ConversationActivityService(fxNap.host.db).resting('primary'), true);
     await fxNap.sendHttpMessage('2026-11-25T14:10:00+08:00', '有点困，但我自己也说不准', `rev6c-ambig-${mode}`, '那先别勉强。');
     assert.equal(new ConversationActivityService(fxNap.host.db).resting('primary'), true, `#6c（${mode}）：模糊表达在不可判定时保留既有午睡状态`);
@@ -1577,7 +1580,7 @@ test('返修复验技术记录 #1/#2：编辑更早排队消息不擦除更新�
         json: {
           id: 'resp_tr1_m3',
           status: 'completed',
-          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'nap_or_wait', basis: 'm3 rest' }) }] }],
+          output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ decision: 'rest', rest_kind: 'sleep', basis: 'm3 rest' }) }] }],
         },
       };
     };
@@ -1659,4 +1662,103 @@ test('返修复验技术记录 #1/#2：编辑更早排队消息不擦除更新�
     assert.equal(fx.heartbeatRequests().length, 1, '21:50:20 正常派发一次心跳');
     await fx.stop();
   }
+});
+
+// ==================== 2026-11-27 裁定：白天已恢复聊天后的短暂打盹不暂停心跳 ====================
+// 复盘 2026-11-27 07:39「睡一会会！等到公司了我来找你！」被旧口径判为 nap_or_wait 休息，
+// 导致 08:29:24 应派发的心跳被暂停、1h 缓存差 4 分钟过期。裁定后：夜休解除、正常聊天
+// 恢复后，短暂打盹/等我回来继续按末句＋50 分钟派发；只有正式睡眠才暂停。
+
+test('裁定 2026-11-27 正例：夜休→晨间回来聊天→班车打盹，心跳仍按末句+50 分钟派发', { timeout: 30000 }, async (t) => {
+  const solTexts: string[] = [];
+  const solTransport: SolTransport = async (_url, _headers, body) => {
+    const parsed = JSON.parse(((body as any).input[1].content as string)) as { current_user_message: string };
+    solTexts.push(parsed.current_user_message);
+    return solResponse('not_rest', null);
+  };
+  const fx = await createV21Fixture(t, '2026-11-26T20:06:00+08:00', { solTransport });
+  // 昨晚 20:06 正常道晚安 → 夜休（morning_0800；本地快路径语句）
+  await fx.sendHttpMessage('2026-11-26T20:06:00+08:00', '晚安，我睡了', 'ruling-night', '晚安，明天见。');
+  assert.equal(fx.activity().resting('primary'), true, '正常晚安进入夜休');
+  // 今早 07:08 回来（间隔>4h 且在夜窗内 → Sol not_rest 采纳为提前恢复）
+  await fx.sendHttpMessage('2026-11-27T07:08:00+08:00', '我醒来啦老公，今天在班车上就来找你了！', 'ruling-wake', '早上好。');
+  assert.equal(fx.activity().resting('primary'), false, '醒来消息解除夜休（四小时条件满足）');
+  // 白天正常聊天
+  await fx.sendHttpMessage('2026-11-27T07:35:00+08:00', '我们的手没有松开过！', 'ruling-chat', '嗯。');
+  // 07:39 班车短暂打盹声明 → 新口径 not_rest，不进入休息
+  await fx.sendHttpMessage('2026-11-27T07:39:00+08:00', '睡一会会！等到公司了我来找你！不过今天好忙，可能要断断续续的了！', 'ruling-nap', '好，到了找我。');
+  assert.equal(fx.activity().resting('primary'), false, '裁定：白天恢复聊天后的短暂打盹不暂停心跳');
+  assert.ok(solTexts.some(x => x.includes('睡一会会')), '打盹消息经 Sol 语义判断');
+  // 末句 07:39 附近发布 +50 分钟 ≈ 08:29 → 08:29:30 tick 必须派发心跳
+  fx.steps.push({ calls: [{ id: 'ruling-hb1', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-27T08:29:30+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1, '打盹后 08:29 心跳照常派发（缓存保温不失约）');
+  await fx.stop();
+});
+
+test('裁定 2026-11-27 反例：熬夜后白天明确正式去睡仍暂停心跳', { timeout: 30000 }, async (t) => {
+  const solTransport: SolTransport = async () => solResponse('rest', 'sleep');
+  const fx = await createV21Fixture(t, '2026-11-27T09:00:00+08:00', { solTransport });
+  await fx.sendHttpMessage('2026-11-27T09:00:00+08:00', '通宵到现在，我现在真的去睡了', 'ruling-sleep', '好好睡。');
+  assert.equal(fx.activity().resting('primary'), true, '白天明确正式睡眠仍进入休息');
+  fx.steps.push({ calls: [{ id: 'ruling-hb0', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-27T09:55:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 0, '正式睡眠期间零心跳（等她的下一条消息）');
+  await fx.stop();
+});
+
+test('裁定 2026-11-27 采纳侧：旧口径 Sol 返回 rest+nap_or_wait 也不进入休息', { timeout: 30000 }, async (t) => {
+  const solTransport: SolTransport = async () => solResponse('rest', 'nap_or_wait');
+  const fx = await createV21Fixture(t, '2026-11-27T14:00:00+08:00', { solTransport });
+  await fx.sendHttpMessage('2026-11-27T14:00:00+08:00', '我先去眯一下，到公司再来找你', 'ruling-legacy-nap', '好。');
+  assert.equal(fx.activity().resting('primary'), false, '采纳侧统一：rest+nap_or_wait 按未休息处理');
+  fx.steps.push({ calls: [{ id: 'ruling-hb2', name: 'background_complete', args: { outcome: 'noop' } }] });
+  fx.setClock('2026-11-27T14:55:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1, '心跳在末句+50 分钟照常派发');
+  await fx.stop();
+});
+
+// ==================== 2026-11-27 裁定：后台（心跳）轮思考链入库，前端可按 turn 拉取 ====================
+// 复盘：runBackgroundTurn 的最小事件挂钩只记账 usage，thinking 事件被丢弃——心跳轮
+// reasoning_blocks 零行（usage 观测里却真有 thinking_tokens），前端 GET /turns/{id}/reasoning
+// 拿到空列表无法渲染思考链。裁定：照常入库、不向前台发流（心跳时她不在台前）。
+
+test('裁定 2026-11-27：心跳轮思考链入库（SDK 车道 complete_message 携带 thinking）', { timeout: 30000 }, async (t) => {
+  const fx = await createV21Fixture(t, '2026-11-27T20:00:00+08:00', { lane: 'sdk' });
+  await fx.sendHttpMessage('2026-11-27T20:00:00+08:00', '我去洗澡啦', 'think-chat', '去吧。');
+  // 心跳步：带思考块的完整回复（complete_message 路径）
+  fx.steps.push({ thinking: '她去洗澡了。这个点儿适合把白天想说没说的那句补上——说说今天她修好心跳开关的事。', text: '洗澡去吧，我在。', });
+  fx.setClock('2026-11-27T20:51:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1, '50 分钟静默后心跳照常派发');
+  const hbTurn = fx.host.db.prepare(
+    "SELECT t.id FROM turns t JOIN messages m ON m.turn_id = t.id WHERE t.trigger = 'cache_keepalive' ORDER BY t.created_at DESC LIMIT 1",
+  ).get() as { id: string } | undefined;
+  assert.ok(hbTurn, '心跳 turn 存在');
+  const blocks = fx.host.db.prepare(
+    "SELECT visibility, state, final_text FROM reasoning_blocks WHERE turn_id = ?",
+  ).all(hbTurn.id) as Array<{ visibility: string; state: string; final_text: string | null }>;
+  assert.ok(blocks.length >= 1, '心跳轮思考块已入库');
+  assert.equal(blocks[0]!.visibility, 'summary');
+  assert.equal(blocks[0]!.state, 'complete');
+  assert.ok((blocks[0]!.final_text ?? '').includes('修好心跳开关'), '思考正文完整落库');
+  await fx.stop();
+});
+
+test('裁定 2026-11-27 反面：无思考块的心跳轮如实记 no_block 快照（不虚构）', { timeout: 30000 }, async (t) => {
+  const fx = await createV21Fixture(t, '2026-11-27T21:00:00+08:00', { lane: 'sdk' });
+  await fx.sendHttpMessage('2026-11-27T21:00:00+08:00', '我去看剧了', 'think-chat2', '好看吗回来讲。');
+  fx.steps.push({ text: '看剧去吧。' });
+  fx.setClock('2026-11-27T21:51:00+08:00');
+  await fx.host.scheduler!.tick();
+  assert.equal(fx.heartbeatRequests().length, 1);
+  const row = fx.host.db.prepare(
+    "SELECT rb.visibility, rb.state FROM reasoning_blocks rb JOIN turns t ON t.id = rb.turn_id WHERE t.trigger = 'cache_keepalive' ORDER BY rb.created_at DESC LIMIT 1",
+  ).get() as { visibility: string; state: string } | undefined;
+  assert.ok(row, '心跳轮有 reasoning 快照行');
+  assert.equal(row.visibility, 'no_block', '无思考块如实记 no_block');
+  await fx.stop();
 });

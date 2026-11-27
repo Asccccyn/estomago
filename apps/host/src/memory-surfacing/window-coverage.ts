@@ -237,6 +237,9 @@ function projectWindow(db: Db, windowId: string, requestId?: string | null, incl
       if (typeof fragment?.text === 'string') known.push(fragment.text);
       const items = [
         ...(Array.isArray(row.evidence) ? row.evidence as Array<Record<string, unknown>> : []),
+        // 2026-11-26 recall 投影改版：配套原话从 evidence 挪到候选级 quotes，
+        // 定位扫描同步认新键，否则已投递原话不被记为已入窗、后续会重复投递。
+        ...(Array.isArray(row.quotes) ? row.quotes as Array<Record<string, unknown>> : []),
         ...(Array.isArray(row.unread_parts) ? row.unread_parts as Array<Record<string, unknown>> : []),
         ...(fragment?.unread_parts ?? []),
       ];

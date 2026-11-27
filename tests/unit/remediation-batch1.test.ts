@@ -76,7 +76,7 @@ function compose(root: string, orTransport: OrTransport, mariposa: MariposaTrans
     openrouter: { model: MODEL },
     archive: { enabled: true, source_scope: 'sync-test' },
     integrations: { mariposa: { base_url: 'http://127.0.0.1:9', credential_ref: 'MODEL_TOKEN', archive_credential_ref: 'ARCHIVE_TOKEN' } },
-    windows: { soft_limit_tokens: 1500 + 16_150 /* /* 2026-11-23 聊天抽牌：普通聊天的工具目录多出 heartbeat_draw 一行 +103B≈+40 token，按 +60 平移留余量 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录底座 +572 token */ }, // 2026-11-09 R5：+content_album_entry_write 后目录底座 ≈13.66k（相册重构后曾 ≈13.2k）——同款底座+正文标定
+    windows: { soft_limit_tokens: 1500 + 16_150 + 60 /* 2026-11-26 recall 精简：memory_recall 说明 +116B≈+45 token 平移留余量 */ /* /* 2026-11-23 聊天抽牌：普通聊天的工具目录多出 heartbeat_draw 一行 +103B≈+40 token，按 +60 平移留余量 */ /* Codex P2-1：里程碑文案 +50B≈+80 token 平移 */ /* 包2 DBG-04：锚点参数目录 +722B≈+400 token 平移 */ /* 包2批A：+memory_update 目录 +1361B≈+780 token 平移 */ /* 2026-11-15 包1：目录底座 +572 token */ }, // 2026-11-09 R5：+content_album_entry_write 后目录底座 ≈13.66k（相册重构后曾 ≈13.2k）——同款底座+正文标定
     ...configOver,
   });
   const paths = buildPaths(root);

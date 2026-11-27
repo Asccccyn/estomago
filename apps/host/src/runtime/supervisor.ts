@@ -552,6 +552,7 @@ export class TurnSupervisor {
     d.db.prepare('UPDATE background_runs SET state = \'running\', window_id = ?, driver = ?, model = ?, turn_id = ?, input_activity_revision = COALESCE(?, input_activity_revision), updated_at = ? WHERE id = ?').run(window.id, dv.kind, dv.model, turnId, capturedActivityRevision, nowIso, opts.runId);
 
     let toolCallsObserved = 0;
+    let sawReasoningBlock = false;
     const loop = await this.runOrToolLoop({
       envelope, purpose: opts.kind === 'keepwarm' ? 'cache_keepalive' : 'proactive_turn', activeReviewId: null,
       conversationId: opts.conversationId, windowId: window.id, turnId, attemptId, controller,
@@ -559,6 +560,25 @@ export class TurnSupervisor {
         // 后台回合不发聊天气泡/思考流；用量照常入账（§05.6：后台无 handleEvent，此处最小挂钩）
         if (ev.kind === 'usage') {
           d.usage.record({ turnId, attemptId, scope: ev.scope, usage: ev.usage, requestId: reqCtx?.requestId ?? undefined, windowId: window.id, model: reqCtx?.responseModel ?? reqCtx?.requestedModel ?? dv.model, source: ev.source, completeness: ev.completeness });
+        }
+        // 2026-11-27 裁定：后台轮思考链照常入库——只持久化、不向前台发流（心跳时她不在
+        // 台前，前端按消息的 turn 拉取 /turns/{id}/reasoning 渲染历史思考）。口径与
+        // handleEvent 的 reasoning 分支一致；generation 恒 0：后台每 run 新建 turn，
+        // 无同轮代际重驱，围栏只防迟到 chunk 写错块。
+        if (ev.kind !== 'usage' && 'channel' in ev && ev.channel === 'subagent') return;
+        if (ev.kind === 'content_block_start' && ev.block_type === 'thinking') {
+          sawReasoningBlock = true;
+          d.reasoning.startBlock({ conversationId: opts.conversationId, turnId, attemptId, sdkMessageId: ev.sdk_message_id, blockIndex: ev.block_index, generation: 0 });
+        } else if (ev.kind === 'content_block_start' && ev.block_type === 'redacted_thinking') {
+          sawReasoningBlock = true;
+          d.reasoning.markRedactedOrOmitted({ conversationId: opts.conversationId, turnId, attemptId, sdkMessageId: ev.sdk_message_id, blockIndex: ev.block_index, visibility: 'redacted', generation: 0 });
+        } else if (ev.kind === 'thinking_delta') {
+          d.reasoning.appendDelta({ conversationId: opts.conversationId, turnId, attemptId, sdkMessageId: ev.sdk_message_id, blockIndex: ev.block_index, text: ev.text, generation: 0 });
+        } else if (ev.kind === 'content_block_stop') {
+          d.reasoning.markStreamBlockComplete({ attemptId, sdkMessageId: ev.sdk_message_id, blockIndex: ev.block_index, generation: 0 });
+        } else if (ev.kind === 'complete_message') {
+          if (ev.matched.some((b: { block_type?: string }) => b.block_type === 'thinking' || b.block_type === 'redacted_thinking')) sawReasoningBlock = true;
+          d.reasoning.reconcileCompleteMessage({ conversationId: opts.conversationId, turnId, attemptId, sdkMessageId: ev.sdk_message_id, matched: ev.matched, unmatched: ev.unmatched, generation: 0 });
         }
       },
       // B12 修复：已见视野从轨迹 manifest 派生（不再恒空）；续轮工具片段由循环内部并入
@@ -575,6 +595,10 @@ export class TurnSupervisor {
         yieldRequested,
       },
     });
+    // 2026-11-27：后台轮思考收口——中断/失败关闭流中块；零块如实记 no_block 快照
+    if (loop.result.outcome === 'interrupted') d.reasoning.markAttemptFinal({ attemptId, final: 'interrupted', generation: 0 });
+    else if (loop.result.outcome !== 'completed') d.reasoning.markAttemptFinal({ attemptId, final: 'failed', generation: 0 });
+    if (!sawReasoningBlock) d.reasoning.markTurnNoBlock({ conversationId: opts.conversationId, turnId, attemptId, generation: 0 });
     // Same idempotent ledger as live/late usage. Missing charges retain reservations.
     settleBackgroundRun(d.db, opts.runId);
     // 结果分类与收尾（R4a 迁 runtime/background-outcome.ts）

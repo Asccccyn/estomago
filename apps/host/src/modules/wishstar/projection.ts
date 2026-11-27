@@ -18,7 +18,13 @@ export function projectWishstarToolResult(name: string, v: Obj): Obj {
     case 'wishstar_shared_stars': return {items:rows(v.items).map(star)};
     case 'wishstar_special_dates': return {items:rows(v.items).map(d=>pick(d,['id','name','month','day','year','type','active']))};
     case 'wishstar_list_offers': return {incoming:rows(v.incoming).map(offer),outgoing:rows(v.outgoing).map(offer)};
-    case 'wishstar_notifications': return {...pick(v,['unread_count','consumed']),items:rows(v.items).map(n=>pick(n,['id','type','title','body','star_id','created_at','is_read']))};
+    case 'wishstar_notifications': return {...pick(v,['unread_count','consumed']),items:rows(v.items).map(n=>{
+      // 2026-11-26 裁定（修正 A2）：通知条目只留业务内容（标题/正文/星引用/时间）。
+      // is_read 是内部已读状态；id/type 无操作用途（title 已表达含义）；null 字段不占上下文。
+      const out: Obj = {};
+      for (const k of ['title','body','star_id','created_at']) { const val = n[k]; if (val !== undefined && val !== null) out[k] = val; }
+      return out;
+    })};
     case 'wishstar_write_star': return pick(v,['id','star_id','visibility','state']);
     case 'wishstar_reply_star': return pick(v,['id','star_id','type','created_at']);
     case 'wishstar_offer_star': return offer(v);

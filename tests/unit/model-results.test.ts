@@ -22,8 +22,11 @@ test('records remain addressable for revision and revoke; punctuation is content
 });
 test('recall preserves distinct evidence, zero results and uncertainty without diagnostics',()=>{
  const source={memory_id:'m',scores:{x:1},rrf_score:1,excerpt:'甲',evidence:[{snippet:'乙',field:'event_text',source_version:'9'}],judge:{evaluation_status:'partial',model_id:'secret'}};
- const result=candidates([source])[0];assert.equal(result.excerpt,'甲');assert.equal(result.evidence[0].snippet,'乙');assert.equal(result.judgement,'unconfirmed');assert.equal(result.scores,undefined);
- assert.deepEqual(modelResult('memory_recall',{}, {candidates:[],search_status:'NOT_FOUND',judge_mode:'off',retrieval_coverage:{truncated:true}}),{candidates:[],judgement:'unjudged',coverage:'incomplete',status:'NOT_FOUND'});
+ const result=candidates([source])[0];assert.equal(result.text,'乙');assert.equal(result.excerpt,'甲');assert.equal(result.judgement,'unconfirmed');assert.equal(result.scores,undefined);
+ // 2026-11-26 裁定：非 FOUND 状态改为人话 note（未收录枚举原样透出，不猜含义）
+ assert.deepEqual(modelResult('memory_recall',{}, {candidates:[],search_status:'NOT_FOUND',judge_mode:'off',retrieval_coverage:{truncated:true}}),{candidates:[],judgement:'unjudged',coverage:'incomplete',note:'NOT_FOUND'});
+ assert.equal(modelResult('memory_recall',{}, {candidates:[],search_status:'AMBIGUOUS'}).note,'有多条记忆都相关，已一起返回');
+ assert.equal(modelResult('memory_recall',{}, {candidates:[],search_status:'FOUND'}).note,undefined);
 });
 test('actual event date survives unknown confidence, event body unchanged',()=>{
  const item:any={memory_date:'2026-07-09',date_confidence:'unknown',event_text:'完整正文\n！！'};

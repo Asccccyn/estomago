@@ -33,12 +33,12 @@ test('T-A05 + R4：本地休息意图判定与 Sol 分流——明确表达、�
   const rest = ['晚安，我睡了', '我们睡吧', '晚安', '晚安！', '晚安，爱你', '我先睡了，明天再聊', '我睡了，你也早点休息', '跟你说晚安',
     '那我也睡了', '我睡觉了', '去睡觉啦', '我先去休息了', '我好困，先睡了', '困死了，睡了', '晚安，明天见', '晚安，梦里见', '晚安，不要熬夜',
     '晚安，醒了叫我', '晚安不要熬夜', 'char晚安', '今天发生了很多很多事，工作也很累，就不一一说了，总之先这样吧，我先睡了', "I'm going to bed, good night",
-    '晚安，等会再聊', '晚安，明天再继续聊', '我去午睡了', '先去睡个午觉'];
-  const resume = ['我醒了', '我已经醒了', '我刚醒了', '早安，继续聊', '我回来了，我们接着聊', '早安', '早上好', '我起床了', '起来了', '我回来了', '继续聊吧',
+    '晚安，等会再聊', '晚安，明天再继续聊'];
+  const resume = ['我醒了', '我醒来啦', '我睡醒来啦', '我已经醒了', '我刚醒了', '早安，继续聊', '我回来了，我们接着聊', '早安', '早上好', '我起床了', '起来了', '我回来了', '继续聊吧',
     '今天睡得特别好，一起床就看到阳光，早安', '早安，今天几点出门？', '我醒了，你继续睡', '我没说我睡了，我还醒着呢'];
   const neither = ['昨天你说了晚安', '晚安这个功能怎么改', '我还不睡，先聊一会', '为什么说晚安还会叫醒', '“晚安”', '“晚安”是什么意思', '你先睡吧，我再玩一会',
     '我不想说晚安', '宝宝睡了，我们轻声聊', '我家宝宝睡了', '我们睡吧？', '我们睡吧?',
-    '睡了吗', '今晚早点睡', '等会再睡', '我今天下午睡了午觉，现在精神很好', '早点睡哦', '我还不困，再陪我聊会儿', '不要说晚安', '别跟我说晚安了',
+    '睡了吗', '今晚早点睡', '等会再睡', '我今天下午睡了午觉，现在精神很好', '我去午睡了', '先去睡个午觉', '睡一会会！等到公司了我来找你！', '早点睡哦', '我还不困，再陪我聊会儿', '不要说晚安', '别跟我说晚安了',
     '你醒了吗', '醒了叫我', '我还没醒', '明天起床叫我', '半夜又醒了', '他醒了', '昨天你说早安',
     '我说的是“晚安”这个词', '我去修一下服务器',
     '爱你', '再抱一下', '🌙', '', '   ', '哈哈哈', '今天天气真好'];
@@ -51,7 +51,7 @@ test('T-A05 + R4：本地休息意图判定与 Sol 分流——明确表达、�
   // 本地快速路径 vs Sol 语义分流：简单直白走本地，口语/否定/引用/谈别人/暂离走 Sol
   assert.deepEqual(classifyRestLocally('晚安'), { kind: 'clear_rest', restKind: 'sleep' });
   assert.deepEqual(classifyRestLocally('我去睡了'), { kind: 'clear_rest', restKind: 'sleep' });
-  assert.deepEqual(classifyRestLocally('我去午睡了'), { kind: 'clear_rest', restKind: 'nap_or_wait' });
+  assert.deepEqual(classifyRestLocally('我去午睡了'), { kind: 'clear_not_rest' }); // 2026-11-27 裁定：短暂午睡不暂停
   assert.deepEqual(classifyRestLocally('今天天气真好'), { kind: 'clear_not_rest' });
   for (const semantic of [
     '晚安，明天再继续聊',
@@ -239,10 +239,13 @@ test('T-A05/T-A06：休息由首次接受的输入建立；重复提交、编辑
     }
     return submit('', id, [{ asset_id: saved.id, presentation: 'voice' }]);
   };
-  await voice('m-voice-rest', '我去午睡了');
-  assert.equal(activity.restState('primary').resting, true, '语音转写里明确午睡即进入休息');
+  await voice('m-voice-rest', '我现在去睡觉了');
   assert.equal(activity.restState('primary').recovery_mode, 'next_user_message');
+  assert.equal(activity.restState('primary').resting, true, '语音转写里明确正式睡觉即进入休息');
+  // 2026-11-27 裁定：白天短暂打盹（午睡/眯一会）不再暂停心跳
   t.mock.timers.setTime(Date.parse('2026-11-25T10:05:00+08:00'));
+  await voice('m-voice-nap', '我去午睡了');
+  assert.equal(activity.restState('primary').resting, false, '短暂午睡语音不进入休息');
   await voice('m-voice-resume', '喝口水继续聊');
   assert.equal(activity.restState('primary').resting, false, '白天新普通消息自动恢复，无需特地说早安/我醒了');
 });

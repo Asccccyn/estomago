@@ -22,9 +22,14 @@ const SHANGHAI_OFFSET_MS = 8 * 3_600_000;
 
 const QUOTED = /「[^」]*」|『[^』]*』|“[^”]*”|"[^"\n]*"|^.{0,3}>.*$/gm;
 const REST_PHRASE = /(?<![你您])晚安|(?<![你您])(?:先睡|要睡|得睡|该睡|去睡|睡了|睡吧|睡觉了|睡觉去|准备睡|想睡了)|(?<![你您])(?:先休息|要休息|去休息|休息了|休息吧)|我(?:很|好|太|真)?困|好困|太困|困死|困到|good ?night|going ?to ?bed|off ?to ?bed/i;
-const NAP_OR_WAIT_PHRASE = /(?<![你您他她它])(?:去|先|准备|要)?(?:午睡|睡午觉|睡个午觉|眯一[会儿下]|小睡)|(?:等我|待我)(?:回来|醒来|忙完|找你)/;
+// 2026-11-27 裁定退役：短暂打盹/等我回来（原 NAP_OR_WAIT_PHRASE）不再构成休息意图；
+// 快路径由 CLEAR_NAP_WAIT_EXACT 直接判 not_rest，语义判断交给 Sol 的新口径提示词。
 const NAP_PAST_BLOCKED = /(?<!去|先|要|准备)午睡了|睡了(?:个)?午觉|睡了一[会儿觉]|已经睡|刚才|昨天|昨晚|下午睡了|现在精神/;
-const RESUME_PHRASE = /(?<![你您他她它梦])醒了|还醒着|醒着呢|(?<![你您他她它还没不])起床|(?<![你您他她它还没不])起来了|(?<![你您他她它还没])回来了|回来啦|我(?:又|来|已经)?上线了|早安|早上好|午安|(?<![你您])(?:继续聊|接着聊|接着说|继续说)|(?:我们|咱们)继续|good ?morning|i ?(?:am|m) ?(?:back|awake)/i;
+/** 2026-11-27 裁定：子句里带明确小睡/打盹/等我回来时，共享字面的正式睡眠短语
+ *  （如"午睡了"命中"睡了"、"去睡个午觉"命中"去睡"）不再构成休息意图；
+ *  纯正式睡眠（"晚安""去睡了"）不受影响。 */
+const NAP_INTENT_BLOCKED = /午睡|睡午觉|睡个午觉|眯一[会儿下]|小睡|打个?盹|补个?觉|等我(?:回来|找你)|待我回来/;
+const RESUME_PHRASE = /(?<![你您他她它梦])醒了|(?<![你您他她它梦])醒来|还醒着|醒着呢|(?<![你您他她它还没不])起床|(?<![你您他她它还没不])起来了|(?<![你您他她它还没])回来了|回来啦|我(?:又|来|已经)?上线了|早安|早上好|午安|(?<![你您])(?:继续聊|接着聊|接着说|继续说)|(?:我们|咱们)继续|good ?morning|i ?(?:am|m) ?(?:back|awake)/i;
 const QUESTION_CLAUSE = /\?$|吗|好不好|行不行|可不可以|要不要|能不能|会不会|是不是/;
 const FUTURE_TIME_MODIFIER = /明天|明早|改天|下次|等会|等下|待会|晚点|回头|醒了|睡醒|过会/;
 const REST_BLOCKED = /为什么|为何|怎么|什么|哪个|哪些|谁|几点|多久|功能|设置|规则|这个词|这两个字|这句|那条|那段|含义|意思|[他她它](?:说|跟|给|要)|(?:不|没|没有|未|非|别)(?:想|要|是|是在|打算|准备|愿意|敢|能|会|肯|许|准|用)?(?:跟|对|和|给)?(?:我|你)?(?:说|道|讲|提)(?:过|了)?.*?(?:晚安|睡|休息|困)|(?:不要|别|不许|不准|不用)(?:跟|对|和|给)?(?:我)?(?:你)?(?:说|道|讲)|说(?:过|了)晚安|道(?:过|了)晚安|昨天|昨晚|前天|上次|上回|之前|早已|已经|每天|天天|总是|老是|经常|那次|当时|那时候|刚才|睡了个|睡了午觉|睡了一|等会|等下|待会|一会儿|一会|晚点|稍后|过会|再睡|早点睡|不睡|不想睡|还没睡|没睡|不困|还想|如果|要是|晚安(?:歌|曲|故事|铃|音|吻|电台|文案|句子|语录|图片|表情|包)/;
@@ -67,8 +72,10 @@ export function classifyRestLocally(text: unknown): LocalRestPrecheck {
   if (typeof text !== 'string') return { kind: 'clear_not_rest' };
   const normalized = text.normalize('NFKC').trim();
   if (!normalized) return { kind: 'clear_not_rest' };
+  // 2026-11-27 裁定：白天已恢复聊天后的短暂打盹/午睡/等我回来不再暂停心跳
+  // （短暂离开≠把心跳关到"等下一次出现"）；明确短句走本地快路径直接按未休息处理。
   if (CLEAR_NAP_WAIT_EXACT.test(normalized) && !NAP_PAST_BLOCKED.test(normalized)) {
-    return { kind: 'clear_rest', restKind: 'nap_or_wait' };
+    return { kind: 'clear_not_rest' };
   }
   if (CLEAR_SLEEP_EXACT.test(normalized)) {
     return { kind: 'clear_rest', restKind: 'sleep' };
@@ -81,7 +88,9 @@ export function classifyRestLocally(text: unknown): LocalRestPrecheck {
 
 /** Classify whether a confirmed rest decision recovers at 08:00 (normal night rest:
  *  18:00:00–01:59:59 Asia/Shanghai) or waits for the owner's next new message
- *  (all-nighter sleep >= 02:00:00, daytime rest, or explicit nap / wait-for-me). */
+ *  (all-nighter sleep >= 02:00:00, or daytime rest).
+ *  2026-11-27 裁定后新休息决定只余 sleep；nap_or_wait 分支仅服务既有落库行的
+ *  恢复推断，不再产生新决策。 */
 export function classifyRestRecoveryMode(acceptedAtMs: number, restKind: RestKind): {
   mode: RestRecoveryMode;
   morningDate: string | null;
@@ -104,7 +113,9 @@ export function classifyRestRecoveryMode(acceptedAtMs: number, restKind: RestKin
 
 /** Local fallback rest-intent detector (used when Sol is not configured and by local unit checks).
  *  Fixes R4: future-modified continuations ("晚安，明天再继续聊") and negated speech reports
- *  ("我没说我睡了，我还醒着呢") are handled cleanly. */
+ *  ("我没说我睡了，我还醒着呢") are handled cleanly.
+ *  2026-11-27 裁定：短暂打盹/午睡/等我回来（NAP_OR_WAIT_PHRASE）不再是休息意图——
+ *  只有正式睡眠短语（REST_PHRASE）构成 rest。 */
 export function detectRestIntent(text: unknown): RestIntent | null {
   if (typeof text !== 'string') return null;
   const parts = clauses(text);
@@ -117,15 +128,13 @@ export function detectRestIntent(text: unknown): RestIntent | null {
   };
   if (states(RESUME_PHRASE, RESUME_BLOCKED)) return 'resume';
   if (parts.some(isActiveChatNow)) return null;
-  if (states(NAP_OR_WAIT_PHRASE, new RegExp(`${REST_BLOCKED.source}|${NAP_PAST_BLOCKED.source}`))) return 'rest';
-  if (states(REST_PHRASE, REST_BLOCKED)) return 'rest';
+  if (states(REST_PHRASE, new RegExp(`${REST_BLOCKED.source}|${NAP_INTENT_BLOCKED.source}`))) return 'rest';
   return null;
 }
 
-export function detectRestKindLocally(text: unknown): RestKind {
-  if (typeof text === 'string' && NAP_OR_WAIT_PHRASE.test(text.normalize('NFKC')) && !NAP_PAST_BLOCKED.test(text.normalize('NFKC'))) {
-    return 'nap_or_wait';
-  }
+/** 2026-11-27 裁定后新休息决定一律按正式睡眠处理（短暂打盹不再产生休息决定）；
+ *  返回值仅影响恢复模式推断，见 classifyRestRecoveryMode。 */
+export function detectRestKindLocally(_text: unknown): RestKind {
   return 'sleep';
 }
 

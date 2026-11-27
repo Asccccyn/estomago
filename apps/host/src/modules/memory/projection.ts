@@ -58,61 +58,100 @@ function identity(v: Obj, history=false): Obj {
   if (Array.isArray(v.relations)) out.relations=v.relations.map(relation);
   return out;
 }
+// 2026-11-26 裁定（修正 A2）：recall 候选正文先行，操作句柄跟在对应正文之后；
+// 内部对账包装（evidence_kind/field/structured_value/重复编号）不再进入模型上下文。
+// 正文只出现一次：卡片 text、首条文本类 evidence snippet、excerpt 三者取其一，
+// 不再把同一段正文同时放进 excerpt 与 evidence。structured_fact 证据（分类/
+// legacy 缺口等程序对账）整体不投递；原话与回忆摘要的区分保留为 kind + speaker
+// + unverified/paraphrased 标记，不丢业务语义。
 export function candidates(v: any[], labels?: SpeakerLabels): Obj[] {
   return v.map(raw=>{
     if(!raw || typeof raw!=='object' || Array.isArray(raw))return raw;
-    const c=obj(raw), out=select(c,['memory_id','word_id','plan_id','content_version','memory_date','speaker','text','title','original_title','categories','mood','excerpt','judgement','source_ref','source_binding_version','unread_parts','already_in_window','included_in_this_request']);
-    // Mariposa event cards derive this token from memories.current_version_no.
-    // Keep the token for recall and expose its integer form for memory_update CAS.
+    const c=obj(raw), out: Obj={};
+    const evidence=list(c.evidence).map(obj);
+    const textual=evidence.filter(e=>typeof e.snippet==='string' && e.evidence_kind!=='structured_fact');
+    let text=typeof c.text==='string' && c.text!=='' ? c.text : '';
+    if(!text && textual.length) text=textual[0].snippet as string;
+    if(!text && typeof c.excerpt==='string') text=c.excerpt;
+    if(text) out.text=text;
+    // 摘录窗口与正文不同文时是独立内容（P2 4-A 行为断言），跟在正文后保留；
+    // 同文时不再重复出现（旧形状 excerpt+evidence 双载同一段正文的问题）。
+    if(typeof c.excerpt==='string' && c.excerpt!==text) out.excerpt=c.excerpt;
+    // 首条之外的文本类证据是配套原话（word_*），附在正文后；保留其覆盖标记。
+    if(textual.length>1){
+      out.quotes=textual.slice(1).map(e=>{
+        const q:Obj={text:e.snippet};
+        if(e.evidence_kind==='word_unverified')q.unverified=true;
+        if(e.evidence_kind==='word_paraphrase')q.paraphrased=true;
+        Object.assign(q,select(e,['unread_parts','already_in_window','included_in_this_request']));
+        return q;
+      });
+    }
+    // 正文自身的限定标记（原话未核实/转述）与文本载体来源。
+    if(textual[0]?.evidence_kind==='word_unverified')out.unverified=true;
+    if(textual[0]?.evidence_kind==='word_paraphrase')out.paraphrased=true;
+    // 首条文本证据的覆盖标记提升到候选级（coverage 删正文后标记留在证据条上，
+    // 与旧形状 evidence 白名单同语义，避免部分覆盖信息丢失）。
+    Object.assign(out,select(textual[0] ?? {},['unread_parts','already_in_window','included_in_this_request']));
+    if(c.channel)out.kind=c.channel;
+    const ctx=select(c,['memory_date','speaker','title','original_title','mood','judgement']);
+    if (ctx.original_title) { if (!ctx.title) ctx.title=ctx.original_title; delete ctx.original_title; }
+    Object.assign(out,ctx);
+    if(labels && typeof out.speaker === 'string') out.speaker = speakerLabelFor(out.speaker, labels);
+    if(out.mood){out.mood=select(out.mood,['text','tags','author']);if(labels && typeof out.mood.author === 'string') out.mood.author = speakerLabelFor(out.mood.author, labels);}
+    // SOL_R31：already_in_window 短回执标记随候选出站（正文已在本窗实际送达的
+    // 普通主动结果；引用/身份/版本字段仍保留）。
+    Object.assign(out,select(c,['unread_parts','already_in_window','included_in_this_request']));
+    // 操作句柄区：memory_id/version/memory_ref 供 memory_read_full 深读与
+    // memory_update CAS；resource_ref 是 M 候选卡出站的唯一否定续查句柄
+    // （F-05，跨仓预审 2026-10-25：reject_candidate_ref 按工具声明原样回传）。
+    Object.assign(out,select(c,['memory_id','word_id','plan_id']));
     if (c.channel === 'event' && typeof c.memory_id === 'string' && c.memory_id.length > 0
         && c.resource_ref === `memory:${c.memory_id}`
         && typeof c.content_version === 'string' && /^[1-9][0-9]*$/.test(c.content_version)) {
       const version = Number(c.content_version);
       if (Number.isSafeInteger(version)) out.version = version;
     }
-    if(labels && typeof out.speaker === 'string') out.speaker = speakerLabelFor(out.speaker, labels);
-    // SOL_R31：already_in_window 短回执标记随候选白名单出站（正文已在本窗
-    // 实际送达的普通主动结果；引用/身份/版本字段仍在白名单内）
-    if(out.mood){out.mood=select(out.mood,['text','tags','author']);if(labels && typeof out.mood.author === 'string') out.mood.author = speakerLabelFor(out.mood.author, labels);}
-    // F-05（跨仓预审 2026-10-25）：resource_ref 是 M 候选卡出站的唯一操作
-    // 句柄（memory:/our_word:/source_msg:），否定续查 reject_candidate_ref
-    // 按工具声明原样回传它——不能因 memory_id/word_id 在场而删（此前事件卡
-    // 只剩 memory_id/excerpt，模型无法回传任何合法引用）。
-    if(c.resource_ref)out.resource_ref=c.resource_ref;
     if(c.memory_ref)out.memory_ref=c.memory_ref;
+    if(c.resource_ref)out.resource_ref=c.resource_ref;
     if(c.content_complete !== undefined)out.content_complete=c.content_complete;
     Object.assign(out,select(c,['start_char','end_char']));
-    if(c.fragment)out.fragment=select(c.fragment,['kind','evidence_index','start_char','end_char','total_chars','text','content_complete','unread_parts','already_in_window','included_in_this_request']);
-    if (out.original_title) { if (!out.title) out.title=out.original_title; delete out.original_title; }
-    const evidence=list(c.evidence).map(e=>{
-      const x=select(e,['evidence_kind','field','snippet','source_ref','source_version','unread_parts','already_in_window','included_in_this_request']);
-      if(e.structured_value)x.structured_value=select(e.structured_value,['categories','legacy_content_gap','source_ref_state','source_binding_version']);
-      if(e.evidence_kind==='word_unverified')x.unverified=true;
-      if(e.truncated===true)x.truncated=true;
-      return x;
-    });
-    if(evidence.length)out.evidence=evidence;
-    if(out.excerpt && evidence[0]?.snippet===out.excerpt)delete out.excerpt;
+    if(c.fragment)out.fragment=select(c.fragment,['start_char','end_char','total_chars','text','content_complete','unread_parts','already_in_window','included_in_this_request']);
     if(c.truncated===true || (Array.isArray(c.budget_flags) && c.budget_flags.length))out.truncated=true;
     if(c.judge && c.judge.evaluation_status!=='evaluated')out.judgement='unconfirmed';
     return out;
   });
 }
+// 2026-11-26 裁定：非 FOUND 状态按 M 侧真实分支语义给一句人话（AMBIGUOUS 的
+// 服务端定义就是“交付了多条候选”，文案如实陈述多条相关，不虚构“无法确定”；
+// 未收录的枚举值原样透出，不猜测含义）。
+const RECALL_STATUS_NOTES: Record<string,string> = {
+  AMBIGUOUS: '有多条记忆都相关，已一起返回',
+  CONFLICT: '检索条件互相冲突，需要换一种问法',
+  NO_MATCH_OBSERVED: '没有找到符合的记忆',
+  DEGRADED: '检索部分降级，结果可能不全',
+  BUDGET_EXHAUSTED: '检索预算用尽，结果可能不全',
+  STALE_RETRY_REQUIRED: '这次检索会话已过期，需要重新发起',
+  UNAVAILABLE: '检索通道暂不可用',
+};
 function recall(v: Obj, labels?: SpeakerLabels): Obj {
   const out: Obj={candidates:candidates(list(v.candidates),labels)};
-  // Existing argument contracts require session plus continuation reference/channel.
-  Object.assign(out,select(v,['recall_session_id','continuation_note','next','missing']));
+  if(v.search_status && v.search_status!=='FOUND')out.note=RECALL_STATUS_NOTES[v.search_status] ?? v.search_status;
+  if(list(v.missing).length)out.missing=v.missing;
   if(v.judge_mode==='off')out.judgement='unjudged';
   else if(v.judgement_status && !['evaluated','complete'].includes(v.judgement_status))out.judgement=v.judgement_status;
   const coverage=obj(v.retrieval_coverage);
   if(coverage.truncated===true || coverage.retrieval_scope_exhaustive===false)out.coverage='incomplete';
   if(list(v.invalidated).length)out.invalidated=true;
   if(v.budget_truncated===true)out.truncated=true;
+  // 续查信息压到最后：会话锚点与可直接使用的 next 参数（P10：next 不自动执行）。
+  if(v.recall_session_id)out.recall_session_id=v.recall_session_id;
+  if(v.continuation_note)out.continuation_note=v.continuation_note;
   const p=obj(v.pagination);
   // R1′（2026-10-23）：块内恒带 has_more:true——旧冻结描述（读 pagination.has_more）与
   // 新描述（读块存在性）同一形状都成立；块不存在=本次固定结果集已尽（非全库穷尽）。
   if(p.has_more===true){out.pagination=select(p,['result_set_id','next_cursor']);out.pagination.has_more=true;if(!out.pagination.result_set_id&&v.result_set_id)out.pagination.result_set_id=v.result_set_id;}
-  if(v.search_status && v.search_status!=='FOUND')out.status=v.search_status;
+  if(v.next)out.next=structuredClone(v.next);
   return out;
 }
 

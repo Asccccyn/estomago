@@ -692,8 +692,10 @@ export class ConversationActivityService {
       }
       const acceptMs = Date.parse(acceptedAtIso);
       const today = shanghaiDateOfMs(acceptMs);
-
-      if (input.result.status === 'ok' && input.result.decision === 'rest') {
+      // 2026-11-27 裁定：白天已恢复聊天后的短暂打盹/等我回来不暂停心跳——旧口径
+      // Sol 仍可能返回 rest+nap_or_wait，采纳侧统一按未休息处理（不进入 resting），
+      // 只有正式睡眠（sleep）才暂停心跳。
+      if (input.result.status === 'ok' && input.result.decision === 'rest' && input.result.restKind !== 'nap_or_wait') {
         return this.applyRestDecisionInTx({
           conversationId: input.conversationId,
           prev: row,
@@ -705,7 +707,8 @@ export class ConversationActivityService {
         });
       }
 
-      if (input.result.status === 'ok' && input.result.decision === 'not_rest') {
+      if (input.result.status === 'ok' && (input.result.decision === 'not_rest'
+        || (input.result.decision === 'rest' && input.result.restKind === 'nap_or_wait'))) {
         const overnightDate = overnightMorningDate(input.sleepWindow, acceptMs);
         const inSleepWindowNow = this.isInActiveSleepWindow(row, input.sleepWindow, acceptMs);
         this.applyNotRestRecoveryInTx({
